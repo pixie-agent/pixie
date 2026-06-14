@@ -1,6 +1,6 @@
 [package]
 name = "pixie"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pixie - AI Chat Desktop App"
 authors = ["white1or1black"]
 license = "MIT"
@@ -26,6 +26,8 @@ tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }

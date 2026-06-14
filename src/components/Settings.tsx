@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import type { ClaudeStatus, ModelConfig } from "../types";
+import { useUpdater } from "../hooks/useUpdater";
 
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("../assets/icon.svg", import.meta.url).href;
@@ -28,6 +30,12 @@ export default function Settings({
   onModelConfigChange,
 }: SettingsProps) {
   const [_checking, setChecking] = useState(false);
+  const updater = useUpdater();
+  const [appVersion, setAppVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion(""));
+  }, []);
 
   const handleRefresh = async () => {
     setChecking(true);
@@ -202,6 +210,67 @@ export default function Settings({
               <p className="text-xs text-[var(--text-secondary)]">
                 Built with Tauri v2 + React + TypeScript
               </p>
+              <p className="text-xs text-[var(--text-secondary)]">
+                Version: {appVersion || "0.1.1"}
+              </p>
+
+              {/* Update check */}
+              <div className="pt-2 mt-1 border-t border-[var(--border-color)]">
+                {updater.status === "up-to-date" && (
+                  <p className="text-xs text-[var(--text-secondary)] mb-2">
+                    You&apos;re on the latest version.
+                  </p>
+                )}
+                {updater.status === "available" && updater.newVersion && (
+                  <p className="text-xs text-[var(--text-primary)] mb-2">
+                    Pixie {updater.newVersion} is available.
+                  </p>
+                )}
+                {updater.status === "downloading" &&
+                  updater.contentLength > 0 && (
+                    <p className="text-xs text-[var(--text-secondary)] mb-2">
+                      Downloading…{" "}
+                      {Math.round(
+                        (updater.downloaded / updater.contentLength) * 100
+                      )}
+                      %
+                    </p>
+                  )}
+                {updater.status === "installed" && (
+                  <p className="text-xs text-[var(--text-primary)] mb-2">
+                    Update ready. Restart to apply.
+                  </p>
+                )}
+                {updater.status === "error" && updater.error && (
+                  <p className="text-xs text-red-400 mb-2 break-all">
+                    {updater.error}
+                  </p>
+                )}
+                <button
+                  onClick={
+                    updater.status === "available"
+                      ? updater.downloadAndInstall
+                      : updater.status === "installed"
+                        ? updater.restart
+                        : updater.checkForUpdates
+                  }
+                  disabled={
+                    updater.status === "checking" ||
+                    updater.status === "downloading"
+                  }
+                  className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  {updater.status === "checking"
+                    ? "Checking…"
+                    : updater.status === "downloading"
+                      ? "Downloading…"
+                      : updater.status === "available"
+                        ? `Install ${updater.newVersion}`
+                        : updater.status === "installed"
+                          ? "Restart Now"
+                          : "Check for Updates"}
+                </button>
+              </div>
             </div>
           </section>
 

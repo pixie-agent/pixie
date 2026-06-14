@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Pixie",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.pixie.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -30,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,7 +42,19 @@
     "shortDescription": "A desktop AI chat application powered by the Claude CLI",
     "longDescription": "Pixie is a desktop application that provides a beautiful chat interface for interacting with Claude through the Claude CLI. Built with Tauri v2, React, and TypeScript.",
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY2QTU1NEFBREVBQjBEQTYKUldTbURhdmVxbFNsWmlOL2x4VWtxb2h4N2VKei9rODZvQUd4YTRSbXdRMDQwRDFGdytUOUI4TjYK",
+      "endpoints": [
+        "https://github.com/white1or1black/pixie/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

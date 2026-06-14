@@ -15,6 +15,11 @@ dist-ssr
 # Rust / Tauri
 src-tauri/target/
 
+# Tauri updater signing keys (never commit — leaking the private key
+# breaks updates for every installed copy)
+*.key
+.tauri/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

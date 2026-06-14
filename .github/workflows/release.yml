@@ -1,0 +1,71 @@
+name: release
+
+# Triggered by pushing a tag like `app-v0.1.1`. Builds all three platforms,
+# signs the installers with the Tauri updater key, and publishes a draft
+# GitHub Release whose `latest.json` is auto-merged across the matrix jobs.
+on:
+  push:
+    tags:
+      - "app-v*"
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both macOS arches run on macos-latest (aarch64 runner).
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        run: pnpm install
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # ad-hoc macOS signing (no Apple Developer account yet). Replace with
+          # APPLE_CERTIFICATE / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID secrets
+          # and drop the `signingIdentity: "-"` in tauri.conf.json once enrolled.
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          tagName: app-v__VERSION__
+          releaseName: "Pixie v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          # Windows: emit the NSIS installer URL in latest.json.
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
