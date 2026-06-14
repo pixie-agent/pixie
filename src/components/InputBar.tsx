@@ -8,6 +8,9 @@ interface InputBarProps {
   isGenerating: boolean;
   disabled?: boolean;
   disabledHint?: string;
+  value: string;
+  onChange: (value: string) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   skills: SkillEntry[];
 }
 
@@ -19,10 +22,11 @@ export default function InputBar({
   isGenerating,
   disabled = false,
   disabledHint,
+  value,
+  onChange,
+  textareaRef,
   skills,
 }: InputBarProps) {
-  const [value, setValue] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -42,14 +46,14 @@ export default function InputBar({
     const maxLines = 8;
     const maxHeight = lineHeight * maxLines;
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
-  }, [value]);
+  }, [value, textareaRef]);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || isGenerating || disabled) return;
     onSend(trimmed);
-    setValue("");
-  }, [value, isGenerating, disabled, onSend]);
+    onChange("");
+  }, [value, isGenerating, disabled, onSend, onChange]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -73,24 +77,24 @@ export default function InputBar({
     return () => document.removeEventListener("mousedown", onDown);
   }, [dropdownOpen]);
 
-  // Insert the picked skill's invocation ("/skill-name ") into the input.
+  // Insert the picked skill's invocation ("/skill-name ") into the draft.
   const handleSelectSkill = useCallback((skill: SkillEntry) => {
-    setValue((prev) => {
-      const inv = skill.invocation; // "/skill-name "
-      if (prev.trim().length === 0) return inv;
-      const sep = prev.endsWith(" ") || prev.endsWith("\n") ? "" : " ";
-      return prev + sep + inv;
-    });
+    const inv = skill.invocation;
+    const next =
+      value.trim().length === 0
+        ? inv
+        : value + (value.endsWith(" ") || value.endsWith("\n") ? "" : " ") + inv;
+    onChange(next);
     setDropdownOpen(false);
     // Refocus the textarea and place the caret at the end. The auto-resize
-    // effect (keyed on `value`) re-runs after setValue commits.
+    // effect (keyed on `value`) re-runs after onChange commits.
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (!el) return;
       el.focus();
       el.setSelectionRange(el.value.length, el.value.length);
     });
-  }, []);
+  }, [value, onChange, textareaRef]);
 
   const toggleDropdown = useCallback(() => setDropdownOpen((v) => !v), []);
 
@@ -133,7 +137,7 @@ export default function InputBar({
             <textarea
               ref={textareaRef}
               value={value}
-              onChange={(e) => setValue(e.target.value)}
+              onChange={(e) => onChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={
                 disabled

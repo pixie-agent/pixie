@@ -33,11 +33,9 @@ export default function Settings({
   };
 
   return (
-    <div className="settings-enter fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-[var(--bg-secondary)] border-l border-[var(--border-color)] h-full overflow-y-auto">
+    <div className="settings-enter flex flex-col flex-1 min-h-0 bg-[var(--bg-secondary)]">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]">
+        <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]">
           <h2 className="text-base font-semibold text-[var(--text-primary)]">
             Settings
           </h2>
@@ -56,7 +54,7 @@ export default function Settings({
           </button>
         </div>
 
-        <div className="p-5 space-y-6">
+        <div className="flex-1 overflow-y-auto p-5 space-y-6">
           {/* Claude CLI Status */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
@@ -246,7 +244,6 @@ export default function Settings({
             </div>
           </section>
         </div>
-      </div>
     </div>
   );
 }

@@ -186,14 +186,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-3xl h-[80vh] flex flex-col bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-2xl shadow-2xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="settings-enter flex flex-col flex-1 min-h-0 bg-[var(--bg-primary)] overflow-hidden">
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)]">
           <h2 className="text-sm font-semibold text-[var(--text-primary)]">Skills Marketplace</h2>
@@ -382,7 +375,6 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
             </div>
           )}
         </div>
-      </div>
     </div>
   );
 }

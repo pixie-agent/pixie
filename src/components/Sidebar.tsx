@@ -15,6 +15,7 @@ interface SidebarProps {
   onSwitchWorkspace: (id: string) => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
+  onOpenSkills: () => void;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -45,6 +46,7 @@ export default function Sidebar({
   onSwitchWorkspace,
   onOpenSettings,
   onOpenTasks,
+  onOpenSkills,
   isOpen,
   onClose,
 }: SidebarProps) {
@@ -206,7 +208,7 @@ export default function Sidebar({
           ))}
         </div>
 
-        {/* Bottom bar: New chat + Settings */}
+        {/* Bottom bar: New Agent / Scheduled Tasks / Skills / Settings */}
         <div className="px-3 py-2 border-t border-[var(--border-color)] space-y-1.5">
           <button
             onClick={onNew}
@@ -216,17 +218,7 @@ export default function Sidebar({
             <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
               <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
             </svg>
-            New Chat
-          </button>
-          <button
-            onClick={onOpenSettings}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M7 9a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" strokeWidth="1.2" fill="none" />
-              <path d="M12.2 7c0-.3 0-.6-.1-.8l1.4-1.1-1.3-2.4-1.7.5c-.4-.3-.9-.6-1.4-.8L8.6.6h-2.8l-.4 1.8c-.5.2-1 .4-1.4.8l-1.7-.5-1.3 2.4 1.4 1.1c-.1.3-.1.6-.1.8s0 .6.1.8l-1.4 1.1 1.3 2.4 1.7-.5c.4.3.9.6 1.4.8l.4 1.8h2.8l.4-1.8c.5-.2 1-.4 1.4-.8l1.7.5 1.3-2.4-1.4-1.1c.1-.3.1-.6.1-.8z" stroke="currentColor" strokeWidth="1" fill="none" />
-            </svg>
-            Settings
+            New Agent
           </button>
           <button
             onClick={onOpenTasks}
@@ -237,6 +229,35 @@ export default function Sidebar({
               <path d="M7 4v3l2 1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             Scheduled Tasks
+          </button>
+          <button
+            onClick={onOpenSkills}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"
+          >
+            {/* Sparkles icon */}
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 3l1.9 4.8L18.7 9.7l-4.8 1.9L12 16.4l-1.9-4.8L5.3 9.7l4.8-1.9L12 3z" />
+            </svg>
+            Skills
+          </button>
+          <button
+            onClick={onOpenSettings}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 9a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" strokeWidth="1.2" fill="none" />
+              <path d="M12.2 7c0-.3 0-.6-.1-.8l1.4-1.1-1.3-2.4-1.7.5c-.4-.3-.9-.6-1.4-.8L8.6.6h-2.8l-.4 1.8c-.5.2-1 .4-1.4.8l-1.7-.5-1.3 2.4 1.4 1.1c-.1.3-.1.6-.1.8s0 .6.1.8l-1.4 1.1 1.3 2.4 1.7-.5c.4.3.9.6 1.4.8l.4 1.8h2.8l.4-1.8c.5-.2 1-.4 1.4-.8l1.7.5 1.3-2.4-1.4-1.1c.1-.3.1-.6.1-.8z" stroke="currentColor" strokeWidth="1" fill="none" />
+            </svg>
+            Settings
           </button>
         </div>
       </aside>

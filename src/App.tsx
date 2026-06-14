@@ -53,10 +53,10 @@ function ClaudeNotAvailable({ status, onRetry }: { status: import("./types").Cla
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
-  const [tasksOpen, setTasksOpen] = useState(false);
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
+  // Which full-page view the main column shows. The sidebar buttons switch
+  // this; New Agent / selecting a conversation returns to "chat".
+  const [mainView, setMainView] = useState<"chat" | "tasks" | "skills" | "settings">("chat");
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const stored = localStorage.getItem("agent-cli-theme");
     return (stored as "dark" | "light") ?? "dark";
@@ -73,6 +73,10 @@ export default function App() {
     }
   });
   const [skills, setSkills] = useState<SkillEntry[]>([]);
+  // Composer draft lives here so InputBar stays controlled; `composerRef` lets
+  // the ✨ skill picker refocus the input after inserting an invocation.
+  const [draft, setDraft] = useState("");
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const {
     conversations,
@@ -161,6 +165,7 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "n") {
         e.preventDefault();
+        setMainView("chat");
         createConversation();
       }
       if (e.key === "Escape" && isGenerating) {
@@ -173,7 +178,7 @@ export default function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key === ",") {
         e.preventDefault();
-        setSettingsOpen((prev) => !prev);
+        setMainView((prev) => (prev === "settings" ? "chat" : "settings"));
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -201,125 +206,127 @@ export default function App() {
         activeWorkspaceId={activeWorkspaceId}
         activeId={activeId}
         generatingIds={generatingIds}
-        onSelect={switchConversation}
-        onNew={createConversation}
+        onSelect={(id) => {
+          setMainView("chat");
+          switchConversation(id);
+        }}
+        onNew={() => {
+          setMainView("chat");
+          createConversation();
+        }}
         onDelete={deleteConversation}
         onAddWorkspace={addWorkspace}
         onRemoveWorkspace={removeWorkspace}
         onSwitchWorkspace={switchWorkspace}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenTasks={() => setTasksOpen(true)}
+        onOpenSettings={() => setMainView("settings")}
+        onOpenTasks={() => setMainView("tasks")}
+        onOpenSkills={() => setMainView("skills")}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-primary)]">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setSidebarOpen((prev) => !prev)}
-              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-              title="Toggle sidebar (Ctrl+B)"
-            >
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            </button>
-            <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
-              {activeConversation?.title ?? "Pixie"}
-            </h1>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setMarketplaceOpen(true)}
-              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-              title="Skills marketplace"
-            >
-              {/* Store icon */}
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 9l1.5-5h15L21 9" />
-                <path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9" />
-                <path d="M9 13h6" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setFileExplorerOpen((prev) => !prev)}
-              disabled={!activeWorkspace}
-              className={`p-1.5 rounded-lg transition-colors ${
-                fileExplorerOpen
-                  ? "bg-[var(--bg-tertiary)] text-[var(--accent)]"
-                  : "hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
-              } disabled:opacity-30 disabled:cursor-not-allowed`}
-              title={activeWorkspace ? "Toggle preview panel" : "Add a workspace first"}
-            >
-              {/* Right side-panel toggle */}
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
-                <line x1="13" y1="4" x2="13" y2="16" stroke="currentColor" strokeWidth="1.5" />
-              </svg>
-            </button>
-          </div>
-        </header>
+        {mainView === "chat" && (
+          <>
+            {/* Header */}
+            <header className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-primary)]">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setSidebarOpen((prev) => !prev)}
+                  className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+                  title="Toggle sidebar (Ctrl+B)"
+                >
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
+                  {activeConversation?.title ?? "Pixie"}
+                </h1>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setFileExplorerOpen((prev) => !prev)}
+                  disabled={!activeWorkspace}
+                  className={`p-1.5 rounded-lg transition-colors ${
+                    fileExplorerOpen
+                      ? "bg-[var(--bg-tertiary)] text-[var(--accent)]"
+                      : "hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
+                  } disabled:opacity-30 disabled:cursor-not-allowed`}
+                  title={activeWorkspace ? "Toggle preview panel" : "Add a workspace first"}
+                >
+                  {/* Right side-panel toggle */}
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                    <line x1="13" y1="4" x2="13" y2="16" stroke="currentColor" strokeWidth="1.5" />
+                  </svg>
+                </button>
+              </div>
+            </header>
 
-        {error && (
-          <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-center justify-between">
-            <span>{error}</span>
-            <button onClick={clearError} className="text-red-400 hover:text-red-200 transition-colors">Dismiss</button>
-          </div>
+            {error && (
+              <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-center justify-between">
+                <span>{error}</span>
+                <button onClick={clearError} className="text-red-400 hover:text-red-200 transition-colors">Dismiss</button>
+              </div>
+            )}
+
+            <ChatView conversation={activeConversation} isGenerating={isGenerating} />
+
+            <InputBar
+              onSend={sendMessage}
+              onStop={() => stopGeneration()}
+              isGenerating={isGenerating}
+              disabled={!activeWorkspace}
+              disabledHint="Add a workspace to start chatting"
+              value={draft}
+              onChange={setDraft}
+              textareaRef={composerRef}
+              skills={skills}
+            />
+          </>
         )}
 
-        <ChatView conversation={activeConversation} isGenerating={isGenerating} />
+        {mainView === "tasks" && (
+          <ScheduledTasksPanel
+            workspaces={workspaces}
+            tasks={scheduledTasks}
+            runs={taskRuns}
+            onCreate={createTask}
+            onUpdate={updateTask}
+            onDelete={deleteTask}
+            onToggle={toggleTask}
+            onRunNow={runTaskNow}
+            onClose={() => setMainView("chat")}
+          />
+        )}
 
-        <InputBar
-          onSend={sendMessage}
-          onStop={() => stopGeneration()}
-          isGenerating={isGenerating}
-          disabled={!activeWorkspace}
-          disabledHint="Add a workspace to start chatting"
-          skills={skills}
-        />
+        {mainView === "skills" && (
+          <MarketplacePanel
+            onClose={() => setMainView("chat")}
+            onSkillsChanged={reloadSkills}
+          />
+        )}
+
+        {mainView === "settings" && (
+          <Settings
+            claudeStatus={claudeStatus}
+            onRefreshStatus={refreshClaudeStatus}
+            theme={theme}
+            onThemeChange={handleThemeChange}
+            onClose={() => setMainView("chat")}
+            systemPrompt={systemPrompt}
+            onSystemPromptChange={handleSystemPromptChange}
+            modelConfig={modelConfig}
+            onModelConfigChange={handleModelConfigChange}
+          />
+        )}
       </div>
-
-      {settingsOpen && (
-        <Settings
-          claudeStatus={claudeStatus}
-          onRefreshStatus={refreshClaudeStatus}
-          theme={theme}
-          onThemeChange={handleThemeChange}
-          onClose={() => setSettingsOpen(false)}
-          systemPrompt={systemPrompt}
-          onSystemPromptChange={handleSystemPromptChange}
-          modelConfig={modelConfig}
-          onModelConfigChange={handleModelConfigChange}
-        />
-      )}
 
       {fileExplorerOpen && activeWorkspace?.path && (
         <FileExplorer
           workspacePath={activeWorkspace.path}
           onClose={() => setFileExplorerOpen(false)}
-        />
-      )}
-
-      {tasksOpen && (
-        <ScheduledTasksPanel
-          workspaces={workspaces}
-          tasks={scheduledTasks}
-          runs={taskRuns}
-          onCreate={createTask}
-          onUpdate={updateTask}
-          onDelete={deleteTask}
-          onToggle={toggleTask}
-          onRunNow={runTaskNow}
-          onClose={() => setTasksOpen(false)}
-        />
-      )}
-
-      {marketplaceOpen && (
-        <MarketplacePanel
-          onClose={() => setMarketplaceOpen(false)}
-          onSkillsChanged={reloadSkills}
         />
       )}
     </div>
