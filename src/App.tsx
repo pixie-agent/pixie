@@ -9,7 +9,7 @@ import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import FileExplorer from "./components/RightPanel";
 import { useChat } from "./hooks/useChat";
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
-import type { ModelConfig, SkillEntry, TaskRunRecord } from "./types";
+import type { ModelConfig, PreviewRequest, PreviewTarget, SkillEntry, TaskRunRecord } from "./types";
 
 function SplashScreen() {
   return (
@@ -54,6 +54,8 @@ function ClaudeNotAvailable({ status, onRetry }: { status: import("./types").Cla
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
+  // Externally-requested preview target (a path/URL clicked in a chat message).
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   // Which full-page view the main column shows. The sidebar buttons switch
   // this; New Agent / selecting a conversation returns to "chat".
   const [mainView, setMainView] = useState<"chat" | "tasks" | "skills" | "settings">("chat");
@@ -190,6 +192,18 @@ export default function App() {
   const handleSystemPromptChange = useCallback((prompt: string) => setSystemPrompt(prompt), []);
   const handleModelConfigChange = useCallback((c: ModelConfig) => setModelConfig(c), []);
 
+  // Open a file path or URL in the right-side preview panel (clicked in a chat
+  // message). The nonce lets the same target be re-opened.
+  const handleOpenPreview = useCallback((t: PreviewRequest) => {
+    const nonce = Date.now();
+    setPreviewTarget(
+      t.kind === "file"
+        ? { kind: "file", path: t.path, nonce }
+        : { kind: "url", url: t.url, nonce }
+    );
+    setFileExplorerOpen(true);
+  }, []);
+
   // Show splash while loading
   if (claudeStatus === null) {
     return <SplashScreen />;
@@ -272,7 +286,7 @@ export default function App() {
               </div>
             )}
 
-            <ChatView conversation={activeConversation} isGenerating={isGenerating} />
+            <ChatView conversation={activeConversation} isGenerating={isGenerating} onOpenPreview={handleOpenPreview} />
 
             <InputBar
               onSend={sendMessage}
@@ -343,6 +357,7 @@ export default function App() {
       {fileExplorerOpen && activeWorkspace?.path && (
         <FileExplorer
           workspacePath={activeWorkspace.path}
+          previewTarget={previewTarget}
           onClose={() => setFileExplorerOpen(false)}
         />
       )}

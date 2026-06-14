@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef, useState, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
-import type { Conversation } from "../types";
+import type { Conversation, PreviewRequest } from "../types";
 
 interface ChatViewProps {
   conversation: Conversation | null;
   isGenerating: boolean;
+  onOpenPreview: (t: PreviewRequest) => void;
 }
 
 function TypingIndicator() {
@@ -72,7 +73,7 @@ function WelcomeScreen() {
   );
 }
 
-export default function ChatView({ conversation, isGenerating }: ChatViewProps) {
+export default function ChatView({ conversation, isGenerating, onOpenPreview }: ChatViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Previous message count — used to detect when the user sends a new turn.
   const prevCountRef = useRef(0);
@@ -136,7 +137,7 @@ export default function ChatView({ conversation, isGenerating }: ChatViewProps) 
       >
         <div className="max-w-3xl mx-auto">
           {conversation.messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
+            <MessageBubble key={msg.id} message={msg} onOpenPreview={onOpenPreview} />
           ))}
 
           {/* Show typing indicator when the last message is a user message and we're generating */}

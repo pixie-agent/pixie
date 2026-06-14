@@ -161,6 +161,14 @@ export interface PluginCatalog {
   available: PluginInfo[];
 }
 
+/** A preview-open request (what callers pass to the handler). */
+export type PreviewRequest =
+  | { kind: "file"; path: string }
+  | { kind: "url"; url: string };
+
+/** PreviewRequest plus a nonce so the panel can re-open the same target. */
+export type PreviewTarget = PreviewRequest & { nonce: number };
+
 // ---------------------------------------------------------------------------
 // Scheduled tasks
 // ---------------------------------------------------------------------------

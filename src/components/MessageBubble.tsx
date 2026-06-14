@@ -3,10 +3,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { Message, MessageUsage, ToolStep } from "../types";
+import type { Message, MessageUsage, PreviewRequest, ToolStep } from "../types";
+import { isPreviewableFile } from "../preview";
 
 interface MessageBubbleProps {
   message: Message;
+  onOpenPreview: (t: PreviewRequest) => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -23,6 +25,35 @@ function CopyButton({ text }: { text: string }) {
     <button onClick={handleCopy} className="copy-code-btn">
       {copied ? "Copied" : "Copy"}
     </button>
+  );
+}
+
+/** Inline `<code>` that opens a file path or URL in the right preview when it's
+ *  something we can preview; otherwise renders as plain inert code. */
+function OpenableCode({
+  value,
+  kind,
+  onOpenPreview,
+}: {
+  value: string;
+  kind: "file" | "url";
+  onOpenPreview: (t: PreviewRequest) => void;
+}) {
+  if (!value || (kind === "file" && !isPreviewableFile(value))) {
+    return <code>{value}</code>;
+  }
+  return (
+    <code
+      title="Open in preview"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpenPreview(kind === "url" ? { kind: "url", url: value } : { kind: "file", path: value });
+      }}
+      className="cursor-pointer hover:underline"
+      style={{ color: "var(--accent)" }}
+    >
+      {value}
+    </code>
   );
 }
 
@@ -70,7 +101,7 @@ function taskStatusChip(status: string): ReactNode {
  * tool ships an explicit `description`; we surface that as the purpose so the
  * transcript reads as a reasoning trace rather than a bare command.
  */
-function describeTool(step: ToolStep): { label: string; target?: string } {
+function describeTool(step: ToolStep): { label: string; target?: string; open?: { kind: "file" | "url"; value: string } } {
   const input = (step.input ?? null) as Record<string, unknown> | null;
   const pick = (...keys: string[]): string | undefined => {
     for (const k of keys) {
@@ -79,21 +110,23 @@ function describeTool(step: ToolStep): { label: string; target?: string } {
     }
     return undefined;
   };
+  const fileOpen = (v?: string) => (v ? { kind: "file" as const, value: v } : undefined);
+  const urlOpen = (v?: string) => (v ? { kind: "url" as const, value: v } : undefined);
   const n = step.name.toLowerCase();
   const purpose = pick("description", "reason");
 
   switch (n) {
     case "bash":         return { label: purpose ?? "Run command",       target: pick("command") };
-    case "read":         return { label: "Read file",                    target: pick("file_path") };
-    case "edit":         return { label: "Edit file",                    target: pick("file_path") };
-    case "multiedit":    return { label: "Edit file",                    target: pick("file_path") };
-    case "write":        return { label: "Write file",                   target: pick("file_path") };
-    case "notebookedit": return { label: "Edit notebook",                target: pick("notebook_path") };
+    case "read":         return { label: "Read file",                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "edit":         return { label: "Edit file",                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "multiedit":    return { label: "Edit file",                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "write":        return { label: "Write file",                   target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "notebookedit": return { label: "Edit notebook",                target: pick("notebook_path"), open: fileOpen(pick("notebook_path")) };
     case "glob":         return { label: "Find files",                   target: pick("pattern") };
     case "grep":         return { label: "Search code",                  target: pick("pattern") };
     case "task":
     case "agent":        return { label: purpose ?? "Delegate to agent", target: pick("description", "prompt") };
-    case "webfetch":     return { label: "Fetch URL",                    target: pick("url") };
+    case "webfetch":     return { label: "Fetch URL",                    target: pick("url"), open: urlOpen(pick("url")) };
     case "websearch":    return { label: "Web search",                   target: pick("query") };
     case "taskcreate":   return { label: "Create task",                  target: pick("subject") };
     case "taskupdate": {
@@ -227,7 +260,7 @@ function diffStats(step: ToolStep): { added: number; removed: number } | null {
  * Structured preview of a tool's INPUT, shown while the step is running so the
  * user can watch what it is about to do (command, target file, search pattern…).
  */
-function renderToolInput(step: ToolStep): ReactNode {
+function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => void): ReactNode {
   const input = (step.input ?? null) as Record<string, unknown> | null;
   if (!input) return <span className="tool-field-empty">starting…</span>;
 
@@ -249,11 +282,11 @@ function renderToolInput(step: ToolStep): ReactNode {
   if (n === "bash") {
     push("command", <code>{str("command")}</code>);
   } else if (n === "read") {
-    push("file", <code>{str("file_path")}</code>);
+    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     if (num("offset") != null) push("offset", String(num("offset")));
     if (num("limit") != null) push("limit", String(num("limit")));
   } else if (n === "edit") {
-    push("file", <code>{str("file_path")}</code>);
+    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     const oldS = str("old_string");
     const newS = str("new_string");
     if (oldS != null && newS != null) {
@@ -262,7 +295,7 @@ function renderToolInput(step: ToolStep): ReactNode {
       push("new", truncateText(newS, 200));
     }
   } else if (n === "multiedit") {
-    push("file", <code>{str("file_path")}</code>);
+    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     const edits = input.edits;
     if (Array.isArray(edits)) {
       edits.forEach((e, idx) => {
@@ -281,7 +314,7 @@ function renderToolInput(step: ToolStep): ReactNode {
       });
     }
   } else if (n === "write") {
-    push("file", <code>{str("file_path")}</code>);
+    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     const content = str("content");
     if (content) {
       const lines = content.split("\n");
@@ -308,7 +341,7 @@ function renderToolInput(step: ToolStep): ReactNode {
     const prompt = str("prompt");
     if (prompt) push("prompt", truncateText(prompt, 160));
   } else if (n === "webfetch") {
-    push("url", <code>{str("url")}</code>);
+    push("url", <OpenableCode value={str("url") ?? ""} kind="url" onOpenPreview={onOpenPreview} />);
     if (str("prompt")) push("prompt", str("prompt"));
   } else if (n === "websearch") {
     push("query", <code>{str("query")}</code>);
@@ -334,7 +367,7 @@ function renderToolInput(step: ToolStep): ReactNode {
   return <div className="tool-fields">{rows}</div>;
 }
 
-function ToolStepCard({ step }: { step: ToolStep }) {
+function ToolStepCard({ step, onOpenPreview }: { step: ToolStep; onOpenPreview: (t: PreviewRequest) => void }) {
   // Convention: a running step is expanded (watch it work); once it has a
   // result it auto-collapses to keep the transcript readable. The user can
   // still click any card to expand/collapse manually.
@@ -346,7 +379,7 @@ function ToolStepCard({ step }: { step: ToolStep }) {
     setOpen(step.status === "running");
   }, [step.status]);
 
-  const { label, target } = describeTool(step);
+  const { label, target, open: openable } = describeTool(step);
   const diffStat = useMemo(() => diffStats(step), [step.name, step.input]);
   const isRunning = step.status === "running";
   const hasResult = Boolean(step.result);
@@ -365,7 +398,7 @@ function ToolStepCard({ step }: { step: ToolStep }) {
   const hasBody = isRunning || hasResult;
 
   const body = showInput ? (
-    renderToolInput(step)
+    renderToolInput(step, onOpenPreview)
   ) : (
     <pre className={`tool-detail${step.status === "error" ? " tool-detail--error" : ""}`}>
       {step.result}
@@ -384,7 +417,27 @@ function ToolStepCard({ step }: { step: ToolStep }) {
       >
         <span className="tool-icon">{iconForTool(step.name)}</span>
         <span className="tool-purpose">{label}</span>
-        {target && <span className="tool-target" title={target}>{target}</span>}
+        {target && (
+          openable && (openable.kind === "url" || isPreviewableFile(openable.value)) ? (
+            <span
+              className="tool-target"
+              title="Open in preview"
+              style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenPreview(
+                  openable.kind === "url"
+                    ? { kind: "url", url: openable.value }
+                    : { kind: "file", path: openable.value }
+                );
+              }}
+            >
+              {target}
+            </span>
+          ) : (
+            <span className="tool-target" title={target}>{target}</span>
+          )
+        )}
         {diffStat && (diffStat.added > 0 || diffStat.removed > 0) && (
           <span
             className="tool-diff-stat"
@@ -407,7 +460,7 @@ function ToolStepCard({ step }: { step: ToolStep }) {
   );
 }
 
-function ToolActivity({ tools }: { tools: ToolStep[] }) {
+function ToolActivity({ tools, onOpenPreview }: { tools: ToolStep[]; onOpenPreview: (t: PreviewRequest) => void }) {
   if (!tools || tools.length === 0) return null;
   const running = tools.filter((t) => t.status === "running").length;
   const done = tools.filter((t) => t.status === "done").length;
@@ -427,7 +480,7 @@ function ToolActivity({ tools }: { tools: ToolStep[] }) {
         )}
       </div>
       {tools.map((step) => (
-        <ToolStepCard key={step.id} step={step} />
+        <ToolStepCard key={step.id} step={step} onOpenPreview={onOpenPreview} />
       ))}
     </div>
   );
@@ -536,7 +589,7 @@ function UsageStats({ usage }: { usage: MessageUsage }) {
   );
 }
 
-export default function MessageBubble({ message }: MessageBubbleProps) {
+export default function MessageBubble({ message, onOpenPreview }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const time = new Date(message.timestamp).toLocaleTimeString([], {
     hour: "2-digit",
@@ -561,7 +614,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
         ) : (
           <>
             {message.tools && message.tools.length > 0 && (
-              <ToolActivity tools={message.tools} />
+              <ToolActivity tools={message.tools} onOpenPreview={onOpenPreview} />
             )}
 
             <ThinkingCard message={message} />
@@ -574,6 +627,24 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
+                a({ href, children, ...props }) {
+                  if (typeof href === "string" && /^https?:\/\//i.test(href)) {
+                    return (
+                      <a
+                        href={href}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onOpenPreview({ kind: "url", url: href });
+                        }}
+                        className="text-[var(--accent)] hover:underline"
+                        {...props}
+                      >
+                        {children}
+                      </a>
+                    );
+                  }
+                  return <a href={href} {...props}>{children}</a>;
+                },
                 code({ className, children, ...props }) {
                   const match = /language-(\w+)/.exec(className || "");
                   const codeString = String(children).replace(/\n$/, "");

@@ -4,32 +4,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { FileEntry } from "../types";
+import type { FileEntry, PreviewTarget } from "../types";
+import { getExtension, PREVIEW_EXTENSIONS, IMAGE_EXTENSIONS, basename } from "../preview";
 import Terminal from "./Terminal";
 
 interface RightPanelProps {
   workspacePath: string;
+  previewTarget: PreviewTarget | null;
   onClose: () => void;
 }
 
 type Tab = "files" | "preview" | "git" | "browser" | "terminal";
-
-function getExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  if (dot === -1) return "";
-  return name.slice(dot + 1).toLowerCase();
-}
-
-const PREVIEW_EXTENSIONS = new Set([
-  "txt", "md", "markdown", "html", "htm", "css", "js", "jsx", "ts", "tsx",
-  "json", "yaml", "yml", "toml", "xml", "svg", "csv", "log", "env",
-  "rs", "py", "go", "java", "c", "cpp", "h", "hpp", "rb", "php",
-  "sh", "bash", "zsh", "fish", "sql", "graphql", "vue", "svelte",
-  "ini", "cfg", "conf", "gitignore", "dockerfile", "makefile",
-  "lock", "editorconfig",
-]);
-
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp"]);
 
 const CODE_EXTENSIONS = new Set([
   "js", "jsx", "ts", "tsx", "rs", "py", "go", "java", "c", "cpp", "h", "hpp",
@@ -53,7 +38,7 @@ function languageFromExt(ext: string): string {
   return map[ext] ?? ext;
 }
 
-export default function RightPanel({ workspacePath, onClose }: RightPanelProps) {
+export default function RightPanel({ workspacePath, previewTarget, onClose }: RightPanelProps) {
   const [tab, setTab] = useState<Tab>("files");
   const [currentPath, setCurrentPath] = useState(workspacePath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -126,6 +111,25 @@ export default function RightPanel({ workspacePath, onClose }: RightPanelProps) 
       setPreviewContent(`Failed to read file: ${e}`);
     } finally { setPreviewLoading(false); }
   }, []);
+
+  const openUrl = useCallback((url: string) => {
+    setBrowserUrl(url);
+    setIframeUrl(url);
+    setTab("browser");
+  }, []);
+
+  // React to an externally-requested preview target (a file path or URL clicked
+  // in a chat message). Keyed on `previewTarget` (which carries a nonce) so the
+  // same target can be re-opened.
+  useEffect(() => {
+    if (!previewTarget) return;
+    if (previewTarget.kind === "file") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- legitimate: drive panel state from an external prop
+      openPreview({ name: basename(previewTarget.path), path: previewTarget.path, is_dir: false, size: 0 });
+    } else {
+      openUrl(previewTarget.url);
+    }
+  }, [previewTarget, openPreview, openUrl]);
 
   const viewCommitDiff = async (commit: string) => {
     setSelectedCommit(commit);
