@@ -276,7 +276,7 @@ export default function InputBar({
               onClick={handlePickFiles}
               disabled={disabled || isGenerating}
               title="Attach files"
-              className="shrink-0 flex items-center justify-center w-9 h-9 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors self-end mb-0.5"
+              className="shrink-0 flex items-center justify-center w-9 h-9 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors self-center"
             >
               {/* Paperclip icon */}
               <svg
@@ -297,7 +297,7 @@ export default function InputBar({
               onClick={toggleDropdown}
               disabled={disabled || isGenerating}
               title="Browse skills"
-              className="shrink-0 flex items-center justify-center w-9 h-9 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors self-end mb-0.5"
+              className="shrink-0 flex items-center justify-center w-9 h-9 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors self-center"
             >
               {/* Sparkles icon */}
               <svg
@@ -327,7 +327,7 @@ export default function InputBar({
               }
               disabled={disabled || isGenerating}
               rows={1}
-              className="flex-1 bg-transparent text-[var(--text-primary)] placeholder-[var(--text-secondary)] resize-none outline-none text-sm leading-6 py-0.5 max-h-[192px]"
+              className="flex-1 self-center bg-transparent text-[var(--text-primary)] placeholder-[var(--text-secondary)] resize-none outline-none text-sm leading-6 py-0.5 max-h-[192px]"
             />
 
             {isGenerating ? (
