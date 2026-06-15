@@ -300,6 +300,7 @@ export default function App() {
               onChange={setDraft}
               textareaRef={composerRef}
               skills={skills}
+              workspacePath={activeWorkspace?.path ?? null}
             />
           </>
         )}

@@ -902,6 +902,16 @@ async fn select_workspace(
     }
 }
 
+/// Open a multi-select file picker and return the chosen absolute paths.
+/// Used by the composer's "attach file" button. Returns `None` if the user
+/// cancelled, otherwise one string per picked file (in selection order).
+#[tauri::command]
+async fn pick_files(app: AppHandle) -> Result<Option<Vec<String>>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let files = app.dialog().file().blocking_pick_files();
+    Ok(files.map(|vec| vec.into_iter().map(|f| f.to_string()).collect()))
+}
+
 #[tauri::command]
 async fn get_workspace(
     app: AppHandle,
@@ -1674,6 +1684,7 @@ pub fn run() {
             pty_kill,
             stop_generation,
             select_workspace,
+            pick_files,
             get_workspace,
             set_active_workspace,
             get_conversations,
