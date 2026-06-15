@@ -369,16 +369,14 @@ export default function App() {
       </div>
 
       {/* The right panel stays mounted while a workspace is active and is just
-          hidden via `display` when closed, so its state (open tab, file path,
-          preview, browser URL, terminal session, width) survives close/reopen.
-          Keying by workspace path resets it cleanly when switching workspaces. */}
+          hidden via `display` when closed, so its state survives close/reopen.
+          It is NOT keyed by workspace, so the per-workspace terminals mounted
+          inside it also persist across workspace switches. */}
       {activeWorkspace?.path && (
         <div className="h-full" style={{ display: fileExplorerOpen ? "block" : "none" }}>
           <FileExplorer
-            key={activeWorkspace.path}
             workspacePath={activeWorkspace.path}
             previewTarget={previewTarget}
-            onClose={() => setFileExplorerOpen(false)}
           />
         </div>
       )}
