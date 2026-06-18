@@ -76,6 +76,8 @@ export default function InputBar({
    *  appended to the message so Claude Code pulls them in as context. */
   const [attachments, setAttachments] = useState<string[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const skillsWrapperRef = useRef<HTMLDivElement>(null);
+  const modelWrapperRef = useRef<HTMLDivElement>(null);
 
   // Close any open dropdown the moment the input becomes disabled (e.g. the
   // active workspace is removed). Adjusting state during render avoids a
@@ -199,8 +201,10 @@ export default function InputBar({
   // Close the skills dropdown when clicking outside of it.
   useEffect(() => {
     if (!dropdownOpen) return;
-    const onDown = (e: MouseEvent | PointerEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      // Close if click is outside the skills dropdown wrapper
+      if (skillsWrapperRef.current && !skillsWrapperRef.current.contains(target)) {
         setDropdownOpen(false);
       }
     };
@@ -216,8 +220,9 @@ export default function InputBar({
   // Close the model dropdown when clicking outside of it.
   useEffect(() => {
     if (!modelDropdownOpen) return;
-    const onDown = (e: MouseEvent | PointerEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (modelWrapperRef.current && !modelWrapperRef.current.contains(target)) {
         setModelDropdownOpen(false);
         setCustomModelInput("");
       }
@@ -387,7 +392,7 @@ export default function InputBar({
           </button>
 
           {/* Skills button + dropdown */}
-          <div className="relative">
+          <div ref={skillsWrapperRef} className="relative">
             <button
               type="button"
               onClick={toggleDropdown}
@@ -410,7 +415,7 @@ export default function InputBar({
 
           {/* Model button + dropdown */}
           {engine && (
-            <div className="relative">
+            <div ref={modelWrapperRef} className="relative">
               <button
                 type="button"
                 onClick={() => { if (!isGenerating) setModelDropdownOpen((v) => !v); }}
