@@ -199,26 +199,36 @@ export default function InputBar({
   // Close the skills dropdown when clicking outside of it.
   useEffect(() => {
     if (!dropdownOpen) return;
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: MouseEvent | PointerEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
       }
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("pointerdown", onDown);
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener("pointerdown", onDown);
+    };
   }, [dropdownOpen]);
 
   // Close the model dropdown when clicking outside of it.
   useEffect(() => {
     if (!modelDropdownOpen) return;
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: MouseEvent | PointerEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setModelDropdownOpen(false);
         setCustomModelInput("");
       }
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("pointerdown", onDown);
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener("pointerdown", onDown);
+    };
   }, [modelDropdownOpen]);
 
   // Fetch available models lazily — only when the model dropdown opens.
