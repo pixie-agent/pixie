@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { memo, useState, useEffect, useCallback, useRef, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -37,7 +37,77 @@ function languageFromExt(ext: string): string {
   return map[ext] ?? ext;
 }
 
-export default function RightPanel({ workspacePath, previewTarget }: RightPanelProps) {
+// Hoisted to module scope for stable identity across renders — a prerequisite
+// for the memo()d highlighters below to skip re-tokenizing large content when
+// the panel re-renders for an unrelated reason (e.g. dragging the resize
+// handle, which flips `width` state ~60×/s, or re-selecting a git commit).
+const PREVIEW_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: 0, fontSize: "0.75rem", flex: 1 };
+const DIFF_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: 0, fontSize: "0.7rem" };
+const MD_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: "0.5rem", fontSize: "0.75rem" };
+const REMARK_PLUGINS = [remarkGfm];
+
+interface CodeBlockProps {
+  code: string;
+  language: string;
+  showLineNumbers?: boolean;
+  wrapLines?: boolean;
+  customStyle?: CSSProperties;
+}
+
+// Prism tokenizes the entire string on every render — expensive for a large
+// file or diff. Memoize so re-renders that leave code/language unchanged
+// (resize drag, commit selection, tab re-entry) skip re-tokenizing.
+const CodeBlock = memo(function CodeBlock({
+  code,
+  language,
+  showLineNumbers,
+  wrapLines,
+  customStyle,
+}: CodeBlockProps) {
+  return (
+    <SyntaxHighlighter
+      style={oneDark}
+      language={language}
+      showLineNumbers={showLineNumbers}
+      wrapLines={wrapLines}
+      customStyle={customStyle}
+    >
+      {code}
+    </SyntaxHighlighter>
+  );
+});
+
+// Memoize the whole markdown render so resize-drag (which re-renders the
+// panel) doesn't re-parse markdown and re-tokenize every fenced code block.
+// Only re-runs when the file content actually changes.
+const MarkdownView = memo(function MarkdownView({ content }: { content: string }) {
+  return (
+    <div className="p-4 prose prose-sm prose-invert max-w-none">
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || "");
+            const codeStr = String(children).replace(/\n$/, "");
+            if (match) {
+              return (
+                <SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div"
+                  customStyle={MD_CODE_STYLE}>
+                  {codeStr}
+                </SyntaxHighlighter>
+              );
+            }
+            return <code className="bg-[var(--bg-tertiary)] px-1 py-0.5 rounded text-xs" {...props}>{children}</code>;
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
+function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [tab, setTab] = useState<Tab>("files");
   const [currentPath, setCurrentPath] = useState(workspacePath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -325,38 +395,15 @@ export default function RightPanel({ workspacePath, previewTarget }: RightPanelP
                         className="max-w-full max-h-full object-contain rounded" />
                     </div>
                   ) : ext === "md" || ext === "markdown" ? (
-                    <div className="p-4 prose prose-sm prose-invert max-w-none">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          code({ className, children, ...props }) {
-                            const match = /language-(\w+)/.exec(className || "");
-                            const codeStr = String(children).replace(/\n$/, "");
-                            if (match) {
-                              return (
-                                <SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div"
-                                  customStyle={{ margin: 0, borderRadius: "0.5rem", fontSize: "0.75rem" }}>
-                                  {codeStr}
-                                </SyntaxHighlighter>
-                              );
-                            }
-                            return <code className="bg-[var(--bg-tertiary)] px-1 py-0.5 rounded text-xs" {...props}>{children}</code>;
-                          },
-                        }}
-                      >
-                        {previewContent ?? ""}
-                      </ReactMarkdown>
-                    </div>
+                    <MarkdownView content={previewContent ?? ""} />
                   ) : CODE_EXTENSIONS.has(ext) ? (
-                    <SyntaxHighlighter
-                      style={oneDark}
+                    <CodeBlock
+                      code={previewContent ?? ""}
                       language={languageFromExt(ext)}
                       showLineNumbers
                       wrapLines
-                      customStyle={{ margin: 0, borderRadius: 0, fontSize: "0.75rem", flex: 1 }}
-                    >
-                      {previewContent ?? ""}
-                    </SyntaxHighlighter>
+                      customStyle={PREVIEW_CODE_STYLE}
+                    />
                   ) : ext === "html" || ext === "htm" ? (
                     <iframe srcDoc={previewContent ?? ""}
                       className="w-full h-full border-0 bg-white" sandbox="allow-scripts" />
@@ -423,10 +470,8 @@ export default function RightPanel({ workspacePath, previewTarget }: RightPanelP
                         </svg>
                       </button>
                     </div>
-                    <SyntaxHighlighter style={oneDark} language="diff" showLineNumbers={false}
-                      customStyle={{ margin: 0, borderRadius: 0, fontSize: "0.7rem" }}>
-                      {gitDiff}
-                    </SyntaxHighlighter>
+                    <CodeBlock code={gitDiff} language="diff" showLineNumbers={false}
+                      customStyle={DIFF_CODE_STYLE} />
                   </div>
                 )}
               </>
@@ -455,3 +500,12 @@ export default function RightPanel({ workspacePath, previewTarget }: RightPanelP
     </div>
   );
 }
+
+// Memoize so typing in the composer (which lives in the same AppShell that
+// renders this panel) doesn't re-render the panel — and thus doesn't re-run
+// Prism over a large file preview or git diff — on every keystroke. Both props
+// (workspacePath, previewTarget) are stable across keystrokes, so a shallow
+// memo skips it. Mirrors the memo on MessageBubble for the same reason.
+const RightPanel = memo(RightPanelImpl);
+
+export default RightPanel;
