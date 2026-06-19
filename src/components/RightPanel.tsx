@@ -7,6 +7,7 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { FileEntry, PreviewTarget, DiffViewMode } from "../types";
 import { getExtension, PREVIEW_EXTENSIONS, IMAGE_EXTENSIONS, basename } from "../preview";
 import { languageFromExt } from "../lib/languages";
+import { useDragRegion } from "../hooks/useDragRegion";
 import DiffViewer from "./DiffViewer";
 import Terminal from "./Terminal";
 
@@ -122,6 +123,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [history, setHistory] = useState<string[]>([]);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const isResizing = useRef(false);
+  const handleDragRegion = useDragRegion();
 
   // Preview state
   const [previewFile, setPreviewFile] = useState<FileEntry | null>(null);
@@ -326,6 +328,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                 </button>
               ))}
             </div>
+            <div className="flex-1 h-8" onMouseDown={handleDragRegion} />
           </div>
         </div>
 
