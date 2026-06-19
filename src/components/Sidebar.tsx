@@ -380,8 +380,6 @@ export default function Sidebar({
 
   const isSearching = search.trim().length > 0;
   const newAgentTargetWs = workspaceFilter ?? newAgentWorkspaceOptions[0]?.id ?? null;
-  const isDefaultNewAgentWs = !!defaultWorkspacePath && newAgentTargetWs === defaultWorkspacePath;
-  const newAgentTargetWsLabel = newAgentTargetWs ? workspaceName(workspaces, newAgentTargetWs) : "";
 
   return (
     <>
@@ -591,19 +589,17 @@ export default function Sidebar({
             <button
               type="button"
               onClick={() => onNew({ workspaceId: newAgentTargetWs ?? undefined, engine: defaultEngine })}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               disabled={!newAgentTargetWs}
               title={newAgentTargetWs ? "New agent (defaults)" : "Add a workspace first"}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-                <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
-              </svg>
+              <EngineBadge engine={defaultEngine} tone="onAccent" />
               New Agent
             </button>
             <button
               type="button"
               onClick={() => setNewAgentModalOpen(true)}
-              className="shrink-0 px-2 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-90 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-opacity"
+              className="shrink-0 flex items-center justify-center px-2 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-90 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
               disabled={!newAgentTargetWs}
               title="Advanced options"
             >
@@ -621,17 +617,6 @@ export default function Sidebar({
               </svg>
             </button>
           </div>
-          {newAgentTargetWs && (
-            <div className="text-[10px] text-[var(--text-secondary)] truncate" title={newAgentTargetWs}>
-              <EngineBadge engine={defaultEngine} />
-              {!isDefaultNewAgentWs && (
-                <>
-                  <span className="mx-1">·</span>
-                  {newAgentTargetWsLabel}
-                </>
-              )}
-            </div>
-          )}
           <button
             onClick={onOpenTasks}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"
