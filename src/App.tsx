@@ -5,6 +5,7 @@ import Sidebar from "./components/Sidebar";
 import InputBar from "./components/InputBar";
 import { openExternal } from "./openExternal";
 import { useChat } from "./hooks/useChat";
+import EngineBadge from "./components/EngineBadge";
 
 // Lazy-load heavy panels that aren't needed on initial render or during
 // workspace/conversation switches.  React renders the fallback (loading
@@ -24,7 +25,6 @@ import type {
   TaskRunRecord,
   EngineStatus,
 } from "./types";
-import { AGENT_ENGINES } from "./types";
 import { bootstrap, getConfig, updateConfig } from "./lib/storage";
 
 // Brand mark — same art as the app/README icon.
@@ -311,13 +311,14 @@ function AppShell() {
           setMainView("chat");
           switchConversation(id, workspaceId);
         }}
-        onNew={(workspaceId) => {
+        onNew={(opts) => {
           setMainView("chat");
-          createConversation(workspaceId, defaultEngine);
+          createConversation(opts?.workspaceId, opts?.engine ?? defaultEngine, opts?.model);
         }}
         defaultEngine={defaultEngine}
         onDefaultEngineChange={setDefaultEngine}
         engineStatuses={engineStatuses}
+        engineModelConfigs={engineModelConfigs}
         onDelete={deleteConversation}
         onRename={renameConversation}
         onAddWorkspace={addWorkspace}
@@ -391,19 +392,17 @@ function AppShell() {
                       {activeConversation?.title ?? "Pixie"}
                     </h1>
                   )}
-                  {(activeConversation ||
-                    (activeWorkspace && activeWorkspace.path !== defaultWorkspacePath)) && (
-                    <p className="text-[10px] text-[var(--text-secondary)] truncate" title={activeWorkspace?.path}>
-                      {activeWorkspace && activeWorkspace.path !== defaultWorkspacePath && (
+                  {(activeWorkspace || activeConversation) && (
+                    <p className="text-[10px] text-[var(--text-secondary)] truncate" title={activeWorkspace?.path ?? undefined}>
+                      {activeWorkspace && (
                         <>
                           📁 {activeWorkspace.name}
+                          {defaultWorkspacePath && activeWorkspace.path === defaultWorkspacePath ? " (default)" : ""}
                           {activeConversation && <span className="mx-1">·</span>}
                         </>
                       )}
                       {activeConversation && (
-                        <span className="text-[var(--accent)]/80">
-                          {AGENT_ENGINES.find((e) => e.id === activeConversation.engine)?.label ?? activeConversation.engine}
-                        </span>
+                        <EngineBadge engine={activeConversation.engine} />
                       )}
                     </p>
                   )}

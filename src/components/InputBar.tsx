@@ -110,6 +110,7 @@ export default function InputBar({
   const containerRef = useRef<HTMLDivElement>(null);
   const skillsWrapperRef = useRef<HTMLDivElement>(null);
   const modelWrapperRef = useRef<HTMLDivElement>(null);
+  const modelDropdownListRef = useRef<HTMLDivElement>(null);
 
   // Close any open dropdown the moment the input becomes disabled (e.g. the
   // active workspace is removed). Adjusting state during render avoids a
@@ -307,12 +308,29 @@ export default function InputBar({
     };
   }, [modelDropdownOpen]);
 
+  // Ensure the model dropdown always opens scrolled to the top (avoid focusing
+  // the custom input at the bottom auto-scrolling the list).
+  useEffect(() => {
+    if (!modelDropdownOpen) return;
+    requestAnimationFrame(() => {
+      modelDropdownListRef.current?.scrollTo({ top: 0 });
+    });
+  }, [modelDropdownOpen]);
+
   // Fetch available models lazily — only when the model dropdown opens.
   const fetchModels = useCallback(() => {
     if (!engine) return;
     invoke<ModelEntry[]>("list_models", { engine })
       .then((models) => {
-        setAvailableModels(models);
+        const seen = new Set<string>();
+        const deduped: ModelEntry[] = [];
+        for (const m of models) {
+          const id = (m.id ?? "").trim();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          deduped.push({ ...m, id });
+        }
+        setAvailableModels(deduped);
       })
       .catch(() => {
         setAvailableModels([]);
@@ -321,7 +339,6 @@ export default function InputBar({
 
   useEffect(() => {
     if (modelDropdownOpen && engine) {
-      setCustomModelInput("");
       fetchModels();
     }
   }, [modelDropdownOpen, engine, fetchModels]);
@@ -503,7 +520,14 @@ export default function InputBar({
             <div ref={modelWrapperRef} className="relative">
               <button
                 type="button"
-                onClick={() => { if (!isGenerating) setModelDropdownOpen((v) => !v); }}
+                onClick={() => {
+                  if (isGenerating) return;
+                  setModelDropdownOpen((v) => {
+                    const next = !v;
+                    if (next) setCustomModelInput("");
+                    return next;
+                  });
+                }}
                 disabled={isGenerating}
                 title="Select model"
                 className={`flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] transition-colors ${
@@ -531,7 +555,10 @@ export default function InputBar({
                 </span>
               </button>
               {modelDropdownOpen && (
-                <div className="absolute bottom-full left-0 mb-1 w-52 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 py-1 max-h-64 overflow-y-auto">
+                <div
+                  ref={modelDropdownListRef}
+                  className="absolute bottom-full left-0 mb-1 w-52 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 py-1 max-h-64 overflow-y-auto"
+                >
                   <button
                     type="button"
                     onClick={() => handleSelectModel(undefined)}
@@ -568,7 +595,6 @@ export default function InputBar({
                         }}
                         placeholder="Custom model..."
                         className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-1 text-[var(--text-primary)] placeholder:text-[var(--text-secondary)]/50 outline-none focus:border-[var(--accent)]"
-                        autoFocus
                       />
                       {customModelInput.trim() && (
                         <button

@@ -168,6 +168,31 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     finally { setLoading(false); }
   }, []);
 
+  const shellEscape = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const toAbsPath = (p: string) => {
+    // macOS/Linux absolute, Windows drive absolute, or relative-to-workspace.
+    const isAbsPosix = p.startsWith("/");
+    const isAbsWin = /^[a-zA-Z]:\\/.test(p);
+    if (isAbsPosix || isAbsWin) return p;
+    const ws = workspacePath.endsWith("/") ? workspacePath.slice(0, -1) : workspacePath;
+    return `${ws}/${p.replace(/^\.?\//, "")}`;
+  };
+
+  const revealInFileManager = useCallback(async (path: string) => {
+    try {
+      await invoke<void>("reveal_in_file_manager", { path, workspace_path: workspacePath });
+    } catch (err) {
+      // Most common cause in dev: backend command not registered until tauri restart.
+      // Fall back to a best-effort platform command so the button still works.
+      const abs = toAbsPath(path);
+      try {
+        await invoke<string>("run_command", { command: `open -R ${shellEscape(abs)}`, cwd: workspacePath });
+      } catch (fallbackErr) {
+        console.error("Failed to reveal in file manager", { path, workspacePath, err, fallbackErr });
+      }
+    }
+  }, [workspacePath]);
+
   useEffect(() => { loadDirectory(currentPath); }, [currentPath, loadDirectory]);
 
   // Load git data (status, log, and the uncommitted working-tree diff) when the
@@ -445,13 +470,28 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                       if (entry.is_dir) navigateTo(entry.path);
                       else if (canPreview) openPreview(entry);
                     }}
-                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors ${
+                    className={`group flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors ${
                       entry.is_dir || canPreview ? "cursor-pointer hover:bg-[var(--bg-tertiary)]" : "cursor-default"
                     }`}>
                     <span className="text-base shrink-0">{entry.is_dir ? "📁" : "📄"}</span>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-[var(--text-primary)] truncate">{entry.name}</p>
                     </div>
+                    <button
+                      type="button"
+                      title="在文件管理器中显示"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        void revealInFileManager(entry.path);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-opacity shrink-0"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 4h6l2 2h8v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
+                        <path d="M12 10v6" />
+                        <path d="M9 13l3 3 3-3" />
+                      </svg>
+                    </button>
                     {entry.is_dir
                       ? <span className="text-[10px] text-[var(--text-secondary)] shrink-0">dir</span>
                       : <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0 font-mono">{e || "--"}</span>
@@ -562,7 +602,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                     {!changesCollapsed && (
                       <div className="flex-1 overflow-auto min-h-0">
                         {gitWorkingDiff ? (
-                          <DiffViewer diff={gitWorkingDiff} viewMode={diffViewMode} />
+                          <DiffViewer diff={gitWorkingDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
                         ) : (
                           <p className="px-3 pb-2 text-xs text-[var(--text-secondary)]">No uncommitted changes</p>
                         )}
@@ -570,8 +610,23 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                           <div className="border-t border-[var(--border-color)]">
                             <div className="px-3 py-1 text-[10px] text-[var(--text-secondary)]">Untracked</div>
                             {untracked.map((f, i) => (
-                              <div key={i} className="px-3 py-0.5 text-[11px] font-mono text-[var(--text-secondary)] truncate">
-                                + {f}
+                              <div key={i} className="px-3 py-0.5 flex items-center gap-2 text-[11px] font-mono text-[var(--text-secondary)]">
+                                <span className="flex-1 min-w-0 truncate">+ {f}</span>
+                                <button
+                                  type="button"
+                                  title="在文件管理器中显示"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    void revealInFileManager(f);
+                                  }}
+                                  className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M4 4h6l2 2h8v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
+                                    <path d="M12 10v6" />
+                                    <path d="M9 13l3 3 3-3" />
+                                  </svg>
+                                </button>
                               </div>
                             ))}
                           </div>
@@ -630,7 +685,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                           </svg>
                         </button>
                     </div>
-                    <DiffViewer diff={gitDiff} viewMode={diffViewMode} />
+                    <DiffViewer diff={gitDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
                   </div>
                 )}
               </>

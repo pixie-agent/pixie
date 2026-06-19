@@ -16,6 +16,8 @@ interface DiffViewerProps {
   /** Raw `git diff` unified output. */
   diff: string;
   viewMode: DiffViewMode;
+  /** Called when user wants to reveal a diff file in the OS file manager. */
+  onRevealPath?: (relativePath: string) => void;
 }
 
 const MAX_LINES_PER_FILE = 2000;
@@ -201,7 +203,15 @@ const SplitRow = memo(function SplitRow({ pair, segments }: { pair: SplitPair; s
   );
 });
 
-function DiffFileCard({ file, viewMode }: { file: DiffFile; viewMode: DiffViewMode }) {
+function DiffFileCard({
+  file,
+  viewMode,
+  onRevealPath,
+}: {
+  file: DiffFile;
+  viewMode: DiffViewMode;
+  onRevealPath?: (relativePath: string) => void;
+}) {
   const [collapsed, setCollapsed] = useState(false);
   const meta = STATUS_META[file.status];
 
@@ -313,6 +323,31 @@ function DiffFileCard({ file, viewMode }: { file: DiffFile; viewMode: DiffViewMo
         <span className="text-[11px] text-[var(--text-primary)] truncate flex-1 font-mono">
           {file.path}
         </span>
+        {onRevealPath && (
+          <span
+            role="button"
+            tabIndex={0}
+            title="在文件管理器中显示"
+            className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRevealPath(file.path);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                onRevealPath(file.path);
+              }
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </span>
+        )}
         {file.status === "renamed" && file.oldPath && (
           <span className="text-[10px] text-[var(--text-secondary)] truncate shrink-0">← {file.oldPath}</span>
         )}
@@ -334,7 +369,7 @@ function DiffFileCard({ file, viewMode }: { file: DiffFile; viewMode: DiffViewMo
 
 const DiffFileCardMemo = memo(DiffFileCard);
 
-function DiffViewerImpl({ diff, viewMode }: DiffViewerProps) {
+function DiffViewerImpl({ diff, viewMode, onRevealPath }: DiffViewerProps) {
   const parsed = useMemo(() => parseGitDiff(diff), [diff]);
 
   if (parsed.empty) {
@@ -346,7 +381,7 @@ function DiffViewerImpl({ diff, viewMode }: DiffViewerProps) {
   return (
     <div className="flex flex-col">
       {parsed.files.map((file, i) => (
-        <DiffFileCardMemo key={`${i}:${file.path}`} file={file} viewMode={viewMode} />
+        <DiffFileCardMemo key={`${i}:${file.path}`} file={file} viewMode={viewMode} onRevealPath={onRevealPath} />
       ))}
     </div>
   );

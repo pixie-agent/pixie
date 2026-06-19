@@ -69,6 +69,18 @@ function patchConversation(
   };
 }
 
+function rebuildConversationIndex(
+  all: Record<string, Conversation[]>,
+  index: Map<string, string>,
+): void {
+  index.clear();
+  for (const [wsId, convs] of Object.entries(all)) {
+    for (const c of convs) {
+      index.set(c.id, wsId);
+    }
+  }
+}
+
 /** Coalesce high-frequency stream events before touching React state. */
 interface StreamBatch {
   textParts: { content: string; eventType: string }[];
@@ -353,13 +365,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   useEffect(() => {
     allConversationsRef.current = allConversations;
     // Rebuild the convId → wsId index whenever conversations change.
-    const idx = convIndexRef.current;
-    idx.clear();
-    for (const [wsId, convs] of Object.entries(allConversations)) {
-      for (const c of convs) {
-        idx.set(c.id, wsId);
-      }
-    }
+    rebuildConversationIndex(allConversations, convIndexRef.current);
   }, [allConversations]);
 
   const activeWorkspace = useMemo(() => {
@@ -386,12 +392,13 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
 
   const activeConversation = useMemo(() => {
     if (!activeId) return null;
-    // O(1) lookup via index instead of scanning all conversations.
-    const wsId = convIndexRef.current.get(activeId);
-    if (!wsId) return null;
-    const convs = allConversations[wsId];
-    if (!convs) return null;
-    return convs.find((c) => c.id === activeId) ?? null;
+    // Avoid reading refs during render (eslint react-hooks/refs). Scan the
+    // conversations map to resolve the active conversation.
+    for (const convs of Object.values(allConversations)) {
+      const found = convs.find((c) => c.id === activeId);
+      if (found) return found;
+    }
+    return null;
   }, [activeId, allConversations]);
 
   const isGenerating = activeId ? generatingIds.has(activeId) : false;
@@ -468,6 +475,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
 
       setWorkspaces(wsList);
       setActiveWorkspaceId(activeWorkspaceId);
+      // Keep the convId → wsId index in sync immediately so UI elements that
+      // depend on `activeConversation` (engine/model pickers) render right away.
+      rebuildConversationIndex(conversations, convIndexRef.current);
       setAllConversations(conversations);
 
       const convs = activeWorkspaceId ? (conversations[activeWorkspaceId] ?? []) : [];
@@ -553,6 +563,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   // Listen to Tauri events — route updates by conversation_id, not active workspace.
   useEffect(() => {
     let mounted = true;
+    const batches = streamBatchesRef.current;
 
     async function setup() {
       const u1 = await listen<ResponseChunk>("agent-response", (event) => {
@@ -670,7 +681,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       mounted = false;
       for (const fn of unlistenRefs.current) fn();
       unlistenRefs.current = [];
-      streamBatchesRef.current.clear();
+      batches.clear();
       streamFlushScheduledRef.current = false;
     };
   }, [queueStreamUpdate, flushStreamBatches]);
@@ -726,6 +737,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       engine: engine ?? defaultEngine,
       model,
     };
+    // Sync index immediately so `activeConversation` resolves on the next render.
+    convIndexRef.current.set(id, wsId);
     setAllConversations((prev) => ({
       ...prev,
       [wsId]: [conv, ...(prev[wsId] ?? [])],
@@ -786,6 +799,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     const wsId =
       workspaceId ?? findWorkspaceForConversation(allConversationsRef.current, id, convIndexRef);
     if (!wsId) return;
+    convIndexRef.current.delete(id);
     setAllConversations((prev) => ({
       ...prev,
       [wsId]: (prev[wsId] ?? []).filter((c) => c.id !== id),
@@ -815,6 +829,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           createdAt: Date.now(), updatedAt: Date.now(),
           engine: defaultEngine,
         };
+        // Sync index immediately so `activeConversation` resolves on the next render.
+        convIndexRef.current.set(convId, wsId);
         setAllConversations((prev) => ({
           ...prev,
           [wsId!]: [conv, ...(prev[wsId!] ?? [])],

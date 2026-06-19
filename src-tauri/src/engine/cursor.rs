@@ -107,7 +107,9 @@ pub async fn list_models() -> Vec<(String, String)> {
 /// Format: "model-id - Human Label" per line.
 fn parse_model_list(output: &str) -> Vec<(String, String)> {
     let mut models = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
     for line in output.lines() {
+        let line = shared::strip_ansi_and_controls(line);
         let line = line.trim();
         if line.is_empty() || line == "Available models" {
             continue;
@@ -115,13 +117,13 @@ fn parse_model_list(output: &str) -> Vec<(String, String)> {
         if let Some((id, label)) = line.split_once(" - ") {
             let id = id.trim().to_string();
             let label = label.trim().to_string();
-            if !id.is_empty() {
+            if !id.is_empty() && seen.insert(id.clone()) {
                 models.push((id, label));
             }
         } else {
             // No separator — use the whole line as both id and label.
             let id = line.to_string();
-            if !id.is_empty() {
+            if !id.is_empty() && seen.insert(id.clone()) {
                 models.push((id.clone(), id));
             }
         }

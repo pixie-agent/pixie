@@ -78,17 +78,19 @@ pub async fn list_models() -> Vec<(String, String)> {
 /// Format: `--model <model>  ... Currently supported: (id1, id2, id3)`
 fn parse_model_list_from_help(help: &str) -> Vec<(String, String)> {
     for line in help.lines() {
+        let line = shared::strip_ansi_and_controls(line);
         if line.contains("--model")
             && (line.contains("Currently supported") || line.contains("supported:"))
         {
             if let Some(start) = line.rfind('(') {
                 if let Some(end) = line[start..].find(')') {
                     let inner = &line[start + 1..start + end];
+                    let mut seen = std::collections::HashSet::<String>::new();
                     return inner
                         .split(',')
                         .filter_map(|s| {
-                            let id = s.trim().to_string();
-                            if id.is_empty() {
+                            let id = shared::strip_ansi_and_controls(s).trim().to_string();
+                            if id.is_empty() || !seen.insert(id.clone()) {
                                 None
                             } else {
                                 Some((id.clone(), id))

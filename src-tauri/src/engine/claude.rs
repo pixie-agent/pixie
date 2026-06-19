@@ -63,13 +63,13 @@ pub async fn list_models() -> Vec<(String, String)> {
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     ];
-    let existing_ids: std::collections::HashSet<String> =
+    let mut existing_ids: std::collections::HashSet<String> =
         models.iter().map(|(id, _)| id.clone()).collect();
     for key in &env_model_keys {
         if let Some(val) = env.get(*key) {
-            let val = val.trim().to_string();
-            if !val.is_empty() && !existing_ids.contains(&val) {
-                models.push((val.clone(), val));
+            let cleaned = shared::strip_ansi_and_controls(val).trim().to_string();
+            if !cleaned.is_empty() && existing_ids.insert(cleaned.clone()) {
+                models.push((cleaned.clone(), cleaned));
             }
         }
     }

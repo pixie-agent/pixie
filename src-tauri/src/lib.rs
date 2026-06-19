@@ -867,6 +867,93 @@ fn open_external(target: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Reveal a file/folder in the OS file manager (Finder / Explorer / etc).
+/// Requires the target to be within the current workspace when `workspace_path`
+/// is provided.
+#[tauri::command]
+fn reveal_in_file_manager(path: String, workspace_path: Option<String>) -> Result<(), String> {
+    use std::path::{Path, PathBuf};
+
+    let ws = workspace_path
+        .as_deref()
+        .ok_or_else(|| "workspace_path is required".to_string())?;
+    let ws_canon = std::fs::canonicalize(ws)
+        .map_err(|e| format!("Failed to canonicalize workspace '{}': {}", ws, e))?;
+
+    let raw = PathBuf::from(&path);
+    let abs: PathBuf = if raw.is_absolute() {
+        raw
+    } else {
+        Path::new(ws).join(raw)
+    };
+
+    let meta = std::fs::metadata(&abs);
+    let (target, is_dir) = match meta {
+        Ok(m) => (abs.clone(), m.is_dir()),
+        Err(_) => {
+            // Deleted / missing file: best effort, open its parent directory.
+            let parent = abs
+                .parent()
+                .ok_or_else(|| format!("Path has no parent: {}", abs.to_string_lossy()))?;
+            (parent.to_path_buf(), true)
+        }
+    };
+
+    // Canonicalize the best-available existing path for safety checks.
+    let check_path = std::fs::canonicalize(&target)
+        .map_err(|e| format!("Failed to canonicalize '{}': {}", target.to_string_lossy(), e))?;
+    if !check_path.starts_with(&ws_canon) {
+        return Err(format!(
+            "Refusing to reveal path outside workspace: {}",
+            check_path.to_string_lossy()
+        ));
+    }
+
+    if cfg!(target_os = "macos") {
+        if is_dir {
+            std::process::Command::new("open")
+                .arg(&target)
+                .spawn()
+                .map_err(|e| format!("Failed to open '{}': {}", target.to_string_lossy(), e))?;
+        } else {
+            std::process::Command::new("open")
+                .args(["-R"])
+                .arg(&target)
+                .spawn()
+                .map_err(|e| format!("Failed to reveal '{}': {}", target.to_string_lossy(), e))?;
+        }
+        return Ok(());
+    }
+
+    if cfg!(target_os = "windows") {
+        let arg = if is_dir {
+            target.to_string_lossy().to_string()
+        } else {
+            format!("/select,{}", target.to_string_lossy())
+        };
+        std::process::Command::new("explorer.exe")
+            .arg(arg)
+            .spawn()
+            .map_err(|e| format!("Failed to open Explorer: {}", e))?;
+        return Ok(());
+    }
+
+    // Linux: open directory (best effort).
+    let to_open = if is_dir {
+        target
+    } else {
+        target
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or(target)
+    };
+    std::process::Command::new("xdg-open")
+        .arg(&to_open)
+        .spawn()
+        .map_err(|e| format!("Failed to open '{}': {}", to_open.to_string_lossy(), e))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn pty_spawn(
     id: String,
@@ -2395,6 +2482,7 @@ pub fn run() {
             list_directory,
             read_file_content,
             open_external,
+            reveal_in_file_manager,
             list_skills,
             plugin_marketplace_list,
             plugin_available,
