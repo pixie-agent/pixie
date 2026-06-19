@@ -338,7 +338,7 @@ function AppShell() {
               className={`relative shrink-0 flex items-center px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-primary)] ${navigator.platform?.includes("Mac") && !sidebarOpen ? "pl-20" : ""}`}
               onMouseDown={handleDragRegion}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
                 {!sidebarOpen && (
                   <button
                     onClick={() => {
@@ -363,7 +363,7 @@ function AppShell() {
                     <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                   </svg>
                 </button>
-                <div className="min-w-0 pr-10">
+                <div className="min-w-0 flex-1">
                   {headerEditing ? (
                     <input
                       ref={headerEditRef}
@@ -412,7 +412,7 @@ function AppShell() {
               <button
                 onClick={() => setFileExplorerOpen((prev) => !prev)}
                 disabled={!activeWorkspace}
-                className={`absolute right-4 top-1/2 -translate-y-1/2 z-10 p-1.5 rounded-lg bg-[var(--bg-primary)] transition-colors ${
+                className={`shrink-0 ml-2 p-1.5 rounded-lg bg-[var(--bg-primary)] transition-colors ${
                   fileExplorerOpen
                     ? "text-[var(--accent)] hover:bg-[var(--bg-tertiary)]"
                     : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
