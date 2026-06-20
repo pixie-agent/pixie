@@ -352,7 +352,8 @@ export default function Settings({
                 <p className="text-sm text-[var(--text-primary)]">Pixie</p>
               </div>
               <p className="text-xs text-[var(--text-secondary)]">
-                A desktop AI chat application powered by the Claude CLI.
+                A general-purpose desktop AI agent workspace.
+                Supports Claude, Cursor, and CodeBuddy engines.
               </p>
               <p className="text-xs text-[var(--text-secondary)]">
                 Built with Tauri v2 + React + TypeScript

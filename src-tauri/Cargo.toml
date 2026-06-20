@@ -1,7 +1,7 @@
 [package]
 name = "pixie"
 version = "0.6.5"
-description = "Pixie - AI Chat Desktop App"
+description = "Pixie - General-Purpose AI Agent Workspace"
 authors = ["white1or1black"]
 license = "MIT"
 repository = "https://github.com/white1or1black/pixie"

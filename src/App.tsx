@@ -609,18 +609,26 @@ function AppShell() {
                       className="text-sm font-semibold text-[var(--text-primary)] bg-[var(--bg-primary)] border border-[var(--accent)] rounded px-1 py-0 outline-none w-full"
                     />
                   ) : (
-                    <h1
-                      className="text-sm font-semibold text-[var(--text-primary)] truncate"
-                      onDoubleClick={() => {
-                        if (activeConversation) {
-                          setHeaderEditValue(activeConversation.title);
-                          setHeaderEditing(true);
-                          setTimeout(() => headerEditRef.current?.select(), 0);
-                        }
-                      }}
-                    >
-                      {activeConversation?.title ?? "Pixie"}
-                    </h1>
+                    <div className="flex items-center gap-1.5">
+                      <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
+                        {activeConversation?.title ?? "Pixie"}
+                      </h1>
+                      {activeConversation && (
+                        <button
+                          onClick={() => {
+                            setHeaderEditValue(activeConversation.title);
+                            setHeaderEditing(true);
+                            setTimeout(() => headerEditRef.current?.select(), 0);
+                          }}
+                          className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors shrink-0"
+                          title="Edit title"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M10.5 1.5l2 2-9 9H1.5v-2l9-9zM13.5 4.5l-2-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   )}
                   {(activeWorkspace || activeConversation) && (
                     <p className="text-[10px] text-[var(--text-secondary)] truncate" title={activeWorkspace?.path ?? undefined}>
