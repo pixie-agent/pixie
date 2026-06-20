@@ -46,8 +46,8 @@
       "icons/icon.ico"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "A desktop AI chat application powered by the Claude CLI",
-    "longDescription": "Pixie is a desktop application that provides a beautiful chat interface for interacting with Claude through the Claude CLI. Built with Tauri v2, React, and TypeScript.",
+    "shortDescription": "A general-purpose desktop AI agent workspace",
+    "longDescription": "Pixie is a desktop application that provides a beautiful chat interface for interacting with AI agents through pluggable CLI backends (Claude, Cursor, CodeBuddy). Built with Tauri v2, React, and TypeScript.",
     "macOS": {
       "minimumSystemVersion": "10.15",
       "signingIdentity": "-"

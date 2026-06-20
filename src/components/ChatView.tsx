@@ -38,15 +38,18 @@ function WelcomeScreen() {
         Pixie
       </h2>
       <p className="text-sm text-[var(--text-secondary)] max-w-sm leading-relaxed">
-        Start a conversation with Claude by typing a message below.
-        Use the sidebar to manage your chats.
+        Type a message below to start. Use the AI agent for programming, documents, data analysis, news, writing, and more.
       </p>
       <div className="flex flex-wrap justify-center gap-2 mt-8 max-w-md">
         {[
-          "Explain how async/await works",
-          "Write a Rust web server",
-          "Help me debug my code",
-          "Create a REST API",
+          "Analyze this Excel sales data",
+          "Write a weekly project report",
+          "Implement a login feature",
+          "Summarize today's tech news",
+          "Translate this document to English",
+          "Scrape web data with Python",
+          "Polish this copy",
+          "Design a database schema",
         ].map((suggestion) => (
           <button
             key={suggestion}

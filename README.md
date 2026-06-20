@@ -1,19 +1,19 @@
 # Pixie
 
-> A native desktop workspace for **pluggable AI agents** — run autonomous agents against any folder, swap engines per session, and watch them work in real time. Built with Tauri v2, React, TypeScript, and Rust.
+> A native desktop workspace for **pluggable AI agents** — a general-purpose agent that handles programming, office documents, data analysis, news, writing, and more. Run autonomous agents against any folder, swap engines per session, and watch them work in real time. Built with Tauri v2, React, TypeScript, and Rust.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-blue.svg)
-![Agents](https://img.shields.io/badge/engines-Claude%20%7C%20Cursor-orange.svg)
+![Agents](https://img.shields.io/badge/engines-Claude%20%7C%20Cursor%20%7C%20CodeBuddy-orange.svg)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 
 ![Pixie](src/assets/hero.svg)
 
 Pixie is a thin, fast desktop shell for **agent CLIs you already have installed**. It does not ship its own model or API client — it spawns an external agent process, streams its JSON output, and renders it as a polished native app.
 
-Each conversation binds to an **engine** (today: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Cursor Agent](https://cursor.com/docs/cli/overview)). You can mix engines across workspaces and sessions: one chat on Claude, another on Cursor, both running in parallel.
+Each conversation binds to an **engine** (today: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Cursor Agent](https://cursor.com/docs/cli/overview), or [CodeBuddy](https://www.codebuddy.ai/docs/cli/quickstart)). You can mix engines across workspaces and sessions: one chat on Claude, another on Cursor, both running in parallel.
 
-Use Pixie for research, writing, ops, personal automation, or software work — wherever a headless agent CLI can act on files and tools in a folder you choose.
+Use Pixie for programming, office documents, data analysis, news, writing — wherever a headless agent CLI can act on files and tools in a folder you choose.
 
 ---
 
@@ -25,7 +25,7 @@ Use Pixie for research, writing, ops, personal automation, or software work — 
 - **Conversation continuity** — Follow-up messages resume the same CLI session so context carries across turns.
 - **Per-engine model config** — Override API keys, models, and env vars separately for each engine in Settings.
 - **Scheduled tasks** — Run prompts on a schedule (daily, weekdays, or every N minutes / hours) headlessly against a workspace. Results appear in the sidebar with desktop notifications.
-- **Workspace panel** — A resizable side panel with **Files**, **Preview**, **Git**, **Browser**, and a real **Terminal** (PTY-backed). Handy for code; optional for non-code workflows.
+- **Workspace panel** — A resizable side panel with **Files**, **Preview**, **Git**, **Browser**, and a real **Terminal** (PTY-backed). Useful when you need deeper file and version control access.
 - **Skills & plugin marketplace** — Discover skills on disk, insert `/skill` invocations from the composer, and browse or install plugins from marketplaces. Pixie follows the **Claude agent standard** for skills and plugins (`.claude/skills`, `.claude-plugin/`, etc.) — a de-facto convention shared by Claude Code, Cursor Agent, and other compatible engines.
 - **System-tray resident** — Closing the window hides to the tray so scheduled tasks keep firing.
 - **Dark & light themes**, system prompt, keyboard shortcuts.
@@ -38,6 +38,7 @@ Use Pixie for research, writing, ops, personal automation, or software work — 
 | --- | --- | --- |
 | **Claude Code** | `claude` | Reference implementation; skills, plugins, MCP |
 | **Cursor Agent** | `cursor-agent` / `agent` | Multi-model loops; supports the same skills & plugin ecosystem |
+| **CodeBuddy** | `cbc` | Tencent AI coding agent; supports skills & plugins standard |
 
 Both engines speak the same **skills / marketplace conventions** (Claude-format `SKILL.md`, plugin marketplaces, `/skill-name` invocations). Pixie surfaces them engine-agnostically in the UI.
 
@@ -53,6 +54,7 @@ Install **at least one** engine and authenticate it before using Pixie. See [Pre
 - **One or more agent CLIs**, installed and authenticated:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `claude` on your `PATH`
   - [Cursor Agent CLI](https://cursor.com/docs/cli/overview) — `cursor-agent` or `agent` on your `PATH`
+  - [CodeBuddy Code](https://www.codebuddy.ai/docs/cli/quickstart) — `cbc` on your `PATH`
 
 Pixie searches `PATH` plus common locations (`/usr/local/bin`, Homebrew, `~/.local/bin`, nvm, `~/.cursor/bin`) for engine binaries. It sources your interactive login shell so env vars (`ANTHROPIC_*`, `CURSOR_*`, etc.) are picked up even when launched from a `.app` bundle.
 
@@ -78,7 +80,7 @@ pnpm tauri build                       # all bundle formats for your OS
 pnpm tauri build --debug --bundles app # a quick debug .app / executable
 ```
 
-> **Note** — Engines run in headless mode with permission prompts skipped (`--dangerously-skip-permissions` for Claude, `--force` for Cursor) so agents can act autonomously within the selected workspace. Only point Pixie at folders you trust the agent to read and modify. See [Security & data](#security--data).
+> **Note** — Engines run in headless mode with permission prompts skipped so agents can act autonomously within the selected workspace. Only point Pixie at folders you trust the agent to read and modify. See [Security & data](#security--data).
 
 ---
 
@@ -213,7 +215,7 @@ Open **Settings** (`Ctrl/Cmd + ,`):
 
 - **Agent engines** — availability, version, and binary path for each engine.
 - **Default engine** — used when creating new sessions.
-- **Model configuration** — per-engine env overrides (collapsed by default). Claude: `ANTHROPIC_*`, `CLAUDE_CODE_*`. Cursor: `CURSOR_API_KEY`, `CURSOR_MODEL`.
+- **Model configuration** — per-engine env overrides (collapsed by default). Claude: `ANTHROPIC_*`, `CLAUDE_CODE_*`. Cursor: `CURSOR_API_KEY`, `CURSOR_MODEL`. CodeBuddy: `CODEBUDDY_*`.
 - **System prompt** — optional prompt for agent sessions.
 - **Theme** — dark or light.
 
@@ -229,7 +231,7 @@ Open **Settings** (`Ctrl/Cmd + ,`):
 
 ## Troubleshooting
 
-**No engine available** — Install at least one CLI (`claude` or `cursor-agent`). Check Settings → *Refresh*. Verify with `claude --version` or `cursor-agent --version`.
+**No engine available** — Install at least one CLI (`claude`, `cursor-agent`, or `cbc`). Check Settings → *Refresh*. Verify with `claude --version`, `cursor-agent --version`, or `cbc --version`.
 
 **Env vars not picked up** — Pixie sources your login shell (`$SHELL -i -l -c env`). Restart the app after editing `.zprofile` / `.zshrc`.
 
