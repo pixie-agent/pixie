@@ -9,22 +9,20 @@ on:
       - "app-v*"
 
 jobs:
-  publish:
-    permissions:
-      contents: write
+  # macOS builds must run sequentially (not in parallel) because tauri-action
+  # manages the same draft Release + latest.json for both arches, and
+  # concurrent uploads cause aarch64 artifacts to be silently lost.
+  publish-macos:
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        include:
-          - platform: macos-latest
-            args: "--target aarch64-apple-darwin"
-          - platform: macos-latest
-            args: "--target x86_64-apple-darwin"
-          - platform: ubuntu-22.04
-            args: ""
-          - platform: windows-latest
-            args: ""
-    runs-on: ${{ matrix.platform }}
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -40,8 +38,50 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Both macOS arches run on macos-latest (aarch64 runner).
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install frontend deps
+        run: pnpm install
+
+      - uses: tauri-apps/tauri-action@v0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          tagName: app-v__VERSION__
+          releaseName: "Pixie v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  publish-other:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux deps
         if: matrix.platform == 'ubuntu-22.04'
@@ -57,15 +97,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # ad-hoc macOS signing (no Apple Developer account yet). Replace with
-          # APPLE_CERTIFICATE / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID secrets
-          # and drop the `signingIdentity: "-"` in tauri.conf.json once enrolled.
-          APPLE_SIGNING_IDENTITY: "-"
         with:
           tagName: app-v__VERSION__
           releaseName: "Pixie v__VERSION__"
           releaseDraft: true
           prerelease: false
-          # Windows: emit the NSIS installer URL in latest.json.
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}

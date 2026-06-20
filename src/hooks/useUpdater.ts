@@ -43,8 +43,15 @@ export function useUpdater(): UseUpdaterResult {
       setNewVersion(result?.version ?? null);
       setStatus(result ? "available" : "up-to-date");
     } catch (e) {
-      setError(String(e));
-      setStatus("error");
+      // If the update manifest doesn't have a build for this platform, treat
+      // it as "up-to-date" rather than an error — there's nothing to install.
+      const msg = String(e);
+      if (msg.includes("None of the fallback platforms")) {
+        setStatus("up-to-date");
+      } else {
+        setError(msg);
+        setStatus("error");
+      }
     }
   }, []);
 
