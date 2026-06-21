@@ -548,17 +548,18 @@ export default function InputBar({
             type="button"
             onClick={onToggleKb}
             disabled={disabled || isGenerating}
-            title={kbEnabled ? "Knowledge base context active — click to disable" : "Enable knowledge base context"}
+            title={kbEnabled ? "Knowledge base active — click to disable" : "Include knowledge base context"}
             className={`flex items-center justify-center w-7 h-6 rounded-md transition-colors ${
               kbEnabled
                 ? "text-[var(--accent)] bg-[var(--accent)]/15"
                 : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
             } disabled:opacity-30 disabled:cursor-not-allowed`}
           >
+            /* Database (cylinders) — representing knowledge base retrieval */
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
+              <ellipse cx="12" cy="6" rx="8" ry="3" />
+              <path d="M4 6v6c0 1.5 3.5 3 8 3s8-1.5 8-3V6" />
+              <path d="M4 12v6c0 1.5 3.5 3 8 3s8-1.5 8-3v-6" />
             </svg>
           </button>
           {engine && (
