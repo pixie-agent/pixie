@@ -226,5 +226,6 @@ export default function SearchPalette({ open, onClose, onOpenPreview }: SearchPa
           </span>
         </div>
     </div>
+    </div>
   );
 }
