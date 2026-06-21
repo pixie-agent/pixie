@@ -101,42 +101,50 @@ export default function SearchPalette({ open, onClose, onOpenPreview }: SearchPa
   if (!open) return null;
 
   return (
-    <div className="relative z-40 border-b border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-lg overflow-hidden search-palette-enter max-h-[45vh] flex flex-col">
-      {/* Search input */}
-      <div className="flex items-center gap-3 px-4 py-3">
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 18 18"
-          fill="none"
-          className="shrink-0 text-[var(--text-secondary)]"
-        >
-          <circle cx="7.5" cy="7.5" r="5" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M11.5 11.5L16 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Search knowledge base…"
-          className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none"
-          autoFocus
-        />
-        {loading && (
-          <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin shrink-0" />
-        )}
-        <button
-          onClick={onClose}
-          className="p-1 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-          title="Close (Esc)"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]">
+      {/* Backdrop — subtle dim, click to close */}
+      <div
+        className="absolute inset-0 bg-black/30"
+        onClick={onClose}
+      />
+
+      {/* Popup panel */}
+      <div className="relative w-full max-w-xl bg-[var(--bg-secondary)] rounded-2xl border border-[var(--border-color)] shadow-2xl overflow-hidden search-palette-enter max-h-[55vh] flex flex-col">
+        {/* Search input */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--border-color)]">
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 18 18"
+            fill="none"
+            className="shrink-0 text-[var(--text-secondary)]"
+          >
+            <circle cx="7.5" cy="7.5" r="5" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M11.5 11.5L16 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
-        </button>
-      </div>
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search knowledge base…"
+            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none"
+            autoFocus
+          />
+          {loading && (
+            <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin shrink-0" />
+          )}
+          <button
+            onClick={onClose}
+            className="p-1 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+            title="Close (Esc)"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
 
 {/* Results */}
       {results.length > 0 && (

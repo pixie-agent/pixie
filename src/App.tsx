@@ -856,16 +856,6 @@ ${entries}
               </button>
             </header>
 
-            {/* Search palette — rendered inside the chat area so it doesn't
-                block the right-side preview panel. */}
-            <Suspense fallback={null}>
-              <SearchPalette
-                open={searchOpen}
-                onClose={() => setSearchOpen(false)}
-                onOpenPreview={(path) => handleOpenPreview({ kind: "file", path })}
-              />
-            </Suspense>
-
             {error && (
               <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-center justify-between">
                 <span>{error}</span>
@@ -1006,6 +996,15 @@ ${entries}
           </Suspense>
         </div>
       )}
+
+      {/* Search palette popup — fixed overlay, doesn't shift page content */}
+      <Suspense fallback={null}>
+        <SearchPalette
+          open={searchOpen}
+          onClose={() => setSearchOpen(false)}
+          onOpenPreview={(path) => handleOpenPreview({ kind: "file", path })}
+        />
+      </Suspense>
     </div>
   );
 }
