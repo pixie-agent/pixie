@@ -555,7 +555,7 @@ export default function InputBar({
                 : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
             } disabled:opacity-30 disabled:cursor-not-allowed`}
           >
-            /* Database (cylinders) — representing knowledge base retrieval */
+            {/* Database icon — knowledge base retrieval */}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <ellipse cx="12" cy="6" rx="8" ry="3" />
               <path d="M4 6v6c0 1.5 3.5 3 8 3s8-1.5 8-3V6" />
