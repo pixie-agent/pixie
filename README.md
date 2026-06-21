@@ -1,6 +1,6 @@
 # Pixie
 
-> A native desktop workspace for **pluggable AI agents** — a general-purpose agent that handles programming, office documents, data analysis, news, writing, and more. Run autonomous agents against any folder, swap engines per session, and watch them work in real time. Built with Tauri v2, React, TypeScript, and Rust.
+> A native desktop workspace for **pluggable AI agents** — a general-purpose agent that handles programming, office documents, data analysis, news, writing, and more. Run autonomous agents against any folder, swap engines per session, and watch them work in real time. Built-in **knowledge base** auto-summarizes conversations into searchable, linkable notes. Built with Tauri v2, React, TypeScript, and Rust.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-blue.svg)
@@ -26,6 +26,7 @@ Use Pixie for programming, office documents, data analysis, news, writing — wh
 - **Per-engine model config** — Override API keys, models, and env vars separately for each engine in Settings.
 - **Scheduled tasks** — Run prompts on a schedule (daily, weekdays, or every N minutes / hours) headlessly against a workspace. Results appear in the sidebar with desktop notifications.
 - **Workspace panel** — A resizable side panel with **Files**, **Preview**, **Git**, **Browser**, and a real **Terminal** (PTY-backed). Useful when you need deeper file and version control access.
+- **Knowledge base** — Conversations are summarized to Obsidian-compatible markdown notes with YAML frontmatter. A built-in BM25 search engine (with CJK tokenization via jieba) indexes the vault for fast retrieval. KB context is injected into agent messages so agents can leverage past conversations. Related notes are linked via `[[wiki-links]]` for discoverability.
 - **Skills & plugin marketplace** — Discover skills on disk, insert `/skill` invocations from the composer, and browse or install plugins from marketplaces. Pixie follows the **Claude agent standard** for skills and plugins (`.claude/skills`, `.claude-plugin/`, etc.) — a de-facto convention shared by Claude Code, Cursor Agent, and other compatible engines.
 - **System-tray resident** — Closing the window hides to the tray so scheduled tasks keep firing.
 - **Dark & light themes**, system prompt, keyboard shortcuts.
@@ -107,6 +108,32 @@ pnpm tauri build --debug --bundles app # a quick debug .app / executable
 
 ---
 
+## Knowledge Base
+
+Pixie includes a local-first knowledge base that turns your conversation history into a searchable vault of notes. It's designed to work with (but does not require) [Obsidian](https://obsidian.md/).
+
+### How it works
+
+1. **Summarize** — After a conversation, click "Summarize" to write it as a markdown note to `<vault>/Pixie/<slug>-<convId>.md`. The note includes YAML frontmatter (title, conversation_id, workspace, engine, tags, created) and the full transcript.
+2. **Index** — A Rust-based inverted-index search engine scans all `*.md` files in the vault's `Pixie/` directory. It builds a BM25 scoring index with CJK tokenization (jieba-rs) for Chinese, Japanese, and Korean text.
+3. **Search** — Press `Ctrl/Cmd + K` to open the search palette. Type a query (minimum 2 characters) and get debounced BM25-ranked results with snippets, tags, and dates. Press `Enter` to open a note in Obsidian, or copy content inline.
+4. **Inject** — Toggle the knowledge base (database cylinder icon in the input bar) to inject relevant snippets from search results into agent messages as context. This lets agents reference past work without re-explaining.
+5. **Related links** — When a new note is written, the summarizer searches for related notes via BM25 and appends `[[wiki-link]]` references at the bottom, creating a navigable knowledge graph.
+
+### Setup
+
+- **Configure vault path** — Open Settings (`Ctrl/Cmd + ,`) and set your Obsidian vault path (default: `~/Documents/Obsidian`).
+- **Backfill existing conversations** — Use the "Backfill" button in Settings to summarize all past conversations into notes.
+- **Obsidian integration is optional** — The KB works entirely within Pixie. Obsidian is only needed for external viewing/editing.
+
+### Keyboard shortcut
+
+| Action | Shortcut |
+| --- | --- |
+| Search knowledge base | `Ctrl/Cmd + K` |
+
+---
+
 ## Architecture
 
 Pixie is a Tauri v2 app: a Rust backend that owns process and PTY lifecycle, plus a React frontend over the IPC bridge.
@@ -126,6 +153,7 @@ Pixie is a Tauri v2 app: a Rust backend that owns process and PTY lifecycle, plu
 │  Chat         send_message(engine) / stop_generation   │
 │  Engines      check_engines_available / model config   │
 │  Workspaces   select / set_active / list_directory     │
+│  KB           search_kb / index_kb / summarize / …     │
 │  Git / Files / Terminal / Skills / Plugins / Schedules │
 │                                                        │
 │  Events: agent-response · agent-tool · agent-done · …    │
@@ -172,7 +200,15 @@ pixie/
 │   │   │   ├── mod.rs           # NormalizedEvent, AgentProcess, dispatch
 │   │   │   ├── claude.rs
 │   │   │   ├── cursor.rs
+│   │   │   ├── codebuddy.rs
+│   │   │   ├── persistent.rs    # Long-lived session management
 │   │   │   └── shared.rs        # Shell env, binary discovery
+│   │   ├── search/              # Knowledge base search engine
+│   │   │   ├── mod.rs           # Index lifecycle, Tauri commands
+│   │   │   ├── bm25.rs          # BM25 scoring + jieba-rs CJK tokenizer
+│   │   │   ├── index.rs         # Inverted-index search engine
+│   │   │   └── parser.rs        # Obsidian YAML frontmatter parser
+│   │   ├── summarizer.rs        # Conversation → KB note writer
 │   │   ├── lib.rs               # Tauri commands, scheduler, tray
 │   │   └── pty.rs
 │   └── tauri.conf.json
@@ -208,6 +244,8 @@ cargo test                # Unit tests
 | Markdown | react-markdown + remark-gfm |
 | Terminal | xterm.js + portable-pty |
 | Scheduling | chrono |
+| CJK search | jieba-rs (Chinese word segmentation) |
+| BM25 search | custom inverted-index engine |
 
 ### Configuration
 
@@ -216,6 +254,7 @@ Open **Settings** (`Ctrl/Cmd + ,`):
 - **Agent engines** — availability, version, and binary path for each engine.
 - **Default engine** — used when creating new sessions.
 - **Model configuration** — per-engine env overrides (collapsed by default). Claude: `ANTHROPIC_*`, `CLAUDE_CODE_*`. Cursor: `CURSOR_API_KEY`, `CURSOR_MODEL`. CodeBuddy: `CODEBUDDY_*`.
+- **Knowledge base** — Obsidian vault path, backfill existing conversations, and index rebuild.
 - **System prompt** — optional prompt for agent sessions.
 - **Theme** — dark or light.
 
@@ -240,6 +279,10 @@ Open **Settings** (`Ctrl/Cmd + ,`):
 **Build errors** — `rustup update`, `cd src-tauri && cargo clean`, `rm -rf node_modules && pnpm install`.
 
 **Scheduled task didn't fire** — Pixie must be running (tray is fine). Overdue tasks more than 5 minutes are skipped to avoid catch-up bursts. Use *Run now* to test.
+
+**Knowledge base search returns no results** — Ensure the vault path in Settings points to a valid directory containing `.md` files under a `Pixie/` subfolder. Use "Rebuild Index" in Settings if the index is stale. Minimum query length is 2 characters.
+
+**KB notes not appearing** — Summarize a conversation first. Notes are written to `<vault>/Pixie/`. If you moved or renamed the vault, update the path in Settings and rebuild the index.
 
 ---
 
