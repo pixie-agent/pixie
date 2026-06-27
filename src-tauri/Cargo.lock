@@ -2975,7 +2975,7 @@ dependencies = [
 
 [[package]]
 name = "pixie"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2985,6 +2985,7 @@ dependencies = [
  "libc",
  "log",
  "portable-pty",
+ "regex",
  "serde",
  "serde_json",
  "tauri",
@@ -2997,6 +2998,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "urlencoding",
  "uuid",
 ]

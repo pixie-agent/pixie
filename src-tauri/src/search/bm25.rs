@@ -189,13 +189,15 @@ mod tests {
             vec![("hello".to_string(), 2), ("world".to_string(), 1)]
                 .into_iter()
                 .collect();
-        let df: HashMap<String, usize> =
-            vec![("hello".to_string(), 3), ("world".to_string(), 10)]
-                .into_iter()
-                .collect();
+        let df: HashMap<String, usize> = vec![("hello".to_string(), 3), ("world".to_string(), 10)]
+            .into_iter()
+            .collect();
         let query = vec!["hello".to_string()];
         let score = bm25_score(&doc_tf, 5, 10.0, 100, &df, &query);
-        assert!(score > 0.0, "BM25 score should be positive for matching term");
+        assert!(
+            score > 0.0,
+            "BM25 score should be positive for matching term"
+        );
     }
 
     #[test]
@@ -213,7 +215,13 @@ mod tests {
         let doc_tokens = tokenize("知识管理系统");
         let doc_tf = term_freqs(&doc_tokens);
         let query_tokens = tokenize("知识");
-        assert!(doc_tf.contains_key("知识"), "'知识' should be in doc tokens");
-        assert!(query_tokens.contains(&"知识".to_string()), "query should contain '知识'");
+        assert!(
+            doc_tf.contains_key("知识"),
+            "'知识' should be in doc tokens"
+        );
+        assert!(
+            query_tokens.contains(&"知识".to_string()),
+            "query should contain '知识'"
+        );
     }
 }

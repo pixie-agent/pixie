@@ -479,30 +479,47 @@ export default function Settings({
                     {updater.error}
                   </p>
                 )}
-                <button
-                  onClick={
-                    updater.status === "available"
-                      ? updater.downloadAndInstall
-                      : updater.status === "installed"
-                        ? updater.restart
-                        : updater.checkForUpdates
-                  }
-                  disabled={
-                    updater.status === "checking" ||
-                    updater.status === "downloading"
-                  }
-                  className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {updater.status === "checking"
-                    ? "Checking…"
-                    : updater.status === "downloading"
-                      ? "Downloading…"
-                      : updater.status === "available"
-                        ? `Install ${updater.newVersion}`
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={
+                      updater.status === "available"
+                        ? updater.downloadAndInstall
                         : updater.status === "installed"
-                          ? "Restart Now"
-                          : "Check for Updates"}
-                </button>
+                          ? updater.restart
+                          : updater.checkForUpdates
+                    }
+                    disabled={
+                      updater.status === "checking" ||
+                      updater.status === "downloading"
+                    }
+                    className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {updater.status === "checking"
+                      ? "Checking…"
+                      : updater.status === "downloading"
+                        ? "Downloading…"
+                        : updater.status === "available"
+                          ? `Install ${updater.newVersion}`
+                          : updater.status === "installed"
+                            ? "Restart Now"
+                            : "Check for Updates"}
+                  </button>
+                  {/* Beta channel: opt into prerelease builds to try new,
+                      less-stable features (e.g. Loops) before they ship to
+                      stable. Stable users are never auto-updated to beta. */}
+                  <button
+                    onClick={updater.installBeta}
+                    disabled={
+                      updater.status === "checking" ||
+                      updater.status === "downloading" ||
+                      updater.status === "installed"
+                    }
+                    title="Install the latest beta (prerelease) build to try new features early"
+                    className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-[var(--text-primary)] text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    Try the Beta
+                  </button>
+                </div>
               </div>
             </div>
           </section>

@@ -42,3 +42,7 @@ base64 = "0.22"
 urlencoding = "2"
 # Chinese word segmentation for CJK search tokenization.
 jieba-rs = "0.10"
+# Regex matching for loop exit conditions (NoErrorPattern, SuccessPattern).
+regex = "1"
+# URL parsing for the beta-channel update endpoint override.
+url = "2"

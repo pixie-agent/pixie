@@ -237,6 +237,133 @@ pub struct TaskRunRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Loop tasks: iterative agent cycles with exit conditions
+// ---------------------------------------------------------------------------
+
+/// Agent engine discriminator, shared with the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEngineId {
+    Claude,
+    Cursor,
+    Codebuddy,
+}
+
+/// An exit condition for a loop task. When any condition is met, the loop
+/// terminates. Conditions are checked after each iteration completes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LoopExitCondition {
+    /// Stop after `max` iterations.
+    MaxIterations { max: u32 },
+    /// Stop when the agent output does NOT match this regex (i.e. errors are
+    /// gone, the output is "clean").
+    NoErrorPattern { pattern: String },
+    /// Stop when the agent output matches this regex (i.e. a success signal
+    /// appeared — "all tests pass", "build succeeded", etc.).
+    SuccessPattern { pattern: String },
+    /// Stop after `streak` consecutive iterations produce no change in output
+    /// (convergence / "no new findings"). The loop feeds each iteration's result
+    /// into the next prompt, so an unchanged output means the agent made no
+    /// progress. `streak = 1` stops on the first repeat.
+    OutputUnchanged { streak: u32 },
+    /// Only stop when the user manually pauses or stops the loop.
+    ManualOnly,
+}
+
+/// Current lifecycle state of a loop task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopTaskStatus {
+    /// Waiting to be triggered (manually or by schedule).
+    Idle,
+    /// Currently executing an iteration.
+    Running,
+    /// User paused; will not start the next iteration until resumed.
+    Paused,
+    /// An exit condition was met; the loop has finished.
+    Completed,
+    /// User aborted the loop; can be re-enabled and restarted.
+    Aborted,
+    /// An unrecoverable error occurred.
+    Error,
+}
+
+/// A loop task: an iterative agent cycle that feeds each iteration's result
+/// back as context for the next one, until an exit condition is satisfied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopTask {
+    pub id: String,
+    pub name: String,
+    /// Workspace folder path (same as ScheduledTask.workspace).
+    pub workspace: String,
+    /// Which agent engine to use for headless execution.
+    pub engine: AgentEngineId,
+    /// Prompt for the first iteration.
+    pub initial_prompt: String,
+    /// Template for subsequent iterations. Use `{{previous_result}}` as a
+    /// placeholder that gets replaced with the last iteration's output.
+    pub result_template: String,
+    /// Exit conditions — the loop stops when ANY one is satisfied.
+    pub exit_conditions: Vec<LoopExitCondition>,
+    /// How many iterations have been completed so far (0 = not started).
+    #[serde(default)]
+    pub iteration: u32,
+    /// Current lifecycle state.
+    #[serde(default = "default_loop_status")]
+    pub status: LoopTaskStatus,
+    /// The raw text output of the most recent iteration (used to build the
+    /// next iteration's prompt via result_template).
+    #[serde(default)]
+    pub last_result: Option<String>,
+    /// Consecutive iterations whose (normalized) output matched the previous
+    /// one — convergence tracking for `OutputUnchanged`. Reset to 0 on change.
+    #[serde(default)]
+    pub unchanged_streak: u32,
+    /// Optional schedule. When set, the loop starts automatically when due.
+    #[serde(default)]
+    pub schedule: Option<ScheduleSpec>,
+    /// ISO-8601 (UTC) of the next scheduled fire. None when disabled or unscheduled.
+    #[serde(default)]
+    pub next_run: Option<String>,
+    /// ISO-8601 (UTC) of the last scheduled fire.
+    #[serde(default)]
+    pub last_run: Option<String>,
+    pub enabled: bool,
+    /// ISO-8601 (UTC) creation timestamp.
+    pub created_at: String,
+}
+
+fn default_loop_status() -> LoopTaskStatus {
+    LoopTaskStatus::Idle
+}
+
+/// Record of a single iteration within a loop cycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopIterationRecord {
+    /// Same id as the conversation_id used for this iteration.
+    pub id: String,
+    pub loop_task_id: String,
+    /// 1-based iteration number.
+    pub iteration: u32,
+    /// The actual prompt sent to the agent (after template substitution).
+    pub prompt: String,
+    /// Full agent output text.
+    pub result: String,
+    /// "ok" | "error"
+    pub status: String,
+    /// ISO-8601 (UTC)
+    pub started_at: String,
+    /// ISO-8601 (UTC)
+    pub finished_at: String,
+    /// Whether any exit condition was satisfied after this iteration.
+    pub exit_met: bool,
+    /// Snapshot of PROGRESS.md from the workspace (if it exists).
+    #[serde(default)]
+    pub progress_snapshot: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
 
@@ -918,8 +1045,13 @@ fn reveal_in_file_manager(path: String, workspace_path: Option<String>) -> Resul
     };
 
     // Canonicalize the best-available existing path for safety checks.
-    let check_path = std::fs::canonicalize(&target)
-        .map_err(|e| format!("Failed to canonicalize '{}': {}", target.to_string_lossy(), e))?;
+    let check_path = std::fs::canonicalize(&target).map_err(|e| {
+        format!(
+            "Failed to canonicalize '{}': {}",
+            target.to_string_lossy(),
+            e
+        )
+    })?;
     if !check_path.starts_with(&ws_canon) {
         return Err(format!(
             "Refusing to reveal path outside workspace: {}",
@@ -960,10 +1092,7 @@ fn reveal_in_file_manager(path: String, workspace_path: Option<String>) -> Resul
     let to_open = if is_dir {
         target
     } else {
-        target
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(target)
+        target.parent().map(|p| p.to_path_buf()).unwrap_or(target)
     };
     std::process::Command::new("xdg-open")
         .arg(&to_open)
@@ -1792,7 +1921,10 @@ async fn backfill_list(
                 let conv = &entry.conversation;
                 let conv_id = conv.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let title = conv.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let _engine = conv.get("engine").and_then(|v| v.as_str()).unwrap_or("claude");
+                let _engine = conv
+                    .get("engine")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("claude");
 
                 if conv_id.is_empty() || existing_ids.contains(conv_id) {
                     continue;
@@ -1943,7 +2075,10 @@ fn check_obsidian_installed() -> bool {
         PathBuf::from("/usr/bin/obsidian").exists()
             || PathBuf::from("/usr/local/bin/obsidian").exists()
             || PathBuf::from("/opt/Obsidian/obsidian").exists()
-            || PathBuf::from("/var/lib/flatpak/app/md.obsidian.Obsidian/current/active/files/obsidian").exists()
+            || PathBuf::from(
+                "/var/lib/flatpak/app/md.obsidian.Obsidian/current/active/files/obsidian",
+            )
+            .exists()
     }
 }
 
@@ -1957,9 +2092,7 @@ fn check_obsidian_installed() -> bool {
 #[tauri::command]
 async fn open_vault_in_obsidian(vault_path: Option<String>) -> Result<(), String> {
     if !check_obsidian_installed() {
-        return Err(
-            "Obsidian is not installed. Download it from https://obsidian.md".to_string()
-        );
+        return Err("Obsidian is not installed. Download it from https://obsidian.md".to_string());
     }
     let vault_path = match vault_path.as_deref() {
         Some(p) if !p.trim().is_empty() => p.to_string(),
@@ -2022,8 +2155,7 @@ async fn open_vault_in_obsidian(vault_path: Option<String>) -> Result<(), String
 pub(crate) fn ensure_obsidian_vault(vault_path: &str) -> Result<(), String> {
     let vault = PathBuf::from(vault_path);
     let obsidian_dir = vault.join(".obsidian");
-    fs::create_dir_all(&obsidian_dir)
-        .map_err(|e| format!("Cannot create .obsidian: {e}"))?;
+    fs::create_dir_all(&obsidian_dir).map_err(|e| format!("Cannot create .obsidian: {e}"))?;
 
     let vault_name = vault
         .file_name()
@@ -2056,15 +2188,9 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
         .join("obsidian")
         .join("obsidian.json");
     #[cfg(target_os = "windows")]
-    let obsidian_config = base
-        .config_dir()
-        .join("obsidian")
-        .join("obsidian.json");
+    let obsidian_config = base.config_dir().join("obsidian").join("obsidian.json");
     #[cfg(target_os = "linux")]
-    let obsidian_config = base
-        .config_dir()
-        .join("obsidian")
-        .join("obsidian.json");
+    let obsidian_config = base.config_dir().join("obsidian").join("obsidian.json");
 
     // If obsidian.json doesn't exist (Obsidian never launched), create the
     // config directory and a minimal registry with our vault.  This avoids the
@@ -2093,8 +2219,8 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
     let content = fs::read_to_string(&obsidian_config)
         .map_err(|e| format!("Cannot read obsidian.json: {e}"))?;
 
-    let mut config: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Cannot parse obsidian.json: {e}"))?;
+    let mut config: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Cannot parse obsidian.json: {e}"))?;
 
     // Check if our vault path is already in the vaults map.
     if let Some(vaults) = config.get("vaults").and_then(|v| v.as_object()) {
@@ -2117,10 +2243,7 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
         "ts": chrono::Utc::now().timestamp(),
     });
 
-    if let Some(vaults) = config
-        .get_mut("vaults")
-        .and_then(|v| v.as_object_mut())
-    {
+    if let Some(vaults) = config.get_mut("vaults").and_then(|v| v.as_object_mut()) {
         vaults.insert(vault_id.to_string(), entry);
     } else {
         let mut vaults = serde_json::Map::new();
@@ -2237,6 +2360,47 @@ fn get_data_dir(_app: &AppHandle) -> Result<PathBuf, String> {
     let dirs = directories::ProjectDirs::from("com", "pixie", "Pixie")
         .ok_or_else(|| "Failed to determine app data directory".to_string())?;
     Ok(dirs.data_dir().to_path_buf())
+}
+
+/// Log files older than this are purged at startup (see `cleanup_old_logs`).
+const LOG_RETENTION: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
+
+/// Delete rotated/archived log files older than `LOG_RETENTION` so the log
+/// directory can't grow without bound over time and across restarts.
+///
+/// Only files whose name starts with `prefix` and contains ".log" are touched —
+/// this catches the active `pixie.log`, dated rotations (`pixie_<date>.log`),
+/// and the `.bak` variants the rotator can leave behind. App data files
+/// (config.json, history.jsonl, loop_tasks.json, …) never match. The active
+/// `<prefix>.log` is always preserved regardless of age.
+fn cleanup_old_logs(dir: &std::path::Path, prefix: &str, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let active = format!("{}.log", prefix);
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        // Bind the OsString first; borrowing the temporary from file_name()
+        // directly would dangle at the end of the let-statement.
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(prefix) || !name.contains(".log") || name == active {
+            continue;
+        }
+        let Some(age) = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+        else {
+            continue;
+        };
+        if age > max_age {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Default Obsidian vault directory: `~/Documents/Pixie` (or platform equivalent).
@@ -2800,6 +2964,965 @@ async fn list_task_runs(app: AppHandle) -> Result<Vec<TaskRunRecord>, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Loop tasks: persistence, CRUD, iteration records
+// ---------------------------------------------------------------------------
+
+/// In-flight loop-task ids, so the same loop is never run twice concurrently.
+static RUNNING_LOOPS: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+fn running_loops() -> &'static Mutex<HashSet<String>> {
+    RUNNING_LOOPS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn load_loop_tasks(app: &AppHandle) -> Vec<LoopTask> {
+    let Ok(data_dir) = get_data_dir(app) else {
+        return vec![];
+    };
+    let path = data_dir.join("loop_tasks.json");
+    if !path.exists() {
+        return vec![];
+    }
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn persist_loop_tasks(app: &AppHandle, tasks: &[LoopTask]) -> Result<(), String> {
+    let data_dir = get_data_dir(app)?;
+    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
+    let json = serde_json::to_string_pretty(tasks)
+        .map_err(|e| format!("Failed to serialize loop tasks: {}", e))?;
+    fs::write(data_dir.join("loop_tasks.json"), json)
+        .map_err(|e| format!("Failed to write loop tasks: {}", e))
+}
+
+fn load_loop_iterations(app: &AppHandle) -> Vec<LoopIterationRecord> {
+    let Ok(data_dir) = get_data_dir(app) else {
+        return vec![];
+    };
+    let path = data_dir.join("loop_iterations.json");
+    if !path.exists() {
+        return vec![];
+    }
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn record_loop_iteration(app: &AppHandle, record: LoopIterationRecord) {
+    let Ok(data_dir) = get_data_dir(app) else {
+        return;
+    };
+    let _ = fs::create_dir_all(&data_dir);
+    let path = data_dir.join("loop_iterations.json");
+    let mut iterations: Vec<LoopIterationRecord> = if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    iterations.retain(|r| r.id != record.id);
+    iterations.push(record);
+    // Keep at most 1000 records total, 100 per task.
+    let keep_from = iterations.len().saturating_sub(1000);
+    iterations.drain(0..keep_from);
+    if let Ok(json) = serde_json::to_string_pretty(&iterations) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+fn validate_exit_conditions(conditions: &[LoopExitCondition]) -> Result<(), String> {
+    if conditions.is_empty() {
+        return Err("At least one exit condition is required".into());
+    }
+    for c in conditions {
+        match c {
+            LoopExitCondition::MaxIterations { max } => {
+                if *max < 1 || *max > 100 {
+                    return Err("max iterations must be 1-100".into());
+                }
+            }
+            LoopExitCondition::NoErrorPattern { pattern } => {
+                regex::Regex::new(pattern)
+                    .map_err(|e| format!("Invalid regex for no_error_pattern: {}", e))?;
+            }
+            LoopExitCondition::SuccessPattern { pattern } => {
+                regex::Regex::new(pattern)
+                    .map_err(|e| format!("Invalid regex for success_pattern: {}", e))?;
+            }
+            LoopExitCondition::OutputUnchanged { streak } => {
+                if *streak < 1 || *streak > 20 {
+                    return Err("output_unchanged streak must be 1-20".into());
+                }
+            }
+            LoopExitCondition::ManualOnly => {}
+        }
+    }
+    Ok(())
+}
+
+/// Collapse all runs of whitespace to single spaces and trim — used to compare
+/// two iterations' outputs for "no new findings" while ignoring formatting noise.
+fn normalize_for_compare(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Check whether any exit condition is satisfied given the iteration count, the
+/// agent's output text, and the current convergence streak.
+fn check_exit_conditions(
+    conditions: &[LoopExitCondition],
+    iteration: u32,
+    result: &str,
+    unchanged_streak: u32,
+) -> bool {
+    for c in conditions {
+        match c {
+            LoopExitCondition::MaxIterations { max } => {
+                if iteration >= *max {
+                    return true;
+                }
+            }
+            LoopExitCondition::NoErrorPattern { pattern } => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    // "No error" means the pattern does NOT match — the output
+                    // is clean.
+                    if !re.is_match(result) {
+                        return true;
+                    }
+                }
+            }
+            LoopExitCondition::SuccessPattern { pattern } => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(result) {
+                        return true;
+                    }
+                }
+            }
+            LoopExitCondition::OutputUnchanged { streak } => {
+                if unchanged_streak >= *streak {
+                    return true;
+                }
+            }
+            LoopExitCondition::ManualOnly => {
+                // Never auto-exit; the user must pause/stop manually.
+            }
+        }
+    }
+    false
+}
+
+/// Try to read PROGRESS.md from the workspace directory (State primitive).
+fn read_progress_md(workspace: &str) -> Option<String> {
+    let path = PathBuf::from(workspace).join("PROGRESS.md");
+    fs::read_to_string(&path).ok()
+}
+
+#[tauri::command]
+async fn list_loop_tasks(app: AppHandle) -> Result<Vec<LoopTask>, String> {
+    Ok(load_loop_tasks(&app))
+}
+
+#[tauri::command]
+async fn create_loop_task(app: AppHandle, mut task: LoopTask) -> Result<LoopTask, String> {
+    validate_exit_conditions(&task.exit_conditions)?;
+    if task.id.is_empty() {
+        task.id = uuid::Uuid::new_v4().to_string();
+    }
+    if task.created_at.is_empty() {
+        task.created_at = Utc::now().to_rfc3339();
+    }
+    task.iteration = 0;
+    task.status = LoopTaskStatus::Idle;
+    task.last_result = None;
+    task.unchanged_streak = 0;
+    // If scheduled + enabled, compute first next_run.
+    if task.enabled {
+        if let Some(sched) = task.schedule.as_ref() {
+            task.next_run = compute_next_run(sched, Utc::now());
+        }
+    }
+    let mut tasks = load_loop_tasks(&app);
+    tasks.push(task.clone());
+    persist_loop_tasks(&app, &tasks)?;
+    Ok(task)
+}
+
+#[tauri::command]
+async fn update_loop_task(app: AppHandle, task: LoopTask) -> Result<(), String> {
+    validate_exit_conditions(&task.exit_conditions)?;
+    let mut tasks = load_loop_tasks(&app);
+    let idx = tasks.iter().position(|t| t.id == task.id);
+    if let Some(idx) = idx {
+        tasks[idx] = task;
+        persist_loop_tasks(&app, &tasks)?;
+    } else {
+        return Err("Loop task not found".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
+    let mut tasks = load_loop_tasks(&app);
+    tasks.retain(|t| t.id != task_id);
+    persist_loop_tasks(&app, &tasks)?;
+    // Also remove iterations for this task.
+    let mut iterations = load_loop_iterations(&app);
+    iterations.retain(|r| r.loop_task_id != task_id);
+    let Ok(data_dir) = get_data_dir(&app) else {
+        return Ok(());
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&iterations) {
+        let _ = fs::write(data_dir.join("loop_iterations.json"), json);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_loop_task(app: AppHandle, task_id: String, enabled: bool) -> Result<(), String> {
+    let mut tasks = load_loop_tasks(&app);
+    let task = tasks.iter_mut().find(|t| t.id == task_id);
+    if let Some(task) = task {
+        task.enabled = enabled;
+        task.next_run = match (enabled, task.schedule.as_ref()) {
+            (true, Some(sched)) => compute_next_run(sched, Utc::now()),
+            _ => None,
+        };
+        persist_loop_tasks(&app, &tasks)?;
+    } else {
+        return Err("Loop task not found".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_loop_iterations(
+    app: AppHandle,
+    task_id: String,
+) -> Result<Vec<LoopIterationRecord>, String> {
+    let iterations = load_loop_iterations(&app);
+    Ok(iterations
+        .into_iter()
+        .filter(|r| r.loop_task_id == task_id)
+        .collect())
+}
+
+/// All iteration records across every loop task. Used at frontend load time to
+/// reconstruct loop-iteration conversations from durable backend data (so they
+/// survive app restarts regardless of the chat-history debounce).
+#[tauri::command]
+async fn list_all_loop_iterations(app: AppHandle) -> Result<Vec<LoopIterationRecord>, String> {
+    Ok(load_loop_iterations(&app))
+}
+
+// ---------------------------------------------------------------------------
+// Loop execution engine
+// ---------------------------------------------------------------------------
+
+/// Run a single loop iteration: construct the prompt, spawn headless, read
+/// the result, check exit conditions, and record the iteration.
+async fn run_loop_iteration(
+    app: &AppHandle,
+    task: &LoopTask,
+    conversation_id: String,
+) -> (String, String, bool, u32) {
+    // Returns (prompt, result, exit_met, new_unchanged_streak).
+    let started = Utc::now();
+
+    // Construct the prompt for this iteration.
+    let prompt = if task.iteration == 0 {
+        task.initial_prompt.clone()
+    } else {
+        let prev = task
+            .last_result
+            .as_deref()
+            .unwrap_or("(no previous result)");
+        task.result_template.replace("{{previous_result}}", prev)
+    };
+
+    // Spawn headless execution via the appropriate engine.
+    let engine_id = match task.engine {
+        AgentEngineId::Claude => "claude",
+        AgentEngineId::Cursor => "cursor",
+        AgentEngineId::Codebuddy => "codebuddy",
+    };
+
+    log::info!(
+        "[loop] '{}' iter {}: spawning {} (prompt_len={}, prev_result_len={})",
+        task.name,
+        task.iteration + 1,
+        engine_id,
+        prompt.len(),
+        task.last_result.as_deref().map(str::len).unwrap_or(0),
+    );
+
+    // Tell the frontend to open a real (streaming) conversation for this
+    // iteration, so the user can watch it execute like a normal chat — folded
+    // under the loop in the sidebar. Emitted before spawn so the conversation
+    // exists before the first agent-* event arrives.
+    let _ = app.emit(
+        "loop-iteration-started",
+        serde_json::json!({
+            "task_id": task.id,
+            "task_name": task.name,
+            "iteration": task.iteration + 1,
+            "conversation_id": conversation_id,
+            "workspace": task.workspace,
+            "engine": engine_id,
+            "prompt": prompt,
+        }),
+    );
+
+    let child =
+        match spawn_headless(engine_id, &conversation_id, &prompt, Some(&task.workspace)).await {
+            Ok(child) => child,
+            Err(e) => {
+                log::error!("[loop] spawn failed for '{}': {}", task.name, e);
+                // Finalize the conversation so it isn't stuck "generating" and
+                // unclickable in the sidebar.
+                let _ = app.emit(
+                    "agent-error",
+                    ResponseError {
+                        conversation_id: conversation_id.clone(),
+                        error: format!("Failed to start agent: {}", e),
+                    },
+                );
+                record_loop_iteration(
+                    app,
+                    LoopIterationRecord {
+                        id: conversation_id,
+                        loop_task_id: task.id.clone(),
+                        iteration: task.iteration + 1,
+                        prompt: prompt.clone(),
+                        result: String::new(),
+                        status: "error".into(),
+                        started_at: started.to_rfc3339(),
+                        finished_at: Utc::now().to_rfc3339(),
+                        exit_met: false,
+                        progress_snapshot: None,
+                    },
+                );
+                return (prompt, String::new(), false, 0);
+            }
+        };
+
+    // Stream the iteration's events into its chat conversation (keyed by
+    // conversation_id), exactly like send_message — tool calls, thinking and
+    // text render live, folded under the loop in the sidebar.
+    let conv_id_for_stream = conversation_id.clone();
+    let app_for_stream = app.clone();
+    let mut last_thinking: u64 = 0;
+    let mut stream_had_error = false;
+    let result = read_child_stream(engine_id, child, |events| {
+        for evt in events {
+            if matches!(evt, NormalizedEvent::Error { .. }) {
+                stream_had_error = true;
+            }
+        }
+        emit_agent_events(
+            &app_for_stream,
+            &conv_id_for_stream,
+            events,
+            &mut last_thinking,
+        );
+    })
+    .await;
+
+    // Finalize the conversation. An in-stream Error event already fired
+    // agent-error (and finalized the frontend), so don't double-finalize.
+    if !stream_had_error {
+        match &result {
+            Ok(text) => {
+                let _ = app.emit(
+                    "agent-done",
+                    ResponseDone {
+                        conversation_id: conversation_id.clone(),
+                        full_text: text.clone(),
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "agent-error",
+                    ResponseError {
+                        conversation_id: conversation_id.clone(),
+                        error: e.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
+    let finished = Utc::now();
+
+    let (full_text, status) = match result {
+        Ok(text) => (text, "ok"),
+        Err(e) => {
+            log::error!("[loop] stream error for '{}': {}", task.name, e);
+            (String::new(), "error")
+        }
+    };
+
+    // Convergence: did this iteration's output match the previous one? The loop
+    // feeds last_result into the next prompt, so an unchanged output means the
+    // agent made no progress ("no new findings").
+    let prev = normalize_for_compare(task.last_result.as_deref().unwrap_or(""));
+    let new_streak: u32 =
+        if status == "ok" && !prev.is_empty() && prev == normalize_for_compare(&full_text) {
+            task.unchanged_streak.saturating_add(1)
+        } else {
+            0
+        };
+
+    let exit_met = check_exit_conditions(
+        &task.exit_conditions,
+        task.iteration + 1,
+        &full_text,
+        new_streak,
+    );
+    log::info!(
+        "[loop] '{}' iter {}: status={}, result_len={}, unchanged_streak={}, exit_met={} — preview: {:?}",
+        task.name,
+        task.iteration + 1,
+        status,
+        full_text.len(),
+        new_streak,
+        exit_met,
+        full_text.chars().take(200).collect::<String>(),
+    );
+    let progress_snapshot = read_progress_md(&task.workspace);
+
+    // Truncate result to 50KB for storage.
+    let truncated: String = full_text.chars().take(50_000).collect();
+
+    record_loop_iteration(
+        app,
+        LoopIterationRecord {
+            id: conversation_id,
+            loop_task_id: task.id.clone(),
+            iteration: task.iteration + 1,
+            prompt: prompt.clone(),
+            result: truncated.clone(),
+            status: status.into(),
+            started_at: started.to_rfc3339(),
+            finished_at: finished.to_rfc3339(),
+            exit_met,
+            progress_snapshot,
+        },
+    );
+
+    (prompt, truncated, exit_met, new_streak)
+}
+
+/// Run a complete loop cycle: iterate until an exit condition is met, the loop
+/// is paused/stopped externally, or an error occurs.
+async fn run_loop_cycle(app: AppHandle, task_id: String) {
+    // Set initial status to Running and send a notification.
+    {
+        let mut tasks = load_loop_tasks(&app);
+        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            task.status = LoopTaskStatus::Running;
+            // Capture name/workspace before persisting (they won't change).
+            let task_name = task.name.clone();
+            let dir_label = basename(&task.workspace);
+            log::info!(
+                "[loop] '{}' cycle started: workspace={}, engine={:?}, {} exit condition(s)",
+                task_name,
+                task.workspace,
+                task.engine,
+                task.exit_conditions.len()
+            );
+            let _ = persist_loop_tasks(&app, &tasks);
+
+            use tauri_plugin_notification::NotificationExt;
+            let title = format!("🔄 {}", task_name);
+            let _ = app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(format!("Loop starting in {}…", dir_label))
+                .show();
+        }
+    }
+
+    let _ = app.emit(
+        "loop-cycle-started",
+        serde_json::json!({ "task_id": task_id }),
+    );
+
+    // Main iteration loop.
+    loop {
+        // Reload task to check for external pause/stop.
+        let fresh_tasks = load_loop_tasks(&app);
+        let fresh_task = fresh_tasks.iter().find(|t| t.id == task_id).cloned();
+
+        let Some(fresh_task) = fresh_task else {
+            log::error!("[loop] task {} disappeared during cycle", task_id);
+            break;
+        };
+
+        // If the task was paused, aborted, or disabled externally, stop iterating.
+        if matches!(
+            fresh_task.status,
+            LoopTaskStatus::Paused
+                | LoopTaskStatus::Aborted
+                | LoopTaskStatus::Completed
+                | LoopTaskStatus::Error
+        ) || !fresh_task.enabled
+        {
+            break;
+        }
+
+        // If the workspace no longer exists, stop with an error.
+        if !std::path::Path::new(&fresh_task.workspace).is_dir() {
+            log::error!("[loop] workspace vanished for '{}'", fresh_task.name);
+            let mut tasks = load_loop_tasks(&app);
+            if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                t.status = LoopTaskStatus::Error;
+                let _ = persist_loop_tasks(&app, &tasks);
+            }
+            break;
+        }
+
+        let conversation_id = uuid::Uuid::new_v4().to_string();
+        let (prompt, result, exit_met, new_streak) =
+            run_loop_iteration(&app, &fresh_task, conversation_id.clone()).await;
+
+        // Update the task's iteration count, last_result, and convergence streak.
+        {
+            let mut tasks = load_loop_tasks(&app);
+            if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                t.iteration += 1;
+                t.last_result = Some(result.clone());
+                t.unchanged_streak = new_streak;
+                let _ = persist_loop_tasks(&app, &tasks);
+            }
+        }
+
+        let _ = app.emit(
+            "loop-iteration-complete",
+            serde_json::json!({
+                "task_id": task_id,
+                "task_name": fresh_task.name,
+                "iteration": fresh_task.iteration + 1,
+                "conversation_id": conversation_id,
+                "workspace": fresh_task.workspace,
+                "engine": fresh_task.engine,
+                "prompt": prompt,
+                "result": result,
+                "status": "ok",
+                "exit_met": exit_met,
+            }),
+        );
+
+        if exit_met {
+            // Exit condition satisfied — mark completed.
+            use tauri_plugin_notification::NotificationExt;
+            let title = format!("🔄 {}", fresh_task.name);
+            let preview: String = result.chars().take(160).collect();
+            {
+                let mut tasks = load_loop_tasks(&app);
+                if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                    t.status = LoopTaskStatus::Completed;
+                    let _ = persist_loop_tasks(&app, &tasks);
+                }
+            }
+            let _ = app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(format!("Loop completed: {}", preview))
+                .show();
+            let _ = app.emit(
+                "loop-cycle-complete",
+                serde_json::json!({ "task_id": task_id, "status": "completed" }),
+            );
+            break;
+        }
+
+        // Check again if task was paused/aborted externally after the iteration.
+        let tasks = load_loop_tasks(&app);
+        if let Some(t) = tasks.iter().find(|t| t.id == task_id) {
+            if matches!(
+                t.status,
+                LoopTaskStatus::Paused
+                    | LoopTaskStatus::Aborted
+                    | LoopTaskStatus::Completed
+                    | LoopTaskStatus::Error
+            ) || !t.enabled
+            {
+                break;
+            }
+        }
+    }
+
+    // Final state cleanup: if the loop exited because of an external status
+    // change (Paused / Aborted), those states are already on disk — don't
+    // overwrite them.  Only fix up the Running→Aborted case where no explicit
+    // stop command was received (e.g. scheduler killed the process).
+    {
+        let mut tasks = load_loop_tasks(&app);
+        if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+            if matches!(t.status, LoopTaskStatus::Running) {
+                // The async task exited without an explicit pause/stop —
+                // this can happen if the app was shutting down. Mark as
+                // Aborted so the user can restart.
+                t.status = LoopTaskStatus::Aborted;
+            }
+            // If scheduled, compute next_run for the next cycle.
+            if t.enabled {
+                if let Some(sched) = t.schedule.as_ref() {
+                    t.next_run = compute_next_run(sched, Utc::now());
+                    t.last_run = Some(Utc::now().to_rfc3339());
+                }
+            }
+            // Snapshot fields before the immutable borrow in persist_loop_tasks.
+            let end_name = t.name.clone();
+            let end_status = t.status.clone();
+            let end_iters = t.iteration;
+            let _ = persist_loop_tasks(&app, &tasks);
+            log::info!(
+                "[loop] '{}' cycle ended: final_status={:?}, iterations={}",
+                end_name,
+                end_status,
+                end_iters
+            );
+        }
+    }
+
+    running_loops().lock().await.remove(&task_id);
+}
+
+#[tauri::command]
+async fn start_loop_task(app: AppHandle, task_id: String) -> Result<String, String> {
+    let tasks = load_loop_tasks(&app);
+    let task = tasks.iter().find(|t| t.id == task_id).cloned();
+    let Some(task) = task else {
+        return Err("Loop task not found".into());
+    };
+    if matches!(task.status, LoopTaskStatus::Running) {
+        return Err("Loop task is already running".into());
+    }
+
+    // Re-entrancy guard.
+    {
+        let mut running = running_loops().lock().await;
+        if running.contains(&task_id) {
+            return Err("Loop task is already running".into());
+        }
+        // Enforce max 3 concurrent loops.
+        if running.len() >= 3 {
+            return Err("Too many concurrent loops (max 3)".into());
+        }
+        running.insert(task_id.clone());
+    }
+
+    // Reset task state for a fresh cycle.
+    let mut tasks = load_loop_tasks(&app);
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+        t.iteration = 0;
+        t.last_result = None;
+        t.unchanged_streak = 0;
+        t.status = LoopTaskStatus::Idle; // run_loop_cycle will set Running
+        let _ = persist_loop_tasks(&app, &tasks);
+    }
+
+    let app_for_run = app.clone();
+    let task_id_for_spawn = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        run_loop_cycle(app_for_run, task_id_for_spawn).await;
+    });
+
+    Ok(task_id)
+}
+
+#[tauri::command]
+async fn pause_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
+    let mut tasks = load_loop_tasks(&app);
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+        if !matches!(t.status, LoopTaskStatus::Running) {
+            return Err("Loop task is not running".into());
+        }
+        t.status = LoopTaskStatus::Paused;
+        persist_loop_tasks(&app, &tasks)?;
+    } else {
+        return Err("Loop task not found".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
+    let tasks = load_loop_tasks(&app);
+    let task = tasks.iter().find(|t| t.id == task_id).cloned();
+    let Some(task) = task else {
+        return Err("Loop task not found".into());
+    };
+    if !matches!(task.status, LoopTaskStatus::Paused) {
+        return Err("Loop task is not paused".into());
+    }
+
+    // Re-entrancy guard.
+    {
+        let mut running = running_loops().lock().await;
+        if running.contains(&task_id) {
+            return Err("Loop task is already running".into());
+        }
+        running.insert(task_id.clone());
+    }
+
+    // Set back to Idle (run_loop_cycle will immediately set Running).
+    let mut tasks = load_loop_tasks(&app);
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+        t.status = LoopTaskStatus::Idle;
+        let _ = persist_loop_tasks(&app, &tasks);
+    }
+
+    let app_for_run = app.clone();
+    let task_id_for_spawn = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        run_loop_cycle(app_for_run, task_id_for_spawn).await;
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
+    let mut tasks = load_loop_tasks(&app);
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+        t.status = LoopTaskStatus::Aborted;
+        // Keep enabled so the user can restart if desired.
+        // next_run is cleared because the current cycle is cancelled.
+        t.next_run = None;
+        persist_loop_tasks(&app, &tasks)?;
+        let _ = app.emit(
+            "loop-cycle-complete",
+            serde_json::json!({ "task_id": task_id, "status": "aborted" }),
+        );
+    } else {
+        return Err("Loop task not found".into());
+    }
+    Ok(())
+}
+
+/// Resume a paused loop, injecting an extra user prompt before continuing.
+/// The user's message is appended to the result_template output, so the next
+/// iteration sees both the previous result and the human's added note.
+#[tauri::command]
+async fn resume_loop_task_with_prompt(
+    app: AppHandle,
+    task_id: String,
+    user_prompt: String,
+) -> Result<(), String> {
+    let tasks = load_loop_tasks(&app);
+    let task = tasks.iter().find(|t| t.id == task_id).cloned();
+    let Some(task) = task else {
+        return Err("Loop task not found".into());
+    };
+    if !matches!(task.status, LoopTaskStatus::Paused) {
+        return Err("Loop task is not paused".into());
+    }
+
+    // Inject the user's prompt by appending it to last_result.
+    // The next iteration will use result_template with this enriched context.
+    let enriched_result = match task.last_result {
+        Some(prev) => format!("{}\n\n---\nHuman note:\n{}", prev, user_prompt),
+        None => format!("Human note:\n{}", user_prompt),
+    };
+
+    {
+        let mut tasks = load_loop_tasks(&app);
+        if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+            t.last_result = Some(enriched_result);
+            let _ = persist_loop_tasks(&app, &tasks);
+        }
+    }
+
+    // Re-entrancy guard.
+    {
+        let mut running = running_loops().lock().await;
+        if running.contains(&task_id) {
+            return Err("Loop task is already running".into());
+        }
+        running.insert(task_id.clone());
+    }
+
+    // Set back to Idle (run_loop_cycle will immediately set Running).
+    {
+        let mut tasks = load_loop_tasks(&app);
+        if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+            t.status = LoopTaskStatus::Idle;
+            let _ = persist_loop_tasks(&app, &tasks);
+        }
+    }
+
+    let app_for_run = app.clone();
+    let task_id_for_spawn = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        run_loop_cycle(app_for_run, task_id_for_spawn).await;
+    });
+
+    Ok(())
+}
+
+/// Discard a loop task entirely — mark as Aborted + disabled, no restart.
+#[tauri::command]
+async fn discard_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
+    let mut tasks = load_loop_tasks(&app);
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+        t.status = LoopTaskStatus::Aborted;
+        t.enabled = false;
+        t.next_run = None;
+        persist_loop_tasks(&app, &tasks)?;
+        let _ = app.emit(
+            "loop-cycle-complete",
+            serde_json::json!({ "task_id": task_id, "status": "aborted" }),
+        );
+    } else {
+        return Err("Loop task not found".into());
+    }
+    Ok(())
+}
+
+/// Check scheduled loop tasks whose next_run is due and fire them.
+async fn check_and_run_due_loops(app: &AppHandle) {
+    let now = Utc::now();
+    let mut tasks = load_loop_tasks(app);
+    let mut changed = false;
+
+    for task in tasks.iter_mut() {
+        if !task.enabled {
+            continue;
+        }
+        // Owned copy so later `task` mutations don't conflict with the borrow.
+        let Some(sched) = task.schedule.clone() else {
+            continue;
+        };
+        // Only fire idle or completed tasks.
+        if !matches!(
+            task.status,
+            LoopTaskStatus::Idle | LoopTaskStatus::Completed
+        ) {
+            continue;
+        }
+
+        let next: Option<DateTime<Utc>> = task
+            .next_run
+            .as_ref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+            .or_else(|| {
+                compute_next_run(&sched, now)
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|d| d.with_timezone(&Utc))
+            });
+
+        let Some(next) = next else { continue };
+
+        if next > now {
+            if task.next_run.is_none() {
+                task.next_run = Some(next.to_rfc3339());
+                changed = true;
+            }
+            continue;
+        }
+
+        // Stale by >5 min — advance without firing (skip catch-up).
+        let stale = now.signed_duration_since(next);
+        if stale.num_minutes() > 5 {
+            task.next_run = compute_next_run(&sched, now);
+            changed = true;
+            continue;
+        }
+
+        // Re-entrancy guard.
+        {
+            let mut running = running_loops().lock().await;
+            if running.contains(&task.id) || running.len() >= 3 {
+                continue;
+            }
+            running.insert(task.id.clone());
+        }
+
+        // Reset for a fresh cycle and advance schedule.
+        task.iteration = 0;
+        task.last_result = None;
+        task.unchanged_streak = 0;
+        task.status = LoopTaskStatus::Idle;
+        task.last_run = Some(now.to_rfc3339());
+        task.next_run = compute_next_run(&sched, now);
+        changed = true;
+
+        let task_id = task.id.clone();
+        let app_for_run = app.clone();
+        tauri::async_runtime::spawn(async move {
+            run_loop_cycle(app_for_run, task_id).await;
+        });
+    }
+
+    if changed {
+        if let Err(e) = persist_loop_tasks(app, &tasks) {
+            log::error!("[loop scheduler] persist failed: {}", e);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Beta-channel updates
+
+/// Check for and install an update from an explicit manifest endpoint (used by
+/// the "Install beta" flow — the frontend discovers the latest beta release's
+/// `latest.json` URL and passes it here). The signing pubkey comes from the
+/// app's updater config, so beta builds must be signed with the same key.
+///
+/// Emits `update-download-progress` { downloaded, total } during download.
+/// Returns `Ok(Some(version))` after installing, `Ok(None)` if already on the
+/// latest version on that endpoint.
+#[tauri::command]
+async fn install_update_from_endpoint(
+    app: AppHandle,
+    endpoint: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let url = url::Url::parse(&endpoint).map_err(|e| format!("Invalid endpoint URL: {}", e))?;
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| format!("Failed to build updater: {}", e))?
+        .build()
+        .map_err(|e| format!("Failed to build updater: {}", e))?;
+
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => return Ok(None), // already up-to-date on this channel
+        Err(e) => return Err(format!("Update check failed: {}", e)),
+    };
+
+    let version = update.version.clone();
+    let app_for_progress = app.clone();
+    update
+        .download_and_install(
+            move |downloaded, total| {
+                let _ = app_for_progress.emit(
+                    "update-download-progress",
+                    serde_json::json!({ "downloaded": downloaded as u64, "total": total }),
+                );
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| format!("Download/install failed: {}", e))?;
+
+    log::info!("[updater] installed update from endpoint: {}", version);
+    Ok(Some(version))
+}
+
+// ---------------------------------------------------------------------------
 // Application entry point
 // ---------------------------------------------------------------------------
 
@@ -2812,12 +3935,69 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+            // Logging: always write to a rotating file in the app data dir
+            // (alongside config.json / loop_tasks.json) so every run — including
+            // release and scheduled loops — is observable. Debug builds also
+            // mirror to stdout for the `pnpm tauri dev` terminal.
+            {
+                let mut targets: Vec<tauri_plugin_log::Target> = Vec::new();
+                let mut log_path: Option<PathBuf> = None;
+                if let Ok(log_dir) = get_data_dir(app.handle()) {
+                    // Purge archived log files older than the retention window
+                    // before (re)opening the active log.
+                    cleanup_old_logs(&log_dir, "pixie", LOG_RETENTION);
+                    log_path = Some(log_dir.join("pixie.log"));
+                    targets.push(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::Folder {
+                            path: log_dir,
+                            file_name: Some("pixie".to_string()),
+                        },
+                    ));
+                }
+                if cfg!(debug_assertions) {
+                    targets.push(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::Stdout,
+                    ));
+                }
+                if !targets.is_empty() {
+                    let _ = app.handle().plugin(
+                        tauri_plugin_log::Builder::new()
+                            .level(log::LevelFilter::Info)
+                            .targets(targets)
+                            .max_file_size(5_000_000) // rotate at ~5 MB
+                            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                            .build(),
+                    );
+                    if let Some(p) = log_path {
+                        log::info!("[startup] logging to {}", p.display());
+                    }
+                }
+            }
+
+            // --- Startup: reconcile stale loop states ---
+            // Any loop task marked "running" on disk is a leftover from a
+            // previous session that crashed or was killed — no async task is
+            // actually running for it.  Reset them to "aborted" so the UI
+            // shows the correct state and the user can restart if desired.
+            {
+                let app_handle = app.handle().clone();
+                let mut tasks = load_loop_tasks(&app_handle);
+                let mut changed = false;
+                for task in tasks.iter_mut() {
+                    if matches!(task.status, LoopTaskStatus::Running) {
+                        log::warn!(
+                            "[startup] loop '{}' was 'running' on disk but no process exists — resetting to 'aborted'",
+                            task.name
+                        );
+                        task.status = LoopTaskStatus::Aborted;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    if let Err(e) = persist_loop_tasks(&app_handle, &tasks) {
+                        log::error!("[startup] persist loop reconciliation failed: {}", e);
+                    }
+                }
             }
 
             // --- Scheduled tasks background loop ---
@@ -2830,6 +4010,7 @@ pub fn run() {
                 loop {
                     ticker.tick().await;
                     check_and_run_due_tasks(&scheduler_handle).await;
+                    check_and_run_due_loops(&scheduler_handle).await;
                 }
             });
 
@@ -3006,6 +4187,20 @@ pub fn run() {
             toggle_scheduled_task,
             run_scheduled_task_now,
             list_task_runs,
+            list_loop_tasks,
+            create_loop_task,
+            update_loop_task,
+            delete_loop_task,
+            toggle_loop_task,
+            start_loop_task,
+            pause_loop_task,
+            resume_loop_task,
+            stop_loop_task,
+            resume_loop_task_with_prompt,
+            discard_loop_task,
+            list_loop_iterations,
+            list_all_loop_iterations,
+            install_update_from_endpoint,
             summarize_conversation,
             get_default_vault_path,
             initialize_kb_vault,
@@ -3062,5 +4257,78 @@ mod tests {
                 s
             );
         }
+    }
+
+    #[test]
+    fn cleanup_old_logs_purges_old_keeps_recent_and_data() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("pixie-log-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write a file and backdate its modification time.
+        let touch_old = |name: &str, age_secs: u64| {
+            let path = dir.join(name);
+            std::fs::write(&path, "x").unwrap();
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(age_secs))
+                .unwrap();
+        };
+
+        touch_old("pixie.log", 10); // active log → always kept
+        touch_old("pixie_2025-01-01.log", 30 * 86400); // old rotation → purged
+        touch_old("pixie_2025-01-01.log.bak", 30 * 86400); // old .bak → purged
+        touch_old("pixie_2099-01-01.log", 1); // recent rotation → kept
+        touch_old("config.json", 30 * 86400); // old data file → untouched
+
+        cleanup_old_logs(&dir, "pixie", LOG_RETENTION);
+
+        assert!(
+            dir.join("pixie.log").exists(),
+            "active log must be preserved"
+        );
+        assert!(
+            !dir.join("pixie_2025-01-01.log").exists(),
+            "old rotated log must be purged"
+        );
+        assert!(
+            !dir.join("pixie_2025-01-01.log.bak").exists(),
+            "old .bak log must be purged"
+        );
+        assert!(
+            dir.join("pixie_2099-01-01.log").exists(),
+            "recent rotated log must be kept"
+        );
+        assert!(
+            dir.join("config.json").exists(),
+            "non-log data file must never be touched"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn output_unchanged_exit_condition_respects_streak() {
+        use LoopExitCondition::OutputUnchanged;
+        let one = OutputUnchanged { streak: 1 };
+        let two = OutputUnchanged { streak: 2 };
+
+        // streak 0 → not yet converged → keep going.
+        assert!(!check_exit_conditions(&[one.clone()], 5, "anything", 0));
+        // streak meets threshold → stop.
+        assert!(check_exit_conditions(&[one], 5, "anything", 1));
+        assert!(!check_exit_conditions(&[two.clone()], 5, "anything", 1));
+        assert!(check_exit_conditions(&[two], 5, "anything", 2));
+    }
+
+    #[test]
+    fn normalize_for_compare_ignores_whitespace() {
+        // Formatting differences alone must not count as "new findings".
+        assert_eq!(normalize_for_compare("a  b\n\nc"), "a b c");
+        assert_eq!(normalize_for_compare("  x y  "), "x y");
+        assert_eq!(
+            normalize_for_compare("hello"),
+            normalize_for_compare("hello\n")
+        );
+        assert_ne!(normalize_for_compare("foo"), normalize_for_compare("bar"));
     }
 }

@@ -55,6 +55,11 @@ export interface Conversation {
   engine: AgentEngineId;
   /** Per-conversation model override. When empty/undefined, uses the engine's global config. */
   model?: string;
+  /** When present, this conversation is a loop iteration and belongs to the
+   *  loop task with this id. The sidebar uses this to group iterations under their parent. */
+  loopTaskId?: string;
+  /** Display name of the parent loop task (for sidebar grouping header). */
+  loopTaskName?: string;
 }
 
 export type AgentEngineId = "claude" | "cursor" | "codebuddy";
@@ -323,8 +328,63 @@ export interface TaskRunRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Structured git diff (parsed from raw `git diff` unified output)
+// Loop tasks
 // ---------------------------------------------------------------------------
+
+/** An exit condition for a loop task. The loop terminates when ANY condition is met. */
+export type LoopExitCondition =
+  | { type: "max_iterations"; max: number }
+  | { type: "no_error_pattern"; pattern: string }
+  | { type: "success_pattern"; pattern: string }
+  | { type: "output_unchanged"; streak: number }
+  | { type: "manual_only" };
+
+/** Current lifecycle state of a loop task. */
+export type LoopTaskStatus = "idle" | "running" | "paused" | "completed" | "aborted" | "error";
+
+/** A loop task: an iterative agent cycle that feeds each iteration's result
+ *  back as context for the next one, until an exit condition is satisfied. */
+export interface LoopTask {
+  id: string;
+  name: string;
+  workspace: string;
+  engine: AgentEngineId;
+  /** Prompt for the first iteration. */
+  initial_prompt: string;
+  /** Template for subsequent iterations. `{{previous_result}}` is replaced
+   *  with the last iteration's output. */
+  result_template: string;
+  /** Exit conditions — loop stops when ANY one is satisfied. */
+  exit_conditions: LoopExitCondition[];
+  /** Iterations completed so far (0 = not started). */
+  iteration: number;
+  status: LoopTaskStatus;
+  /** Raw output of the most recent iteration. */
+  last_result: string | null;
+  /** Optional schedule for automatic triggering. */
+  schedule?: ScheduleSpec | null;
+  next_run: string | null;
+  last_run: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+/** Record of a single iteration within a loop cycle. */
+export interface LoopIterationRecord {
+  id: string;
+  loop_task_id: string;
+  iteration: number;
+  /** The actual prompt sent (after template substitution). */
+  prompt: string;
+  result: string;
+  status: "ok" | "error";
+  started_at: string;
+  finished_at: string;
+  /** Whether any exit condition was satisfied after this iteration. */
+  exit_met: boolean;
+  /** Snapshot of PROGRESS.md from the workspace (if it exists). */
+  progress_snapshot?: string | null;
+}
 
 export type DiffLineType = "context" | "add" | "delete";
 

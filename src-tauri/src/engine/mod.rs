@@ -336,12 +336,33 @@ impl ProbeOutcome {
 fn classify_probe_error(message: &str) -> AuthState {
     let lower = message.to_lowercase();
     const EN: &[&str] = &[
-        "auth", "credential", "unauthorized", "forbidden", "401", "403", "api key",
-        "apikey", "api-key", "access token", "not logged in", "not signed in", "log in",
-        "sign in", "login", "signin",
+        "auth",
+        "credential",
+        "unauthorized",
+        "forbidden",
+        "401",
+        "403",
+        "api key",
+        "apikey",
+        "api-key",
+        "access token",
+        "not logged in",
+        "not signed in",
+        "log in",
+        "sign in",
+        "login",
+        "signin",
     ];
     const ZH: &[&str] = &[
-        "鉴权", "未登录", "请登录", "请先登录", "登录", "凭证", "授权失败", "身份验证", "认证",
+        "鉴权",
+        "未登录",
+        "请登录",
+        "请先登录",
+        "登录",
+        "凭证",
+        "授权失败",
+        "身份验证",
+        "认证",
     ];
     if EN.iter().any(|k| lower.contains(k)) || ZH.iter().any(|k| message.contains(k)) {
         AuthState::NotAuthenticated
@@ -544,8 +565,14 @@ pub async fn install(id: &str) -> Result<InstallOutcome> {
         format!("{stdout}\n{stderr}")
     };
     let success = output.status.success();
-    log::info!("[install] {id}: success={success}, {} output bytes", combined.len());
-    Ok(InstallOutcome { success, output: combined })
+    log::info!(
+        "[install] {id}: success={success}, {} output bytes",
+        combined.len()
+    );
+    Ok(InstallOutcome {
+        success,
+        output: combined,
+    })
 }
 
 /// Fetch available models for a given engine.

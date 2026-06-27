@@ -72,7 +72,8 @@ pub async fn rebuild_index(vault_dir: &Path) -> Result<SearchIndexStats> {
     };
     log::info!(
         "[search] index rebuilt: {} docs, {} terms",
-        stats.doc_count, stats.term_count
+        stats.doc_count,
+        stats.term_count
     );
 
     // Persist to disk.

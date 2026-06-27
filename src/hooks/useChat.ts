@@ -19,6 +19,8 @@ import type {
   WorkspaceState,
   EngineModelConfigs,
   TaskRunRecord,
+  LoopTask,
+  LoopIterationRecord,
 } from "../types";
 import { AGENT_ENGINES } from "../types";
 import { getConfig, getHistory, setHistory, updateConfig } from "../lib/storage";
@@ -570,6 +572,93 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     ensureDefault();
   }, []);
 
+  // Reconstruct loop-iteration conversations from durable backend data
+  // (loop_iterations.json). Loop iterations are backend-owned; the chat-history
+  // debounce/quit path is unreliable for them, so we rebuild any iteration not
+  // already present in memory (e.g. a live-streamed transcript that DID persist
+  // takes precedence). Live streaming during a run is unaffected — this only
+  // guarantees iterations survive restart.
+  useEffect(() => {
+    if (!loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [tasks, iterations] = await Promise.all([
+          invoke<LoopTask[]>("list_loop_tasks"),
+          invoke<LoopIterationRecord[]>("list_all_loop_iterations"),
+        ]);
+        if (cancelled || iterations.length === 0) return;
+        const taskById = new Map(tasks.map((t) => [t.id, t]));
+        // Build candidate conversations from a snapshot (ids are stable; we
+        // re-check against the latest state inside the updater to avoid races).
+        const snapshot = allConversationsRef.current;
+        const seen = new Set<string>();
+        for (const convs of Object.values(snapshot))
+          for (const c of convs) seen.add(c.id);
+        const candidates: { conv: Conversation; wsId: string }[] = [];
+        for (const it of iterations) {
+          if (seen.has(it.id)) continue; // full transcript from history wins
+          const task = taskById.get(it.loop_task_id);
+          if (!task) continue;
+          const created = Date.parse(it.started_at) || Date.now();
+          const updated = Date.parse(it.finished_at) || created;
+          candidates.push({
+            wsId: task.workspace,
+            conv: {
+              id: it.id,
+              title: `Loop: ${task.name} #${it.iteration}`,
+              createdAt: created,
+              updatedAt: updated,
+              engine: task.engine,
+              loopTaskId: task.id,
+              loopTaskName: task.name,
+              messages: [
+                {
+                  id: generateId(),
+                  role: "user",
+                  content: it.prompt,
+                  timestamp: created,
+                  status: "done",
+                },
+                {
+                  id: generateId(),
+                  role: "assistant",
+                  content:
+                    it.result ||
+                    (it.exit_met ? "(exit condition met, no output)" : "(no output)"),
+                  timestamp: updated,
+                  status: it.status === "error" ? "error" : "done",
+                },
+              ],
+            },
+          });
+        }
+        if (cancelled || candidates.length === 0) return;
+        setAllConversations((curr) => {
+          const have = new Set<string>();
+          for (const convs of Object.values(curr))
+            for (const c of convs) have.add(c.id);
+          let changed = false;
+          const next = { ...curr };
+          for (const { conv, wsId } of candidates) {
+            if (have.has(conv.id)) continue;
+            next[wsId] = [...(next[wsId] ?? []), conv];
+            have.add(conv.id);
+            changed = true;
+          }
+          return changed ? next : curr;
+        });
+        // Sync the conv→workspace index for the reconstructed iterations.
+        for (const { conv, wsId } of candidates) convIndexRef.current.set(conv.id, wsId);
+      } catch (e) {
+        console.error("[loop] reconstruct iterations on load failed", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loaded]);
+
   // Persist history to disk. Reacts only to conversation changes (not workspace
   // selection) so switching the active session never rewrites the whole file.
   // Debounced while an agent is streaming; immediate when idle. The storage
@@ -674,7 +763,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           const convId = done.conversation_id;
           const wsId = findWorkspaceForConversation(allConversationsRef.current, convId, convIndexRef);
           const conv = wsId ? allConversationsRef.current[wsId]?.find((c) => c.id === convId) : undefined;
-          if (conv) {
+          // Skip per-turn KB summarization for loop iterations — a loop can run
+          // many turns and we don't want to spam the vault / burn tokens per iter.
+          if (conv && !conv.loopTaskId) {
             const vault = getConfig().vaultPath ?? null;
             // Always invoke — backend falls back to <data_dir>/kb/ if vaultPath is null.
             const transcript = buildTranscript(conv.messages, done.full_text);
@@ -767,8 +858,45 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         );
       });
 
-      if (!mounted) { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); return; }
-      unlistenRefs.current = [u1, u2, u3, u4, u5, u6, u7, u8];
+      // A loop iteration is starting: open a real (streaming) conversation for
+      // it so the existing agent-* listeners populate it live and it renders in
+      // the sidebar, folded under its loop via the loopTaskId marker.
+      const u9 = await listen<{
+        task_id: string;
+        task_name: string;
+        iteration: number;
+        conversation_id: string;
+        workspace: string;
+        engine: string;
+        prompt: string;
+      }>("loop-iteration-started", (event) => {
+        const p = event.payload;
+        const now = Date.now();
+        const conv: Conversation = {
+          id: p.conversation_id,
+          title: `Loop: ${p.task_name} #${p.iteration}`,
+          createdAt: now,
+          updatedAt: now,
+          engine: p.engine as AgentEngineId,
+          loopTaskId: p.task_id,
+          loopTaskName: p.task_name,
+          messages: [
+            { id: generateId(), role: "user", content: p.prompt, timestamp: now, status: "done" },
+            { id: generateId(), role: "assistant", content: "", timestamp: now, status: "streaming" },
+          ],
+        };
+        const wsId = p.workspace;
+        convIndexRef.current.set(p.conversation_id, wsId);
+        setAllConversations((prev) => {
+          const list = prev[wsId] ?? [];
+          const without = list.filter((c) => c.id !== conv.id);
+          return { ...prev, [wsId]: [conv, ...without] };
+        });
+        setGeneratingIds((prev) => new Set(prev).add(p.conversation_id));
+      });
+
+      if (!mounted) { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); return; }
+      unlistenRefs.current = [u1, u2, u3, u4, u5, u6, u7, u8, u9];
     }
 
     setup();

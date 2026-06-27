@@ -213,6 +213,9 @@ pub async fn spawn_single(
             "--print".into(),
             "--output-format".into(),
             "stream-json".into(),
+            // `--print --output-format stream-json` requires --verbose, else
+            // claude errors out before emitting any output.
+            "--verbose".into(),
             "--permission-mode".into(),
             "bypassPermissions".into(),
         ],
@@ -236,6 +239,7 @@ pub async fn spawn_continue(
             "--print".into(),
             "--output-format".into(),
             "stream-json".into(),
+            "--verbose".into(),
             "--permission-mode".into(),
             "bypassPermissions".into(),
         ],
@@ -262,6 +266,7 @@ pub async fn spawn_headless(
             "--print".into(),
             "--output-format".into(),
             "stream-json".into(),
+            "--verbose".into(),
             "--dangerously-skip-permissions".into(),
         ],
         message,

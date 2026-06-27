@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, memo } from "react";
 import type { ConversationEntry } from "../hooks/useChat";
-import type { WorkspaceState, AgentEngineId, EngineModelConfigs } from "../types";
+import type { WorkspaceState, AgentEngineId, EngineModelConfigs, LoopTask } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
 import NewAgentModal from "./NewAgentModal";
 import EngineBadge from "./EngineBadge";
@@ -20,6 +20,7 @@ interface SidebarProps {
   onSetWorkspaceFilter: (id: string | null) => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
+  onOpenLoops: () => void;
   onOpenSkills: () => void;
   isOpen: boolean;
   onClose: () => void;
@@ -29,6 +30,8 @@ interface SidebarProps {
   /** Engine ids that are installed + ready; the New Agent picker is limited to these. */
   readyEngineIds: AgentEngineId[];
   defaultWorkspacePath: string;
+  /** Active loop tasks — used to group loop-iteration conversations in the sidebar. */
+  loopTasks: LoopTask[];
 }
 
 function relativeTime(ts: number): string {
@@ -219,6 +222,97 @@ function SectionHeader({
   );
 }
 
+/** A collapsible group of loop iteration conversations under a loop task name. */
+function LoopGroup({
+  group,
+  activeId,
+  generatingIds,
+  onSelect,
+  onDelete,
+}: {
+  group: { taskId: string; taskName: string; status: LoopTask["status"]; entries: ConversationEntry[] };
+  activeId: string | null;
+  generatingIds: Set<string>;
+  onSelect: (id: string, workspaceId: string) => void;
+  onDelete: (id: string, workspaceId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const isRunning = group.status === "running";
+
+  const statusIcon = isRunning ? (
+    <div className="w-2.5 h-2.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />
+  ) : null;
+
+  return (
+    <div className="mb-1">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+      >
+        <svg
+          width="10" height="10" viewBox="0 0 10 10" fill="none"
+          className={`shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+        >
+          <path d="M3 2l4 3-4 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {statusIcon}
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="shrink-0 text-[var(--text-secondary)]">
+          <path d="M2 7a5 5 0 119 0 5 5 0 01-9 0z" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M7 2v2M7 10v2M2 7h2M10 7h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+        <span className="font-medium truncate">{group.taskName}</span>
+        <span className="opacity-60">· {group.entries.length}</span>
+      </button>
+      {expanded && (
+        <div className="pl-3">
+          {group.entries.map((entry) => {
+            const conv = entry.conversation;
+            const isActive = conv.id === activeId;
+            const isGenerating = generatingIds.has(conv.id);
+            return (
+              <div
+                key={conv.id}
+                onClick={() => onSelect(conv.id, entry.workspaceId)}
+                className={`
+                  group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer mb-0.5
+                  transition-colors
+                  ${isActive
+                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/40"
+                  }
+                `}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    {isGenerating && (
+                      <span className="shrink-0 w-2 h-2 rounded-full bg-green-400 animate-pulse" title="Generating..." />
+                    )}
+                    <p className="text-sm truncate leading-tight">{conv.title}</p>
+                  </div>
+                  <p className="text-[10px] mt-0.5 opacity-60 truncate flex items-center gap-1.5">
+                    <EngineBadge engine={conv.engine} />
+                    <span className="opacity-60">·</span>
+                    <span>{relativeTime(conv.updatedAt)}</span>
+                  </p>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDelete(conv.id, entry.workspaceId); }}
+                  className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-red-400 transition-all"
+                  title="Delete conversation"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+                    <path d="M4.5 2h5a.5.5 0 010 1h-5a.5.5 0 010-1zM3 4h8l-.7 8.4a1 1 0 01-1 .9H4.7a1 1 0 01-1-.9L3 4zm2.5 2v5M7 6v5M8.5 6v5" stroke="currentColor" strokeWidth="1" fill="none" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EntryList({
   entries,
   workspaces,
@@ -275,6 +369,7 @@ export default function Sidebar({
   onSetWorkspaceFilter,
   onOpenSettings,
   onOpenTasks,
+  onOpenLoops,
   onOpenSkills,
   isOpen,
   onClose,
@@ -283,6 +378,7 @@ export default function Sidebar({
   engineModelConfigs,
   readyEngineIds,
   defaultWorkspacePath,
+  loopTasks,
 }: SidebarProps) {
   const [search, setSearch] = useState("");
   const [wsPendingRemove, setWsPendingRemove] = useState<string | null>(null);
@@ -303,6 +399,7 @@ export default function Sidebar({
   }, [wsDropdownOpen]);
 
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [loopsExpanded, setLoopsExpanded] = useState(true);
   const [newAgentModalOpen, setNewAgentModalOpen] = useState(false);
 
   // The default engine may not be ready (e.g. the user logged it out since). The
@@ -364,21 +461,61 @@ export default function Sidebar({
     return list;
   }, [entries, workspaceFilter, search, workspaces]);
 
-  const { activeEntries, historyEntries } = useMemo(() => {
+  const { activeEntries, historyEntries, loopGroups } = useMemo(() => {
     const active: ConversationEntry[] = [];
     const history: ConversationEntry[] = [];
+    const loopIterMap = new Map<string, { taskName: string; taskId: string; entries: ConversationEntry[] }>();
+
     for (const entry of filtered) {
+      // Loop iteration conversations are grouped separately.
+      if (entry.conversation.loopTaskId) {
+        const key = entry.conversation.loopTaskId;
+        const existing = loopIterMap.get(key);
+        if (existing) {
+          existing.entries.push(entry);
+        } else {
+          loopIterMap.set(key, {
+            taskId: key,
+            taskName: entry.conversation.loopTaskName ?? key,
+            entries: [entry],
+          });
+        }
+        continue;
+      }
       if (isActiveEntry(entry, generatingIds)) {
         active.push(entry);
       } else {
         history.push(entry);
       }
     }
+
+    // Build loop groups: each group keyed by taskId, with status from the
+    // matching LoopTask and sorted iteration entries.
+    const groups: { taskId: string; taskName: string; status: LoopTask["status"]; entries: ConversationEntry[] }[] = [];
+    for (const [taskId, data] of loopIterMap) {
+      const matchingTask = loopTasks.find((t) => t.id === taskId);
+      groups.push({
+        taskId,
+        taskName: data.taskName,
+        status: matchingTask?.status ?? "idle",
+        entries: sortEntries(data.entries, generatingIds),
+      });
+    }
+    // Running loops first, then by recent activity.
+    groups.sort((a, b) => {
+      if (a.status === "running" && b.status !== "running") return -1;
+      if (b.status === "running" && a.status !== "running") return 1;
+      const aLatest = a.entries[0]?.conversation.updatedAt ?? 0;
+      const bLatest = b.entries[0]?.conversation.updatedAt ?? 0;
+      return bLatest - aLatest;
+    });
+
     return {
       activeEntries: sortEntries(active, generatingIds),
       historyEntries: sortEntries(history, generatingIds),
+      loopGroups: groups,
     };
-  }, [filtered, generatingIds]);
+  }, [filtered, generatingIds, loopTasks]);
 
   const activeInHistory = useMemo(
     () => !!activeId && historyEntries.some((e) => e.conversation.id === activeId),
@@ -517,7 +654,7 @@ export default function Sidebar({
           />
         </div>
 
-        {/* Conversation list: Active + collapsible History */}
+        {/* Conversation list: Active + Loops groups + collapsible History */}
         <div className="flex-1 overflow-y-auto px-2 py-1">
           {filtered.length === 0 && (
             <p className="text-xs text-[var(--text-secondary)] text-center mt-8 px-2">
@@ -555,6 +692,22 @@ export default function Sidebar({
                     onDelete={onDelete}
                     onRename={onRename}
                   />
+                </div>
+              )}
+
+              {/* Loop iteration groups */}
+              {loopGroups.length > 0 && (
+                <div className="mb-2">
+                  <SectionHeader
+                    label="Loops"
+                    count={loopGroups.reduce((s, g) => s + g.entries.length, 0)}
+                    collapsible
+                    expanded={loopsExpanded}
+                    onToggle={() => setLoopsExpanded((v) => !v)}
+                  />
+                  {loopsExpanded && loopGroups.map((group) => (
+                    <LoopGroup key={group.taskId} group={group} activeId={activeId} generatingIds={generatingIds} onSelect={onSelect} onDelete={onDelete} />
+                  ))}
                 </div>
               )}
 
@@ -625,6 +778,17 @@ export default function Sidebar({
               </svg>
             </button>
           </div>
+          <button
+            onClick={onOpenLoops}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M2 7a5 5 0 119 0 5 5 0 01-9 0z" stroke="currentColor" strokeWidth="1.2" />
+              <path d="M7 2v2M7 10v2M2 7h2M10 7h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              <path d="M4.5 4.5l1 1M8.5 8.5l1 1M4.5 9.5l1-1M8.5 5.5l1-1" stroke="currentColor" strokeWidth="0.8" strokeLinecap="round" />
+            </svg>
+            Loops
+          </button>
           <button
             onClick={onOpenTasks}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"

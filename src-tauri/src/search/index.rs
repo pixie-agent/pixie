@@ -127,7 +127,12 @@ impl SearchIndex {
             }
         }
 
-        Ok(Self { docs, avg_dl, df, postings })
+        Ok(Self {
+            docs,
+            avg_dl,
+            df,
+            postings,
+        })
     }
 
     /// Search the index with a query string, returning top `limit` results.

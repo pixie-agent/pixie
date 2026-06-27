@@ -15,9 +15,11 @@ const ChatView = lazy(() => import("./components/ChatView"));
 const Settings = lazy(() => import("./components/Settings"));
 const MarketplacePanel = lazy(() => import("./components/MarketplacePanel"));
 const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel"));
+const LoopTasksPanel = lazy(() => import("./components/LoopTasksPanel"));
 const FileExplorer = lazy(() => import("./components/RightPanel"));
 const SearchPalette = lazy(() => import("./components/SearchPalette"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
+import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
   AgentEngineId,
   AuthState,
@@ -335,7 +337,7 @@ function AppShell() {
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   // Which full-page view the main column shows. The sidebar buttons switch
   // this; New Agent / selecting a conversation returns to "chat".
-  const [mainView, setMainView] = useState<"chat" | "tasks" | "skills" | "settings">("chat");
+  const [mainView, setMainView] = useState<"chat" | "tasks" | "loops" | "skills" | "settings">("chat");
   const [theme, setTheme] = useState<"dark" | "light">(() => getConfig().theme);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
@@ -452,6 +454,22 @@ function AppShell() {
     toggle: toggleTask,
     runNow: runTaskNow,
   } = useScheduledTasks();
+
+  const {
+    tasks: loopTasks,
+    iterations: loopIterations,
+    create: createLoopTask,
+    update: updateLoopTask,
+    remove: deleteLoopTask,
+    toggle: toggleLoopTask,
+    start: startLoopTask,
+    pause: pauseLoopTask,
+    resume: resumeLoopTask,
+    resumeWithPrompt: resumeLoopTaskWithPrompt,
+    stop: stopLoopTask,
+    discard: discardLoopTask,
+    loadIterations: loadLoopIterations,
+  } = useLoopTasks();
 
   // Surface completed scheduled runs as conversations in their workspace, so the
   // result is viewable like any chat. On first load we seed the seen-set with all
@@ -755,9 +773,11 @@ ${entries}
         onSetWorkspaceFilter={setWorkspaceFilter}
         onOpenSettings={() => setMainView("settings")}
         onOpenTasks={() => setMainView("tasks")}
+        onOpenLoops={() => setMainView("loops")}
         onOpenSkills={() => setMainView("skills")}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        loopTasks={loopTasks}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -965,6 +985,29 @@ ${entries}
                 console.error("run now failed", e);
               }
             }}
+            onClose={() => setMainView("chat")}
+          />
+          </Suspense>
+        )}
+
+        {mainView === "loops" && (
+          <Suspense fallback={<LoadingPanel />}>
+          <LoopTasksPanel
+            workspaces={workspaces}
+            activeWorkspacePath={activeWorkspace?.path ?? null}
+            tasks={loopTasks}
+            iterations={loopIterations}
+            onCreate={createLoopTask}
+            onUpdate={updateLoopTask}
+            onDelete={deleteLoopTask}
+            onToggle={toggleLoopTask}
+            onStart={startLoopTask}
+            onPause={pauseLoopTask}
+            onResume={resumeLoopTask}
+            onResumeWithPrompt={resumeLoopTaskWithPrompt}
+            onStop={stopLoopTask}
+            onDiscard={discardLoopTask}
+            onLoadIterations={loadLoopIterations}
             onClose={() => setMainView("chat")}
           />
           </Suspense>

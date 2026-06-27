@@ -36,7 +36,7 @@ pnpm tauri build --debug --bundles app   # quick debug .app / executable
 
 There is **no frontend test runner** — only Rust unit tests (in `src-tauri/src/lib.rs` `#[cfg(test)]`).
 
-Debug builds log at `info` level via `tauri-plugin-log`; backend output is essential when debugging streaming or scheduling.
+Logging is **always on** (debug and release) at `info` level via `tauri-plugin-log`, writing to a rotating `pixie.log` in the app data dir (5 MB rotation, keeps 3, purges files older than 14 days at startup); debug builds also mirror to stdout (the `pnpm tauri dev` terminal). Backend logs are essential when debugging streaming, scheduling, or loops — `tail -f` that file (`~/Library/Application Support/com.pixie.Pixie/pixie.log` on macOS). Loop iterations tag their lines with `[loop]`.
 
 ## Architecture
 
