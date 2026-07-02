@@ -15,14 +15,14 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use pixie_pi::ai::stream::AssistantMessageEvent;
-use pixie_pi::ai::types::ToolResultContent;
+use pixie_pi::ai::types::{Api, ToolResultContent};
 use pixie_pi::{AgentEvent, AgentSession, Message, Model, ThinkingLevel, UserMessage};
 
 use super::{EngineStatus, NormalizedEvent, ToolEvent, ToolEventKind, UsageInfo};
 
-/// Default model for the builtin engine — pixie-pi's first builtin model. Kept
-/// as a plain const so `lib.rs` can reference it without resolving the registry.
-pub const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+/// Default model for the builtin engine — this is just a placeholder ID.
+/// The actual model is determined by ANTHROPIC_MODEL config at runtime.
+pub const DEFAULT_MODEL: &str = "builtin";
 
 // ---------------------------------------------------------------------------
 // BuiltinSession — wraps a pixie_pi::AgentSession
@@ -182,28 +182,17 @@ pub async fn check_available() -> EngineStatus {
     )
 }
 
-/// List available models from pixie-pi's builtin registry.
+/// List available models. For the builtin engine, we expose a single
+/// "default" model option. The actual model ID is configured via
+/// ANTHROPIC_MODEL environment variable or config file.
 pub async fn list_models() -> Vec<(String, String)> {
-    pixie_pi::ai::builtin_models()
-        .iter()
-        .map(|m| (m.id.clone(), display_name_for(&m.id)))
-        .collect()
+    vec![
+        ("builtin".to_string(), "Default (configured via ANTHROPIC_MODEL)".to_string()),
+    ]
 }
 
 pub fn engine_display_name() -> &'static str {
     "Builtin"
-}
-
-fn display_name_for(id: &str) -> String {
-    if id.contains("opus") {
-        "Claude Opus 4.8".to_string()
-    } else if id.contains("haiku") {
-        "Claude Haiku 4.5".to_string()
-    } else if id.contains("sonnet") {
-        "Claude Sonnet 4.6".to_string()
-    } else {
-        id.to_string()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -315,37 +304,50 @@ fn map_agent_event(
     }
 }
 
-/// Resolve the model from an optional override pattern + base URL, falling back
-/// to pixie-pi's first builtin model.
+/// Resolve the model from an optional override pattern + base URL.
+/// For the builtin engine, we use the provided model ID directly (no registry lookup).
+/// The model ID should already be resolved to a real Anthropic model ID by the caller.
 fn resolve_builtin_model(model: Option<&str>, base_url: Option<&str>) -> Model {
-    let registry = pixie_pi::ai::builtin_models();
-    let mut resolved = match model {
-        Some(pattern) => {
-            pixie_pi::ai::resolve_model(&registry, pattern).unwrap_or_else(|| registry[0].clone())
+    // Use the provided model ID, or get from config/env
+    let model_id = if let Some(m) = model {
+        // Skip the placeholder "builtin" - it should have been resolved earlier
+        if m == "builtin" {
+            log::warn!("[builtin] Received 'builtin' placeholder, resolving to actual model");
+            get_model()
+        } else {
+            m.to_string()
         }
-        None => registry[0].clone(),
+    } else {
+        get_model()
     };
-    if let Some(url) = base_url {
-        if !url.is_empty() {
-            // Check URL protocol and provide appropriate guidance
-            // Both HTTP and HTTPS are now supported (native-tls)
-            if url.starts_with("http://") {
-                log::warn!(
-                    "[builtin] ⚠️  Using HTTP protocol: {}",
-                    url
-                );
-                log::warn!("[builtin] HTTP is insecure - API keys and data will be sent unencrypted");
-                log::warn!("[builtin] Only use HTTP for local development/testing, never in production");
-                log::warn!("[builtin] For production, always use HTTPS (https://{})", &url[7..]);
-            } else if url.starts_with("https://") {
-                log::info!("[builtin] ✅ Using HTTPS protocol: {}", url);
-            } else {
-                log::warn!("[builtin] ⚠️  Unknown URL protocol: {}", url);
-            }
-            resolved.base_url = url.to_string();
-        }
+
+    log::info!(
+        "[builtin] resolving model: id={}, base_url={:?}",
+        model_id,
+        base_url
+    );
+
+    // Resolve base_url with fallback chain
+    let base_url = base_url.map(|u| u.to_string()).unwrap_or_else(|| {
+        std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "https://api.anthropic.com".to_string())
+    });
+
+    Model {
+        id: model_id.to_string(),
+        provider: "anthropic".to_string(),
+        api: Api::AnthropicMessages,
+        max_tokens: 64_000,
+        context_window: 200_000,
+        base_url,
+        reasoning: true,  // Enable reasoning for better performance
+        force_adaptive_thinking: false,
+        supports_temperature: false,
+        input_cost_per_mtok: 3.0,
+        output_cost_per_mtok: 15.0,
+        cache_read_cost_per_mtok: 0.30,
+        cache_write_cost_per_mtok: 3.75,
     }
-    resolved
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +391,7 @@ pub fn get_base_url() -> Option<String> {
 }
 
 /// Model priority: builtin config → claude config → ANTHROPIC_MODEL env → default.
+/// Note: DEFAULT_MODEL is a fallback placeholder; we use a real model ID here.
 pub fn get_model() -> String {
     use super::shared::get_model_config_value;
     get_model_config_value("builtin", "ANTHROPIC_MODEL")
@@ -398,5 +401,5 @@ pub fn get_model() -> String {
                 .ok()
                 .filter(|v| !v.is_empty())
         })
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string())
 }

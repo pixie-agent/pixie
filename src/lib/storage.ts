@@ -44,7 +44,7 @@ export interface HistoryEntry {
 const EMPTY_CONFIG: AppConfig = {
   theme: "dark",
   systemPrompt: "",
-  defaultEngine: "claude",
+  defaultEngine: "builtin",
   engineModelConfigs: {
     claude: { ...DEFAULT_ENGINE_MODEL_CONFIGS.claude },
     cursor: { ...DEFAULT_ENGINE_MODEL_CONFIGS.cursor },
@@ -53,7 +53,7 @@ const EMPTY_CONFIG: AppConfig = {
   },
   workspaces: [],
   activeWorkspaceId: null,
-  knownReadyEngines: [],
+  knownReadyEngines: ["builtin"],
   vaultPath: null,
 };
 
@@ -188,7 +188,7 @@ function wireToConfig(w: ConfigWire | null): AppConfig {
   return {
     theme: w.theme === "light" ? "light" : "dark",
     systemPrompt: typeof w.system_prompt === "string" ? w.system_prompt : "",
-    defaultEngine: isValidEngine(w.default_engine) ? w.default_engine : "claude",
+    defaultEngine: isValidEngine(w.default_engine) ? w.default_engine : "builtin",
     engineModelConfigs: coerceEngineModelConfigs(w.engine_model_configs),
     workspaces: coerceWorkspaces(w.workspaces),
     activeWorkspaceId:
@@ -269,7 +269,7 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
       if (!conv || typeof conv !== "object" || !conv.id) continue;
       history.push({
         workspaceId: wsPath,
-        conversation: { ...conv, engine: conv.engine ?? "claude" },
+        conversation: { ...conv, engine: conv.engine ?? "builtin" },
       });
     }
   }
@@ -297,7 +297,7 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
   const config: AppConfig = {
     theme: localStorage.getItem("pixie-theme") === "light" ? "light" : "dark",
     systemPrompt: localStorage.getItem("pixie-system-prompt") ?? "",
-    defaultEngine: isValidEngine(storedEngine) ? storedEngine : "claude",
+    defaultEngine: isValidEngine(storedEngine) ? storedEngine : "builtin",
     engineModelConfigs,
     workspaces,
     activeWorkspaceId: typeof data.activeWorkspaceId === "string" ? data.activeWorkspaceId : null,

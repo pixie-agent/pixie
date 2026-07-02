@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="url(#pixieGradient)">
+  <defs>
+    <linearGradient id="pixieGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e9d5ff;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#a78bfa;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="haloSmall" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#f3e8ff;stop-opacity:0.9" />
+      <stop offset="50%" style="stop-color:#d8b4fe;stop-opacity:0.5" />
+      <stop offset="100%" style="stop-color:#a78bfa;stop-opacity:0" />
+    </radialGradient>
+  </defs>
+
+  <!-- ambient glow -->
+  <circle cx="50" cy="50" r="42" fill="url(#haloSmall)" opacity="1"/>
+
+  <!-- wings -->
+  <path d="M63 48C75 34 86 25 91 19C87 32 76 43 62 49Z" fill="#d8b4fe" opacity="0.9"/>
+  <path d="M37 48C25 34 14 25 9 19C13 32 24 43 38 49Z" fill="#d8b4fe" opacity="0.9"/>
+
+  <!-- core orb -->
+  <circle cx="50" cy="50" r="13" fill="url(#pixieGradient)"/>
+  <ellipse cx="47" cy="46" rx="4" ry="2.5" fill="#ffffff" opacity="1"/>
+
+  <!-- pixie dust sparks -->
+  <path d="M93 11L94 13L96 14L94 15L93 17L92 15L90 14L92 13Z" fill="#faf5ff" opacity="1"/>
+  <path d="M7 11L8 13L10 14L8 15L7 17L6 15L4 14L6 13Z" fill="#faf5ff" opacity="1"/>
+  <path d="M50 21L51 24L54 25L51 26L50 29L49 26L46 25L49 24Z" fill="#f3e8ff" opacity="0.9"/>
+  <path d="M79 30L80 32L82 33L80 34L79 36L78 34L76 33L78 32Z" fill="#f3e8ff" opacity="0.8"/>
+  <path d="M21 30L22 32L24 33L22 34L21 36L20 34L18 33L20 32Z" fill="#f3e8ff" opacity="0.8"/>
+</svg>

@@ -141,7 +141,7 @@ function emptyDraft(defaultWorkspace: string): Draft {
     id: null,
     name: "",
     workspace: defaultWorkspace,
-    engine: "claude",
+    engine: "builtin",
     initial_prompt: "",
     result_template: "Previous result:\n{{previous_result}}\n\nPlease continue fixing the issues above.",
     // Default: run until the output converges (no new findings), with a high

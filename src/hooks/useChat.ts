@@ -34,7 +34,7 @@ function basename(p: string): string {
 function normalizeConversation(conv: Conversation): Conversation {
   return {
     ...conv,
-    engine: conv.engine ?? "claude",
+    engine: conv.engine ?? "builtin",
   };
 }
 
@@ -1205,7 +1205,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       title: run.task_name || generateTitle(run.prompt),
       createdAt: startedMs,
       updatedAt: finishedMs,
-      engine: "claude",
+      engine: "builtin",
       messages: [
         { id: generateId(), role: "user", content: run.prompt, timestamp: startedMs },
         {
@@ -1240,7 +1240,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         title: opts.taskName || generateTitle(opts.prompt),
         createdAt: now,
         updatedAt: now,
-        engine: "claude",
+        engine: "builtin",
         messages: [
           { id: generateId(), role: "user", content: opts.prompt, timestamp: now, status: "done" },
           { id: generateId(), role: "assistant", content: "Running…", timestamp: now, status: "streaming" },
