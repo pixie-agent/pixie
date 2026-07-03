@@ -62,7 +62,7 @@ export interface Conversation {
   loopTaskName?: string;
 }
 
-export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin";
+export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex";
 
 /** Env key that each engine uses for its model override in global config. */
 export const ENGINE_MODEL_ENV_KEY: Record<AgentEngineId, string> = {
@@ -70,6 +70,7 @@ export const ENGINE_MODEL_ENV_KEY: Record<AgentEngineId, string> = {
   cursor: "CURSOR_MODEL",
   codebuddy: "CODEBUDDY_MODEL",
   builtin: "ANTHROPIC_MODEL",
+  codex: "CODEX_MODEL",
 };
 
 /** A model entry returned by the backend's list_models command. */
@@ -83,6 +84,7 @@ export const AGENT_ENGINES: { id: AgentEngineId; label: string }[] = [
   { id: "cursor", label: "Cursor Agent" },
   { id: "codebuddy", label: "CodeBuddy" },
   { id: "builtin", label: "Builtin" },
+  { id: "codex", label: "OpenAI Codex" },
 ];
 
 /** Readiness/auth state of an engine, set by the backend probe. Mirrors the
@@ -213,12 +215,20 @@ export interface BuiltinModelConfig {
   ANTHROPIC_MODEL?: string;
 }
 
+export interface CodexModelConfig {
+  /** OpenAI API key */
+  OPENAI_API_KEY?: string;
+  /** Model override for codex engine */
+  CODEX_MODEL?: string;
+}
+
 /** Per-engine model/env overrides. */
 export type EngineModelConfigs = {
   claude: ClaudeModelConfig;
   cursor: CursorModelConfig;
   codebuddy: CodebuddyModelConfig;
   builtin: BuiltinModelConfig;
+  codex: CodexModelConfig;
 };
 
 /** @deprecated Use EngineModelConfigs */
@@ -229,6 +239,7 @@ export const DEFAULT_ENGINE_MODEL_CONFIGS: EngineModelConfigs = {
   cursor: {},
   codebuddy: {},
   builtin: {},
+  codex: {},
 };
 
 export const ENGINE_MODEL_FIELDS: Record<
@@ -254,6 +265,10 @@ export const ENGINE_MODEL_FIELDS: Record<
     { key: "ANTHROPIC_API_KEY", label: "API Key", secret: true },
     { key: "ANTHROPIC_BASE_URL", label: "Base URL" },
     { key: "ANTHROPIC_MODEL", label: "Model" },
+  ],
+  codex: [
+    { key: "OPENAI_API_KEY", label: "API Key", secret: true },
+    { key: "CODEX_MODEL", label: "Model" },
   ],
 };
 
