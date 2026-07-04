@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import i18n from "../i18n";
 
 interface Props {
   children: ReactNode;
@@ -52,11 +53,10 @@ export class ErrorBoundary extends Component<Props, State> {
         }}
       >
         <h2 style={{ margin: 0, fontSize: "16px", color: "#fecaca" }}>
-          Something went wrong
+          {i18n.t("errorBoundary.title")}
         </h2>
         <p style={{ margin: 0, opacity: 0.8 }}>
-          Pixie hit a render error. Reloading usually restores the app; if it
-          keeps happening, please share the message below.
+          {i18n.t("errorBoundary.description")}
         </p>
         <pre
           style={{
@@ -98,7 +98,7 @@ export class ErrorBoundary extends Component<Props, State> {
               cursor: "pointer",
             }}
           >
-            Retry
+            {i18n.t("errorBoundary.retry")}
           </button>
           <button
             onClick={() => window.location.reload()}
@@ -111,7 +111,7 @@ export class ErrorBoundary extends Component<Props, State> {
               cursor: "pointer",
             }}
           >
-            Reload app
+            {i18n.t("errorBoundary.reload")}
           </button>
         </div>
       </div>

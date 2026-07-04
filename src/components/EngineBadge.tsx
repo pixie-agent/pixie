@@ -1,26 +1,35 @@
 import type { AgentEngineId } from "../types";
-import { AGENT_ENGINES } from "../types";
+import { useTranslation } from "../hooks/useTranslation";
+import { engineLabel } from "../lib/i18nFormat";
 
 const CURSOR_ICON = new URL("../assets/engine-icons/cursor.svg", import.meta.url).href;
 const CLAUDE_ICON = new URL("../assets/engine-icons/claude.svg", import.meta.url).href;
 const CODEBUDDY_ICON = new URL("../assets/engine-icons/codebuddy.svg", import.meta.url).href;
+const BUILTIN_ICON = new URL("../assets/engine-icons/builtin.svg", import.meta.url).href;
+const CODEX_ICON = new URL("../assets/engine-icons/codex.svg", import.meta.url).href;
 
 function engineAbbr(id: AgentEngineId): string {
+  if (id === "builtin") return "Px";
   if (id === "claude") return "Cl";
   if (id === "cursor") return "Cu";
+  if (id === "codex") return "Cx";
   return "Cb";
 }
 
 function engineColorClasses(id: AgentEngineId): string {
+  if (id === "builtin") return "bg-violet-500/15 text-violet-200 ring-violet-400/30";
   if (id === "claude") return "bg-violet-500/15 text-violet-200 ring-violet-400/30";
   if (id === "cursor") return "bg-emerald-500/15 text-emerald-200 ring-emerald-400/30";
+  if (id === "codex") return "bg-teal-500/15 text-teal-200 ring-teal-400/30";
   return "bg-amber-500/15 text-amber-200 ring-amber-400/30";
 }
 
 function engineIconHref(id: AgentEngineId): string | null {
+  if (id === "builtin") return BUILTIN_ICON;
   if (id === "cursor") return CURSOR_ICON;
   if (id === "claude") return CLAUDE_ICON;
   if (id === "codebuddy") return CODEBUDDY_ICON;
+  if (id === "codex") return CODEX_ICON;
   return null;
 }
 
@@ -38,7 +47,8 @@ export default function EngineBadge({
   tone?: "color" | "onAccent";
   className?: string;
 }) {
-  const label = AGENT_ENGINES.find((e) => e.id === engine)?.label ?? engine;
+  const { t } = useTranslation();
+  const label = engineLabel(engine, t);
   const abbr = engineAbbr(engine);
   const colors =
     tone === "onAccent"

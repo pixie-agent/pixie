@@ -43,6 +43,21 @@ jobs:
       - name: Install frontend deps
         run: pnpm install
 
+      - name: Determine release channel
+        # A tag like app-v0.8.0-beta.1 → version "0.8.0-beta.1" → prerelease.
+        # Stable users pull from /releases/latest/... which never resolves to a
+        # GitHub prerelease, so betas never reach the stable channel.
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "Channel: beta (prerelease $VERSION)"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "Channel: stable ($VERSION)"
+          fi
+
       - uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,7 +68,7 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: "Pixie v__VERSION__"
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ env.PRERELEASE }}
           args: --target ${{ matrix.target }}
 
   publish-other:
@@ -92,6 +107,18 @@ jobs:
       - name: Install frontend deps
         run: pnpm install
 
+      - name: Determine release channel
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "Channel: beta (prerelease $VERSION)"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "Channel: stable ($VERSION)"
+          fi
+
       - uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,6 +128,9 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: "Pixie v__VERSION__"
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ env.PRERELEASE }}
           updaterJsonPreferNsis: true
-          args: ${{ matrix.args }}
+          # Windows MSI rejects prerelease versions (e.g. 0.8.0-beta.1 — MSI
+          # needs numeric-only). For prereleases, build Windows as NSIS only
+          # (the updater already prefers NSIS anyway). Stable keeps MSI+NSIS.
+          args: ${{ (matrix.platform == 'windows-latest' && env.PRERELEASE == 'true') && '--bundles nsis' || matrix.args }}

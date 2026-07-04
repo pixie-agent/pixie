@@ -1,5 +1,7 @@
 # Pixie
 
+[**English**](./README.md) | [**简体中文**](./README.zh.md) | [**日本語**](./README.ja.md)
+
 > A native desktop workspace for **pluggable AI agents** — a general-purpose agent that handles programming, office documents, data analysis, news, writing, and more. Run autonomous agents against any folder, swap engines per session, and watch them work in real time. Built-in **knowledge base** auto-summarizes conversations into searchable, linkable notes. Built with Tauri v2, React, TypeScript, and Rust.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
@@ -30,6 +32,7 @@ Use Pixie for programming, office documents, data analysis, news, writing — wh
 - **Skills & plugin marketplace** — Discover skills on disk, insert `/skill` invocations from the composer, and browse or install plugins from marketplaces. Pixie follows the **Claude agent standard** for skills and plugins (`.claude/skills`, `.claude-plugin/`, etc.) — a de-facto convention shared by Claude Code, Cursor Agent, and other compatible engines.
 - **System-tray resident** — Closing the window hides to the tray so scheduled tasks keep firing.
 - **Dark & light themes**, system prompt, keyboard shortcuts.
+- **🌐 Multilingual** — Supports English, Simplified Chinese, and Japanese.
 
 ---
 
@@ -94,6 +97,7 @@ pnpm tauri build --debug --bundles app # a quick debug .app / executable
 5. **Open the workspace panel** — Toggle the panel in the header for files, diffs, terminal, and previews when you need them.
 6. **Skills & plugins** — Click ✨ in the composer to pick a `/skill` invocation, or open **Skills** in the sidebar to manage plugin marketplaces. Works with any engine that follows the Claude agent skills standard (Claude Code, Cursor, etc.).
 7. **Automate** — **Scheduled Tasks** runs prompts on a timer. Completed runs appear in the sidebar and notify you.
+8. **Change language** — Open **Settings** and select your preferred language (English, 简体中文, or 日本語).
 
 ### Keyboard shortcuts
 
@@ -102,6 +106,7 @@ pnpm tauri build --debug --bundles app # a quick debug .app / executable
 | New chat | `Ctrl/Cmd + N` |
 | Toggle sidebar | `Ctrl/Cmd + B` |
 | Toggle settings | `Ctrl/Cmd + ,` |
+| Search knowledge base | `Ctrl/Cmd + K` |
 | Send message | `Enter` |
 | New line | `Shift + Enter` |
 | Stop generation | `Esc` |
@@ -192,6 +197,12 @@ pixie/
 ├── src/                         # Frontend (React + TypeScript)
 │   ├── components/              # ChatView, Sidebar, Settings, RightPanel, …
 │   ├── hooks/                   # useChat, useScheduledTasks
+│   ├── i18n/                    # Multilingual support
+│   │   ├── index.ts
+│   │   └── locales/
+│   │       ├── en.json
+│   │       ├── zh.json
+│   │       └── ja.json
 │   ├── App.tsx
 │   └── types.ts                 # EngineModelConfigs, AgentEngineId, …
 ├── src-tauri/
@@ -241,6 +252,7 @@ cargo test                # Unit tests
 | Styling | Tailwind CSS 4 |
 | Build tool | Vite |
 | Backend | Rust, tokio |
+| i18n | i18next, react-i18next |
 | Markdown | react-markdown + remark-gfm |
 | Terminal | xterm.js + portable-pty |
 | Scheduling | chrono |
@@ -257,6 +269,7 @@ Open **Settings** (`Ctrl/Cmd + ,`):
 - **Knowledge base** — Obsidian vault path, backfill existing conversations, and index rebuild.
 - **System prompt** — optional prompt for agent sessions.
 - **Theme** — dark or light.
+- **Language** — English, 简体中文, or 日本語.
 
 ---
 
@@ -294,6 +307,16 @@ Contributions are welcome — especially new **engines** and general-agent UX im
 2. Rust: `cargo fmt` / `cargo clippy`. Frontend: `pnpm lint`.
 3. Keep Tauri commands typed end-to-end (Rust ↔ `src/types.ts`).
 4. Open a pull request describing the change.
+
+### Adding translations
+
+To contribute translations:
+
+1. Edit `src/i18n/locales/en.json`, `src/i18n/locales/zh.json`, or `src/i18n/locales/ja.json`.
+2. Follow the existing JSON structure.
+3. Open a pull request.
+
+For more details, see [i18n documentation](./PROJECT_I18N_INDEX.md).
 
 ## License
 

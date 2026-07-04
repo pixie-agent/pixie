@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { useTranslation } from "../hooks/useTranslation";
 import type { EngineStatus, AgentEngineId, EngineModelConfigs } from "../types";
 import { AGENT_ENGINES, ENGINE_MODEL_FIELDS } from "../types";
+import { engineLabel, modelFieldLabel, formatModShortcut } from "../lib/i18nFormat";
 import { useUpdater } from "../hooks/useUpdater";
 import { useDragRegion } from "../hooks/useDragRegion";
+import LanguageSelector from "./LanguageSelector";
 
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("../assets/icon.svg", import.meta.url).href;
@@ -63,12 +66,15 @@ export default function Settings({
   onBackfill,
   backfillStatus,
 }: SettingsProps) {
+  const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
   const [_checking, setChecking] = useState(false);
   const [expandedEngines, setExpandedEngines] = useState<Record<AgentEngineId, boolean>>({
     claude: false,
     cursor: false,
     codebuddy: false,
+    builtin: false,
+    codex: false,
   });
   const updater = useUpdater();
   const [appVersion, setAppVersion] = useState("");
@@ -91,11 +97,12 @@ export default function Settings({
           className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]"
         >
           <h2 className="text-base font-semibold text-[var(--text-primary)]">
-            Settings
+            {t('settings.title')}
           </h2>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+            aria-label={t('common.close')}
           >
             <svg
               width="18"
@@ -112,19 +119,19 @@ export default function Settings({
           {/* Agent engines */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Agent Engines
+              {t('settings.agentEngines')}
             </h3>
             <div className="space-y-3">
               {engineStatuses ? (
                 engineStatuses.map((status) => {
                   const ready = status.available && status.auth_state === "ready";
                   const label = !status.available
-                    ? "Not installed"
+                    ? t('engineSetup.status.notInstalled')
                     : ready
-                      ? "Ready"
+                      ? t('engineSetup.status.ready')
                       : status.auth_state === "unknown"
-                        ? "Checking…"
-                        : "Not ready";
+                        ? t('engineSetup.status.probing')
+                        : t('engineSetup.status.notReady');
                   const dot = !status.available
                     ? "bg-red-400"
                     : ready
@@ -138,7 +145,7 @@ export default function Settings({
                       <div className="flex items-center gap-2 min-w-0">
                         <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot}`} />
                         <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                          {status.display_name}
+                          {engineLabel(status.id, t)}
                         </span>
                       </div>
                       <span
@@ -152,21 +159,21 @@ export default function Settings({
                   );
                 })
               ) : (
-                <p className="text-sm text-[var(--text-secondary)]">Checking...</p>
+                <p className="text-sm text-[var(--text-secondary)]">{t('common.loading')}</p>
               )}
               <div className="flex gap-2">
                 <button
                   onClick={onOpenSetup}
                   className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
                 >
-                  Configure
+                  {t('common.configure')}
                 </button>
                 <button
                   onClick={handleRefresh}
                   disabled={_checking}
                   className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-xs text-[var(--text-primary)] transition-colors disabled:opacity-50"
                 >
-                  {_checking ? "Checking..." : "Refresh"}
+                  {_checking ? t('updater.checking') : t('common.refresh')}
                 </button>
               </div>
             </div>
@@ -175,7 +182,7 @@ export default function Settings({
           {/* Preferred engine for new sessions */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Preferred Engine
+              {t('settings.preferredEngine')}
             </h3>
             <select
               value={defaultEngine}
@@ -184,67 +191,66 @@ export default function Settings({
             >
               {AGENT_ENGINES.filter((e) => readyEngineIds.includes(e.id)).map((e) => (
                 <option key={e.id} value={e.id}>
-                  {e.label}
+                  {engineLabel(e.id, t)}
                 </option>
               ))}
             </select>
             <p className="text-xs text-[var(--text-secondary)] mt-2">
-              New sessions use this engine. Existing sessions keep their bound engine.
+              {t('settings.preferredEngineHint')}
             </p>
           </section>
 
           {/* Working directory */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Working Directory
+              {t('settings.workingDirectory')}
             </h3>
             <div className="bg-[var(--bg-primary)] rounded-xl p-4 border border-[var(--border-color)]">
               <p className="text-xs text-[var(--text-secondary)] break-all font-mono mb-3">
-                {defaultWorkspacePath || "—"}
+                {defaultWorkspacePath || t("common.notAvailable")}
               </p>
               <div className="flex gap-2">
                 <button
                   onClick={onPickDefaultWorkspace}
                   className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-xs text-[var(--text-primary)] transition-colors"
                 >
-                  Change…
+                  {t('settings.changeDirectory')}
                 </button>
                 <button
                   onClick={onResetDefaultWorkspace}
                   className="px-3 py-1.5 rounded-lg bg-[var(--bg-primary)] hover:bg-[var(--bg-tertiary)] text-xs text-[var(--text-secondary)] border border-[var(--border-color)] transition-colors"
                 >
-                  Reset to ~/.pixie
+                  {t('settings.resetDirectory')}
                 </button>
               </div>
             </div>
             <p className="text-xs text-[var(--text-secondary)] mt-2">
-              The folder Pixie uses when none is selected. Applied on a fresh start with no
-              workspaces added — existing workspaces are not changed.
+              {t('settings.workingDirectoryHint')}
             </p>
           </section>
 
           {/* Knowledge Base */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Knowledge Base
+              {t('settings.knowledgeBase')}
             </h3>
             <div className="bg-[var(--bg-primary)] rounded-xl p-4 border border-[var(--border-color)]">
               <p className="text-xs text-[var(--text-secondary)] break-all font-mono mb-3">
-                {vaultPath || defaultVaultPath || "—"}
+                {vaultPath || defaultVaultPath || t("common.notAvailable")}
               </p>
               <div className="flex gap-2 flex-wrap">
                 <button
                   onClick={onPickVault}
                   className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-xs text-[var(--text-primary)] transition-colors"
                 >
-                  Change…
+                  {t('settings.changeDirectory')}
                 </button>
                 {vaultPath && (
                   <button
                     onClick={onResetVault}
                     className="px-3 py-1.5 rounded-lg bg-[var(--bg-primary)] hover:bg-[var(--bg-tertiary)] text-xs text-[var(--text-secondary)] border border-[var(--border-color)] transition-colors"
                   >
-                    Reset
+                    {t('common.reset')}
                   </button>
                 )}
                 <button
@@ -254,7 +260,7 @@ export default function Settings({
                     try {
                       const installed = await invoke<boolean>("check_obsidian_installed");
                       if (!installed) {
-                        alert("Obsidian is not installed. Download it from https://obsidian.md to view your knowledge base.");
+                        alert(t('settings.obsidianNotInstalled'));
                         return;
                       }
                       await invoke("open_vault_in_obsidian", { vaultPath: path });
@@ -264,7 +270,7 @@ export default function Settings({
                   }}
                   className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
                 >
-                  Open in Obsidian
+                  {t('settings.openInObsidian')}
                 </button>
                 <button
                   onClick={() => {
@@ -273,13 +279,13 @@ export default function Settings({
                   }}
                   className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-xs text-[var(--text-primary)] transition-colors"
                 >
-                  Open Folder
+                  {t('settings.openFolder')}
                 </button>
                 <button
                   onClick={onBackfill}
                   className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-xs text-[var(--text-primary)] transition-colors"
                 >
-                  Backfill History
+                  {t('settings.backfillHistory')}
                 </button>
               </div>
               {backfillStatus && (
@@ -288,17 +294,17 @@ export default function Settings({
             </div>
             <p className="text-xs text-[var(--text-secondary)] mt-2">
               {vaultPath
-                ? "Conversation notes are saved to the Pixie/ subdirectory of this folder. Open it with Obsidian or any markdown viewer."
+                ? t('settings.knowledgeBaseHint')
                 : defaultVaultPath
-                  ? "Using default location. Set a custom folder to manage notes with your preferred tools."
-                  : "Set a folder to enable knowledge base features."}
+                  ? t('settings.knowledgeBaseDefault')
+                  : t('settings.knowledgeBaseNotSet')}
             </p>
           </section>
 
           {/* Theme */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Theme
+              {t('settings.theme')}
             </h3>
             <div className="flex gap-2">
               <button
@@ -309,7 +315,7 @@ export default function Settings({
                     : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
                 }`}
               >
-                Dark
+                {t('settings.dark')}
               </button>
               <button
                 onClick={() => onThemeChange("light")}
@@ -319,25 +325,37 @@ export default function Settings({
                     : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
                 }`}
               >
-                Light
+                {t('settings.light')}
               </button>
             </div>
+          </section>
+
+          {/* Language */}
+          <section>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+              {t('language.title')}
+            </h3>
+            <LanguageSelector className="w-full" />
+            <p className="text-xs text-[var(--text-secondary)] mt-2">
+              {t('language.select')}
+            </p>
           </section>
 
           {/* Model Configuration (per engine, collapsed by default) */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
-              Model Configuration
+              {t('settings.modelConfig')}
             </h3>
             <p className="text-xs text-[var(--text-secondary)] mb-3">
-              Environment overrides per engine. Leave empty to use system defaults.
+              {t('settings.modelConfigHint')}
             </p>
             <div className="space-y-2">
-              {AGENT_ENGINES.map(({ id, label }) => {
+              {AGENT_ENGINES.map(({ id }) => {
                 const expanded = expandedEngines[id];
                 const fields = ENGINE_MODEL_FIELDS[id];
                 const config = engineModelConfigs[id] as Record<string, string | undefined>;
                 const filledCount = fields.filter((f) => config[f.key]?.trim()).length;
+                const name = engineLabel(id, t);
 
                 return (
                   <div
@@ -353,11 +371,11 @@ export default function Settings({
                     >
                       <div className="min-w-0">
                         <span className="text-sm font-medium text-[var(--text-primary)]">
-                          {label}
+                          {name}
                         </span>
                         {!expanded && filledCount > 0 && (
                           <span className="ml-2 text-[10px] text-[var(--text-secondary)]">
-                            {filledCount} override{filledCount === 1 ? "" : "s"}
+                            {t('settings.overrides', { count: filledCount })}
                           </span>
                         )}
                       </div>
@@ -383,12 +401,12 @@ export default function Settings({
                     {expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-[var(--border-color)]">
                         <p className="text-[10px] text-[var(--text-secondary)] pt-3">
-                          Applies only to {label} sessions.
+                          {t('settings.appliesOnly', { name })}
                         </p>
                         {fields.map(({ key, label: fieldLabel, secret }) => (
                           <div key={key}>
                             <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                              {fieldLabel}{" "}
+                              {modelFieldLabel(fieldLabel, t)}{" "}
                               <code className="text-[10px] opacity-60">{key}</code>
                             </label>
                             <input
@@ -415,12 +433,12 @@ export default function Settings({
           {/* System Prompt */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              System Prompt
+              {t('settings.systemPrompt')}
             </h3>
             <textarea
               value={systemPrompt}
               onChange={(e) => onSystemPromptChange(e.target.value)}
-              placeholder="Enter a system prompt for the agent..."
+              placeholder={t('settings.systemPromptPlaceholder')}
               rows={4}
               className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-xl px-4 py-3 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] resize-none outline-none focus:border-[var(--accent)] transition-colors"
             />
@@ -429,49 +447,48 @@ export default function Settings({
           {/* About */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              About
+              {t('settings.about')}
             </h3>
             <div className="bg-[var(--bg-primary)] rounded-xl p-4 border border-[var(--border-color)] space-y-1">
               <div className="flex items-center gap-2">
-                <img src={iconUrl} alt="Pixie" className="w-8 h-8 rounded-lg" />
-                <p className="text-sm text-[var(--text-primary)]">Pixie</p>
+                <img src={iconUrl} alt={t('app.name')} className="w-8 h-8 rounded-lg" />
+                <p className="text-sm text-[var(--text-primary)]">{t('app.name')}</p>
               </div>
               <p className="text-xs text-[var(--text-secondary)]">
-                A general-purpose desktop AI agent workspace.
-                Supports Claude, Cursor, and CodeBuddy engines.
+                {t('settings.aboutDescription')}
               </p>
               <p className="text-xs text-[var(--text-secondary)]">
-                Built with Tauri v2 + React + TypeScript
+                {t('settings.builtWith')}
               </p>
               <p className="text-xs text-[var(--text-secondary)]">
-                Version: {appVersion || "0.1.1"}
+                {t('settings.version')}: {appVersion || "0.1.1"}
               </p>
 
               {/* Update check */}
               <div className="pt-2 mt-1 border-t border-[var(--border-color)]">
                 {updater.status === "up-to-date" && (
                   <p className="text-xs text-[var(--text-secondary)] mb-2">
-                    You&apos;re on the latest version.
+                    {t('updater.upToDate')}
                   </p>
                 )}
                 {updater.status === "available" && updater.newVersion && (
                   <p className="text-xs text-[var(--text-primary)] mb-2">
-                    Pixie {updater.newVersion} is available.
+                    {t('settings.versionAvailable', { version: updater.newVersion })}
                   </p>
                 )}
                 {updater.status === "downloading" &&
                   updater.contentLength > 0 && (
                     <p className="text-xs text-[var(--text-secondary)] mb-2">
-                      Downloading…{" "}
-                      {Math.round(
-                        (updater.downloaded / updater.contentLength) * 100
-                      )}
-                      %
+                      {t('settings.downloadingProgress', {
+                        percent: Math.round(
+                          (updater.downloaded / updater.contentLength) * 100
+                        ),
+                      })}
                     </p>
                   )}
                 {updater.status === "installed" && (
                   <p className="text-xs text-[var(--text-primary)] mb-2">
-                    Update ready. Restart to apply.
+                    {t('settings.updateReady')}
                   </p>
                 )}
                 {updater.status === "error" && updater.error && (
@@ -479,30 +496,44 @@ export default function Settings({
                     {updater.error}
                   </p>
                 )}
-                <button
-                  onClick={
-                    updater.status === "available"
-                      ? updater.downloadAndInstall
-                      : updater.status === "installed"
-                        ? updater.restart
-                        : updater.checkForUpdates
-                  }
-                  disabled={
-                    updater.status === "checking" ||
-                    updater.status === "downloading"
-                  }
-                  className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {updater.status === "checking"
-                    ? "Checking…"
-                    : updater.status === "downloading"
-                      ? "Downloading…"
-                      : updater.status === "available"
-                        ? `Install ${updater.newVersion}`
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={
+                      updater.status === "available"
+                        ? updater.downloadAndInstall
                         : updater.status === "installed"
-                          ? "Restart Now"
-                          : "Check for Updates"}
-                </button>
+                          ? updater.restart
+                          : updater.checkForUpdates
+                    }
+                    disabled={
+                      updater.status === "checking" ||
+                      updater.status === "downloading"
+                    }
+                    className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {updater.status === "checking"
+                      ? t('updater.checking')
+                      : updater.status === "downloading"
+                        ? t('updater.downloading')
+                        : updater.status === "available"
+                          ? t('settings.installVersion', { version: updater.newVersion })
+                          : updater.status === "installed"
+                            ? t('updater.restartNow')
+                            : t('updater.checkForUpdates')}
+                  </button>
+                  <button
+                    onClick={updater.installBeta}
+                    disabled={
+                      updater.status === "checking" ||
+                      updater.status === "downloading" ||
+                      updater.status === "installed"
+                    }
+                    title={t('updater.tryBetaHint')}
+                    className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-[var(--text-primary)] text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {t('updater.tryBeta')}
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -510,43 +541,49 @@ export default function Settings({
           {/* Keyboard shortcuts */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Keyboard Shortcuts
+              {t('settings.keyboardShortcuts')}
             </h3>
             <div className="space-y-2 text-xs text-[var(--text-secondary)]">
               <div className="flex justify-between">
-                <span>New chat</span>
+                <span>{t('settings.shortcuts.newChat')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {navigator.platform?.includes("Mac") ? "Cmd" : "Ctrl"}+N
+                  {formatModShortcut(t, 'N')}
                 </kbd>
               </div>
               <div className="flex justify-between">
-                <span>Stop generation</span>
+                <span>{t('settings.shortcuts.stopGeneration')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  Escape
+                  {t('keys.escape')}
                 </kbd>
               </div>
               <div className="flex justify-between">
-                <span>Send message</span>
+                <span>{t('settings.shortcuts.sendMessage')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  Enter
+                  {t('keys.enter')}
                 </kbd>
               </div>
               <div className="flex justify-between">
-                <span>New line</span>
+                <span>{t('settings.shortcuts.newLine')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  Shift+Enter
+                  {t('keys.shiftEnter')}
                 </kbd>
               </div>
               <div className="flex justify-between">
-                <span>Toggle sidebar</span>
+                <span>{t('settings.shortcuts.toggleSidebar')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {navigator.platform?.includes("Mac") ? "Cmd" : "Ctrl"}+B
+                  {formatModShortcut(t, 'B')}
                 </kbd>
               </div>
               <div className="flex justify-between">
-                <span>Settings</span>
+                <span>{t('settings.shortcuts.toggleSearch')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {navigator.platform?.includes("Mac") ? "Cmd" : "Ctrl"}+,
+                  {formatModShortcut(t, 'K')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.toggleSettings')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, ',')}
                 </kbd>
               </div>
             </div>

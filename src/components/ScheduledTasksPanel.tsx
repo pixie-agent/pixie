@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
-import type { ScheduledTask, ScheduleSpec, TaskRunRecord, WorkspaceState } from "../types";
+import type { ScheduledTask, ScheduleSpec, TaskRunRecord, WorkspaceState, AgentEngineId } from "../types";
+import { AGENT_ENGINES } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
+import { useTranslation } from "../hooks/useTranslation";
+import { formatSchedule, relativeFromIso, pad, engineLabel } from "../lib/i18nFormat";
 
 interface ScheduledTasksPanelProps {
   workspaces: WorkspaceState[];
@@ -12,46 +15,13 @@ interface ScheduledTasksPanelProps {
     prompt: string;
     schedule: ScheduleSpec;
     enabled: boolean;
+    engine: AgentEngineId;
   }) => Promise<ScheduledTask | void>;
   onUpdate: (task: ScheduledTask) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onRunNow: (id: string) => Promise<void>;
   onClose: () => void;
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-function formatSchedule(s: ScheduleSpec): string {
-  switch (s.type) {
-    case "daily_time":
-      return `Daily at ${pad(s.hour)}:${pad(s.minute)}`;
-    case "weekdays_time":
-      return `Weekdays at ${pad(s.hour)}:${pad(s.minute)}`;
-    case "every_n_minutes":
-      return `Every ${s.minutes} min`;
-    case "every_n_hours":
-      return `Every ${s.hours} hr${s.hours > 1 ? "s" : ""}`;
-  }
-}
-
-function relativeFromIso(iso: string | null): string {
-  if (!iso) return "—";
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return "—";
-  const diff = ts - Date.now();
-  const abs = Math.abs(diff);
-  const mins = Math.floor(abs / 60000);
-  const fmt = (val: number, unit: string) =>
-    `${val}${unit} ${diff >= 0 ? "from now" : "ago"}`;
-  if (mins < 1) return diff >= 0 ? "in a moment" : "just now";
-  if (mins < 60) return fmt(mins, "m");
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return fmt(hours, "h");
-  const days = Math.floor(hours / 24);
-  return fmt(days, "d");
 }
 
 interface Draft {
@@ -65,6 +35,7 @@ interface Draft {
   minutes: number;
   hours: number;
   enabled: boolean;
+  engine: AgentEngineId;
 }
 
 function emptyDraft(defaultWorkspace: string): Draft {
@@ -79,6 +50,7 @@ function emptyDraft(defaultWorkspace: string): Draft {
     minutes: 30,
     hours: 1,
     enabled: true,
+    engine: "builtin",
   };
 }
 
@@ -94,6 +66,7 @@ function taskToDraft(t: ScheduledTask): Draft {
     minutes: t.schedule.type === "every_n_minutes" ? t.schedule.minutes : 30,
     hours: t.schedule.type === "every_n_hours" ? t.schedule.hours : 1,
     enabled: t.enabled,
+    engine: t.engine,
   };
 }
 
@@ -124,6 +97,7 @@ export default function ScheduledTasksPanel({
   onRunNow,
   onClose,
 }: ScheduledTasksPanelProps) {
+  const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -150,9 +124,9 @@ export default function ScheduledTasksPanel({
 
   const saveDraft = async () => {
     if (!draft) return;
-    if (!draft.name.trim()) return setError("Name is required");
-    if (!draft.workspace) return setError("Pick a workspace");
-    if (!draft.prompt.trim()) return setError("Prompt is required");
+    if (!draft.name.trim()) return setError(t("tasks.errors.nameRequired"));
+    if (!draft.workspace) return setError(t("tasks.errors.workspaceRequired"));
+    if (!draft.prompt.trim()) return setError(t("tasks.errors.promptRequired"));
     const spec = buildSpec(draft);
     try {
       if (draft.id) {
@@ -164,6 +138,7 @@ export default function ScheduledTasksPanel({
           prompt: draft.prompt.trim(),
           schedule: spec,
           enabled: draft.enabled,
+          engine: draft.engine,
           next_run: null,
           last_run: null,
         });
@@ -174,6 +149,7 @@ export default function ScheduledTasksPanel({
           prompt: draft.prompt.trim(),
           schedule: spec,
           enabled: draft.enabled,
+          engine: draft.engine,
         });
       }
       setDraft(null);
@@ -191,11 +167,12 @@ export default function ScheduledTasksPanel({
           className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]"
         >
           <h2 className="text-base font-semibold text-[var(--text-primary)]">
-            Scheduled Tasks
+            {t("tasks.title")}
           </h2>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+            aria-label={t("common.close")}
           >
             <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
               <path
@@ -226,7 +203,7 @@ export default function ScheduledTasksPanel({
                   fill="none"
                 />
               </svg>
-              New Task
+              {t("tasks.newTask")}
             </button>
           )}
 
@@ -234,31 +211,31 @@ export default function ScheduledTasksPanel({
           {draft && (
             <section className="bg-[var(--bg-primary)] rounded-xl p-4 border border-[var(--border-color)] space-y-3">
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                {draft.id ? "Edit Task" : "New Task"}
+                {draft.id ? t("tasks.edit") : t("tasks.newTask")}
               </h3>
 
               <div>
                 <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                  Name
+                  {t("common.name")}
                 </label>
                 <input
                   className={inputClass}
                   value={draft.name}
                   onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                  placeholder="e.g. Daily git summary"
+                  placeholder={t("tasks.namePlaceholder")}
                 />
               </div>
 
               <div>
                 <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                  Workspace
+                  {t("tasks.workspace")}
                 </label>
                 <select
                   className={inputClass}
                   value={draft.workspace}
                   onChange={(e) => setDraft({ ...draft, workspace: e.target.value })}
                 >
-                  {workspaces.length === 0 && <option value="">No workspaces</option>}
+                  {workspaces.length === 0 && <option value="">{t("common.noWorkspaces")}</option>}
                   {workspaces.map((w) => (
                     <option key={w.path} value={w.path}>
                       {w.name}
@@ -269,19 +246,34 @@ export default function ScheduledTasksPanel({
 
               <div>
                 <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                  Prompt
+                  {t("tasks.prompt")}
                 </label>
                 <textarea
                   className={`${inputClass} resize-y min-h-[80px]`}
                   value={draft.prompt}
                   onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
-                  placeholder="The instruction the AI runs on schedule"
+                  placeholder={t("tasks.promptPlaceholder")}
                 />
               </div>
 
               <div>
                 <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                  Schedule
+                  {t("common.engine")}
+                </label>
+                <select
+                  className={inputClass}
+                  value={draft.engine}
+                  onChange={(e) => setDraft({ ...draft, engine: e.target.value as AgentEngineId })}
+                >
+                  {AGENT_ENGINES.map((e) => (
+                    <option key={e.id} value={e.id}>{engineLabel(e.id, t)}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1">
+                  {t("tasks.schedule")}
                 </label>
                 <select
                   className={inputClass}
@@ -290,10 +282,10 @@ export default function ScheduledTasksPanel({
                     setDraft({ ...draft, scheduleType: e.target.value as ScheduleSpec["type"] })
                   }
                 >
-                  <option value="daily_time">Daily at a time</option>
-                  <option value="weekdays_time">Weekdays at a time</option>
-                  <option value="every_n_minutes">Every N minutes</option>
-                  <option value="every_n_hours">Every N hours</option>
+                  <option value="daily_time">{t("schedule.dailyAtTime")}</option>
+                  <option value="weekdays_time">{t("schedule.weekdaysAtTime")}</option>
+                  <option value="every_n_minutes">{t("schedule.everyNMinutesLabel")}</option>
+                  <option value="every_n_hours">{t("schedule.everyNHoursLabel")}</option>
                 </select>
               </div>
 
@@ -301,7 +293,7 @@ export default function ScheduledTasksPanel({
                 draft.scheduleType === "weekdays_time") && (
                 <div>
                   <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                    Time (24h, local)
+                    {t("schedule.time24h")}
                   </label>
                   <input
                     type="time"
@@ -322,7 +314,7 @@ export default function ScheduledTasksPanel({
               {draft.scheduleType === "every_n_minutes" && (
                 <div>
                   <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                    Every N minutes
+                    {t("schedule.everyNMinutesLabel")}
                   </label>
                   <input
                     type="number"
@@ -339,7 +331,7 @@ export default function ScheduledTasksPanel({
               {draft.scheduleType === "every_n_hours" && (
                 <div>
                   <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                    Every N hours
+                    {t("schedule.everyNHoursLabel")}
                   </label>
                   <input
                     type="number"
@@ -360,7 +352,7 @@ export default function ScheduledTasksPanel({
                   onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
                   className="accent-[var(--accent)]"
                 />
-                Enabled
+                {t("tasks.enabled")}
               </label>
 
               {error && <p className="text-xs text-red-400">{error}</p>}
@@ -370,7 +362,7 @@ export default function ScheduledTasksPanel({
                   onClick={saveDraft}
                   className="flex-1 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
                 >
-                  {draft.id ? "Save" : "Create"}
+                  {draft.id ? t("common.save") : t("common.create")}
                 </button>
                 <button
                   onClick={() => {
@@ -379,7 +371,7 @@ export default function ScheduledTasksPanel({
                   }}
                   className="px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-[var(--text-primary)] text-xs font-medium transition-colors"
                 >
-                  Cancel
+                  {t("common.cancel")}
                 </button>
               </div>
             </section>
@@ -389,25 +381,25 @@ export default function ScheduledTasksPanel({
           <section className="space-y-2">
             {tasks.length === 0 && !draft && (
               <p className="text-xs text-[var(--text-secondary)] text-center py-4">
-                No scheduled tasks yet.
+                {t("tasks.noTasks")}
               </p>
             )}
-            {tasks.map((t) => {
-              const wsMissing = !workspaces.some((w) => w.path === t.workspace);
+            {tasks.map((task) => {
+              const wsMissing = !workspaces.some((w) => w.path === task.workspace);
               return (
                 <div
-                  key={t.id}
+                  key={task.id}
                   className="bg-[var(--bg-primary)] rounded-xl p-3 border border-[var(--border-color)]"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                          {t.name}
+                          {task.name}
                         </span>
-                        {!t.enabled && (
+                        {!task.enabled && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-                            paused
+                            {t("common.disabled")}
                           </span>
                         )}
                       </div>
@@ -415,56 +407,56 @@ export default function ScheduledTasksPanel({
                         className={`text-xs truncate ${
                           wsMissing ? "text-red-400" : "text-[var(--text-secondary)]"
                         }`}
-                        title={t.workspace}
+                        title={task.workspace}
                       >
-                        {wsMissing ? "⚠ missing: " : ""}
-                        {workspaceName(t.workspace)}
+                        {wsMissing ? t("tasks.missingWorkspace") : ""}
+                        {workspaceName(task.workspace)}
                       </p>
                     </div>
                     <button
-                      onClick={() => onToggle(t.id, !t.enabled)}
-                      title={t.enabled ? "Disable" : "Enable"}
+                      onClick={() => onToggle(task.id, !task.enabled)}
+                      title={task.enabled ? t("tasks.toggleDisable") : t("tasks.toggleEnable")}
                       className={`shrink-0 w-9 h-5 rounded-full transition-colors relative ${
-                        t.enabled ? "bg-[var(--accent)]" : "bg-[var(--bg-tertiary)]"
+                        task.enabled ? "bg-[var(--accent)]" : "bg-[var(--bg-tertiary)]"
                       }`}
                     >
                       <span
                         className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
-                          t.enabled ? "left-4" : "left-0.5"
+                          task.enabled ? "left-4" : "left-0.5"
                         }`}
                       />
                     </button>
                   </div>
 
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--text-secondary)]">
-                    <span>⏱ {formatSchedule(t.schedule)}</span>
-                    <span>next: {relativeFromIso(t.next_run)}</span>
-                    <span>last: {relativeFromIso(t.last_run)}</span>
+                    <span>⏱ {formatSchedule(task.schedule, t)}</span>
+                    <span>{t("schedule.next")}: {relativeFromIso(task.next_run, t)}</span>
+                    <span>{t("schedule.last")}: {relativeFromIso(task.last_run, t)}</span>
                   </div>
 
                   <div className="mt-2 flex items-center gap-2">
                     <button
-                      onClick={() => onRunNow(t.id)}
+                      onClick={() => onRunNow(task.id)}
                       className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-[11px] text-[var(--text-primary)] transition-colors"
                     >
-                      Run now
+                      {t("tasks.runNow")}
                     </button>
                     <button
                       onClick={() => {
                         setError(null);
-                        setDraft(taskToDraft(t));
+                        setDraft(taskToDraft(task));
                       }}
                       className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-[11px] text-[var(--text-primary)] transition-colors"
                     >
-                      Edit
+                      {t("common.edit")}
                     </button>
                     <button
                       onClick={() => {
-                        if (confirm(`Delete task "${t.name}"?`)) onDelete(t.id);
+                        if (confirm(t("tasks.deleteConfirm", { name: task.name }))) onDelete(task.id);
                       }}
                       className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:bg-red-500/20 hover:text-red-300 text-[11px] text-[var(--text-secondary)] transition-colors"
                     >
-                      Delete
+                      {t("common.delete")}
                     </button>
                   </div>
                 </div>
@@ -476,7 +468,7 @@ export default function ScheduledTasksPanel({
           {recentRuns.length > 0 && (
             <section>
               <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-                Recent Runs
+                {t("tasks.recentRuns")}
               </h3>
               <div className="space-y-2">
                 {recentRuns.map((r) => (
@@ -500,24 +492,24 @@ export default function ScheduledTasksPanel({
                             : "bg-red-500/15 text-red-400"
                         }`}
                       >
-                        {r.status}
+                        {r.status === "ok" ? t("common.ok") : t("common.error")}
                       </span>
                     </button>
                     <div className="mt-1 text-[11px] text-[var(--text-secondary)]">
-                      {relativeFromIso(r.finished_at)} · {workspaceName(r.workspace)}
+                      {relativeFromIso(r.finished_at, t)} · {workspaceName(r.workspace)}
                     </div>
                     {expandedRun === r.id && (
                       <div className="mt-2 space-y-2 text-xs">
                         <div>
-                          <div className="text-[var(--text-secondary)] mb-0.5">Prompt</div>
+                          <div className="text-[var(--text-secondary)] mb-0.5">{t("tasks.prompt")}</div>
                           <div className="whitespace-pre-wrap text-[var(--text-primary)] bg-[var(--bg-tertiary)]/40 rounded p-2">
                             {r.prompt}
                           </div>
                         </div>
                         <div>
-                          <div className="text-[var(--text-secondary)] mb-0.5">Result</div>
+                          <div className="text-[var(--text-secondary)] mb-0.5">{t("common.result")}</div>
                           <div className="whitespace-pre-wrap text-[var(--text-primary)] bg-[var(--bg-tertiary)]/40 rounded p-2 max-h-64 overflow-y-auto">
-                            {r.result || (r.status === "error" ? "(failed)" : "(no output)")}
+                            {r.result || (r.status === "error" ? t("common.failed") : t("common.noOutput"))}
                           </div>
                         </div>
                       </div>

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { invoke } from "@tauri-apps/api/core";
 import type { MarketplaceInfo, PluginCatalog, PluginInfo } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
+import { useTranslation } from "../hooks/useTranslation";
 
 interface MarketplacePanelProps {
   onClose: () => void;
@@ -11,23 +13,27 @@ interface MarketplacePanelProps {
 
 /** Seed marketplaces shown as tabs. Keyed by repo so "added" state is stable
  *  even when the marketplace's declared `name` differs from its repo. */
-const SUGGESTED: { repo: string; label: string }[] = [
-  { repo: "anthropics/claude-plugins-official", label: "Official" },
-  { repo: "anthropics/knowledge-work-plugins", label: "Knowledge Work" },
-  { repo: "jeremylongshore/claude-code-plugins-plus-skills", label: "Plus Skills" },
-  { repo: "ComposioHQ/awesome-claude-skills", label: "ComposioHQ" },
+const SUGGESTED: { repo: string; tabKey: "official" | "knowledgeWork" | "plusSkills" | "composio" }[] = [
+  { repo: "anthropics/claude-plugins-official", tabKey: "official" },
+  { repo: "anthropics/knowledge-work-plugins", tabKey: "knowledgeWork" },
+  { repo: "jeremylongshore/claude-code-plugins-plus-skills", tabKey: "plusSkills" },
+  { repo: "ComposioHQ/awesome-claude-skills", tabKey: "composio" },
 ];
 
 const CUSTOM_TAB = "__add_custom__";
 const INSTALLED_TAB = "__installed__";
 
-function formatCount(n?: number): string {
+function formatCount(n: number | undefined, t: TFunction): string {
   if (!n) return "";
-  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k installs`;
-  return `${n} installs`;
+  if (n >= 1000) {
+    const k = parseFloat((n / 1000).toFixed(1).replace(/\.0$/, ""));
+    return t("marketplace.installsK", { count: k });
+  }
+  return t("marketplace.installs", { count: n });
 }
 
 export default function MarketplacePanel({ onClose, onSkillsChanged }: MarketplacePanelProps) {
+  const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[]>([]);
   const [catalog, setCatalog] = useState<PluginCatalog>({ installed: [], available: [] });
@@ -79,8 +85,11 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
     const custom = marketplaces
       .filter((m) => !SUGGESTED.some((s) => s.repo === m.repo))
       .map((m) => ({ repo: m.repo, label: m.name }));
-    return [...SUGGESTED, ...custom];
-  }, [marketplaces]);
+    return [
+      ...SUGGESTED.map((s) => ({ repo: s.repo, label: t(`marketplace.tabs.${s.tabKey}`) })),
+      ...custom,
+    ];
+  }, [marketplaces, t]);
 
   // Keep activeRepo valid as tabs change (e.g. after a remove).
   if (
@@ -199,11 +208,12 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
           onMouseDown={handleDragRegion}
           className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)]"
         >
-          <h2 className="text-sm font-semibold text-[var(--text-primary)]">Skills Marketplace</h2>
+          <h2 className="text-sm font-semibold text-[var(--text-primary)]">{t("marketplace.title")}</h2>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-            title="Close"
+            title={t("common.close")}
+            aria-label={t("common.close")}
           >
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
               <path d="M4 4l10 10M14 4L4 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -221,7 +231,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                 : "border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             }`}
           >
-            Installed
+            {t("marketplace.installed")}
             {catalog.installed.length > 0 && (
               <span className="ml-1.5 inline-block min-w-4 px-1 text-center text-[10px] rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] align-middle">
                 {catalog.installed.length}
@@ -255,7 +265,8 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                 ? "border-[var(--accent)] text-[var(--text-primary)]"
                 : "border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             }`}
-            title="Add a custom marketplace"
+            title={t("marketplace.addCustom")}
+            aria-label={t("marketplace.addCustom")}
           >
             +
           </button>
@@ -265,7 +276,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
           <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-start justify-between gap-3">
             <span className="break-words">{error}</span>
             <button onClick={() => setError(null)} className="shrink-0 text-red-400 hover:text-red-200">
-              Dismiss
+              {t("common.dismiss")}
             </button>
           </div>
         )}
@@ -276,7 +287,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
             <div className="flex flex-col h-full">
               {catalog.installed.length === 0 ? (
                 <div className="px-4 py-8 text-center text-xs text-[var(--text-secondary)]">
-                  No skills installed
+                  {t("marketplace.noSkills")}
                 </div>
               ) : (
                 catalog.installed.map((p) => (
@@ -311,7 +322,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                       disabled={busy !== null}
                       className="shrink-0 px-3 py-1.5 rounded-lg text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:text-red-400 disabled:opacity-50 transition-colors"
                     >
-                      {busy === `uninstall:${p.name}` ? "…" : "Uninstall"}
+                      {busy === `uninstall:${p.name}` ? "…" : t("marketplace.uninstall")}
                     </button>
                   </div>
                 ))
@@ -320,12 +331,10 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
           ) : activeRepo === CUSTOM_TAB ? (
             <div className="p-6">
               <h3 className="text-sm font-medium text-[var(--text-primary)] mb-2">
-                Add a custom marketplace
+                {t("marketplace.addCustom")}
               </h3>
               <p className="text-xs text-[var(--text-secondary)] mb-4">
-                Enter a GitHub <code className="text-[var(--text-primary)]">owner/repo</code>, a git
-                URL, or a local path. The repo must contain
-                <code className="text-[var(--text-primary)]"> .claude-plugin/marketplace.json</code>.
+                {t("marketplace.customHint")}
               </p>
               <div className="flex gap-2">
                 <input
@@ -334,7 +343,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleAddCustom();
                   }}
-                  placeholder="e.g. travisvn/awesome-claude-skills"
+                  placeholder={t("marketplace.customPlaceholder")}
                   className="flex-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)]"
                 />
                 <button
@@ -342,24 +351,21 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                   disabled={!customSource.trim() || busy !== null}
                   className="px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
                 >
-                  Add
+                  {t("marketplace.addMarketplace")}
                 </button>
               </div>
             </div>
           ) : !isActiveAdded ? (
             <div className="flex flex-col items-center justify-center h-full px-6 text-center">
               <p className="text-sm text-[var(--text-secondary)] mb-4">
-                This marketplace is not added yet. Add it to browse and install its skills.
-                {activeRepo === "jeremylongshore/claude-code-plugins-plus-skills" && (
-                  <span className="block mt-1 text-xs">Large repo — this may take a minute.</span>
-                )}
+                {t("marketplace.addCustom")}
               </p>
               <button
                 onClick={() => addMarketplace(activeRepo)}
                 disabled={busy !== null}
                 className="px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-sm font-medium transition-colors"
               >
-                {busy === `add:${activeRepo}` ? "Adding…" : "Add marketplace"}
+                {busy === `add:${activeRepo}` ? t("marketplace.adding") : t("marketplace.addMarketplace")}
               </button>
             </div>
           ) : (
@@ -369,16 +375,17 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={`Filter ${plugins.length} plugins…`}
+                  placeholder={t("marketplace.search")}
                   className="flex-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)]"
                 />
                 <button
                   onClick={() => activeMarketplace && removeMarketplace(activeMarketplace.name)}
                   disabled={busy !== null}
                   className="shrink-0 px-3 py-1.5 rounded-lg text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-red-400 disabled:opacity-40 transition-colors"
-                  title="Remove this marketplace"
+                  title={t("marketplace.removeMarketplace")}
+                  aria-label={t("marketplace.removeMarketplace")}
                 >
-                  {busy === `remove:${activeMarketplace?.name}` ? "Removing…" : "Remove"}
+                  {busy === `remove:${activeMarketplace?.name}` ? t("marketplace.removing") : t("common.remove")}
                 </button>
               </div>
 
@@ -386,11 +393,11 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
               <div className="flex-1 overflow-y-auto">
                 {loading ? (
                   <div className="px-4 py-8 text-center text-xs text-[var(--text-secondary)]">
-                    Loading…
+                    {t("common.loading")}
                   </div>
                 ) : filtered.length === 0 ? (
                   <div className="px-4 py-8 text-center text-xs text-[var(--text-secondary)]">
-                    {query ? "No plugins match your filter" : "No plugins in this marketplace"}
+                    {query ? t("marketplace.noPluginsMatch") : t("marketplace.noPluginsInMarketplace")}
                   </div>
                 ) : (
                   filtered.map((p) => {
@@ -417,7 +424,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                             </p>
                           )}
                           <p className="text-[10px] text-[var(--text-secondary)] opacity-60 mt-0.5">
-                            {formatCount(p.installCount)}
+                            {formatCount(p.installCount, t)}
                           </p>
                         </div>
                         {installed ? (
@@ -426,7 +433,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                             disabled={busy !== null}
                             className="shrink-0 px-3 py-1.5 rounded-lg text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:text-red-400 disabled:opacity-50 transition-colors"
                           >
-                            {busy === `uninstall:${p.name}` ? "…" : "Uninstall"}
+                            {busy === `uninstall:${p.name}` ? "…" : t("marketplace.uninstall")}
                           </button>
                         ) : (
                           <button
@@ -434,7 +441,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
                             disabled={busy !== null}
                             className="shrink-0 px-3 py-1.5 rounded-lg text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white transition-colors"
                           >
-                            {busy === `install:${p.pluginId}` ? "…" : "Install"}
+                            {busy === `install:${p.pluginId}` ? "…" : t("marketplace.install")}
                           </button>
                         )}
                       </div>

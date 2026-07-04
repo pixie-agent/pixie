@@ -55,15 +55,22 @@ export interface Conversation {
   engine: AgentEngineId;
   /** Per-conversation model override. When empty/undefined, uses the engine's global config. */
   model?: string;
+  /** When present, this conversation is a loop iteration and belongs to the
+   *  loop task with this id. The sidebar uses this to group iterations under their parent. */
+  loopTaskId?: string;
+  /** Display name of the parent loop task (for sidebar grouping header). */
+  loopTaskName?: string;
 }
 
-export type AgentEngineId = "claude" | "cursor" | "codebuddy";
+export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex";
 
 /** Env key that each engine uses for its model override in global config. */
 export const ENGINE_MODEL_ENV_KEY: Record<AgentEngineId, string> = {
   claude: "ANTHROPIC_MODEL",
   cursor: "CURSOR_MODEL",
   codebuddy: "CODEBUDDY_MODEL",
+  builtin: "ANTHROPIC_MODEL",
+  codex: "CODEX_MODEL",
 };
 
 /** A model entry returned by the backend's list_models command. */
@@ -76,6 +83,8 @@ export const AGENT_ENGINES: { id: AgentEngineId; label: string }[] = [
   { id: "claude", label: "Claude Code" },
   { id: "cursor", label: "Cursor Agent" },
   { id: "codebuddy", label: "CodeBuddy" },
+  { id: "builtin", label: "Builtin" },
+  { id: "codex", label: "OpenAI Codex" },
 ];
 
 /** Readiness/auth state of an engine, set by the backend probe. Mirrors the
@@ -197,11 +206,29 @@ export interface CodebuddyModelConfig {
   CODEBUDDY_MODEL?: string;
 }
 
+export interface BuiltinModelConfig {
+  /** Shared with Claude engine — Anthropic API key */
+  ANTHROPIC_API_KEY?: string;
+  /** Custom Anthropic API base URL */
+  ANTHROPIC_BASE_URL?: string;
+  /** Model override for builtin engine */
+  ANTHROPIC_MODEL?: string;
+}
+
+export interface CodexModelConfig {
+  /** OpenAI API key */
+  OPENAI_API_KEY?: string;
+  /** Model override for codex engine */
+  CODEX_MODEL?: string;
+}
+
 /** Per-engine model/env overrides. */
 export type EngineModelConfigs = {
   claude: ClaudeModelConfig;
   cursor: CursorModelConfig;
   codebuddy: CodebuddyModelConfig;
+  builtin: BuiltinModelConfig;
+  codex: CodexModelConfig;
 };
 
 /** @deprecated Use EngineModelConfigs */
@@ -211,6 +238,8 @@ export const DEFAULT_ENGINE_MODEL_CONFIGS: EngineModelConfigs = {
   claude: {},
   cursor: {},
   codebuddy: {},
+  builtin: {},
+  codex: {},
 };
 
 export const ENGINE_MODEL_FIELDS: Record<
@@ -232,6 +261,15 @@ export const ENGINE_MODEL_FIELDS: Record<
     { key: "CURSOR_MODEL", label: "Model" },
   ],
   codebuddy: [{ key: "CODEBUDDY_MODEL", label: "Model" }],
+  builtin: [
+    { key: "ANTHROPIC_API_KEY", label: "API Key", secret: true },
+    { key: "ANTHROPIC_BASE_URL", label: "Base URL" },
+    { key: "ANTHROPIC_MODEL", label: "Model" },
+  ],
+  codex: [
+    { key: "OPENAI_API_KEY", label: "API Key", secret: true },
+    { key: "CODEX_MODEL", label: "Model" },
+  ],
 };
 
 export interface FileEntry {
@@ -303,6 +341,8 @@ export interface ScheduledTask {
   prompt: string;
   schedule: ScheduleSpec;
   enabled: boolean;
+  /** Engine to use for this task. Defaults to 'builtin'. */
+  engine: AgentEngineId;
   /** ISO-8601 (UTC) of the next pending fire, or null when disabled. */
   next_run: string | null;
   /** ISO-8601 (UTC) of the last fire. */
@@ -323,8 +363,72 @@ export interface TaskRunRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Structured git diff (parsed from raw `git diff` unified output)
+// Loop tasks
 // ---------------------------------------------------------------------------
+
+/** An exit condition for a loop task. The loop terminates when ANY condition is met. */
+export type LoopExitCondition =
+  | { type: "max_iterations"; max: number }
+  | { type: "no_error_pattern"; pattern: string }
+  | { type: "success_pattern"; pattern: string }
+  | { type: "output_unchanged"; streak: number }
+  | { type: "manual_only" };
+
+/** Current lifecycle state of a loop task. */
+export type LoopTaskStatus = "idle" | "running" | "paused" | "completed" | "aborted" | "error";
+
+/** A loop task: an iterative agent cycle that feeds each iteration's result
+ *  back as context for the next one, until an exit condition is satisfied. */
+export interface LoopTask {
+  id: string;
+  name: string;
+  workspace: string;
+  engine: AgentEngineId;
+  /** Prompt for the first iteration. */
+  initial_prompt: string;
+  /** Template for subsequent iterations. `{{previous_result}}` is replaced
+   *  with the last iteration's output. */
+  result_template: string;
+  /** Exit conditions — loop stops when ANY one is satisfied. */
+  exit_conditions: LoopExitCondition[];
+  /** Iterations completed so far (0 = not started). */
+  iteration: number;
+  status: LoopTaskStatus;
+  /** Raw output of the most recent iteration. */
+  last_result: string | null;
+  /** Consecutive unchanged outputs for output_unchanged convergence tracking. */
+  unchanged_streak: number;
+  /** Optional schedule for automatic triggering. */
+  schedule?: ScheduleSpec | null;
+  next_run: string | null;
+  last_run: string | null;
+  enabled: boolean;
+  created_at: string;
+  /** Human-readable reason explaining why the loop was aborted or completed.
+   *  For aborted: describes who stopped it (user/system) and why.
+   *  For completed: describes which exit condition was satisfied. */
+  completion_reason: string | null;
+  /** Summary of changes made during the loop (extracted from tool use events).
+   *  Populated when the loop completes successfully. */
+  changes_summary: string | null;
+}
+
+/** Record of a single iteration within a loop cycle. */
+export interface LoopIterationRecord {
+  id: string;
+  loop_task_id: string;
+  iteration: number;
+  /** The actual prompt sent (after template substitution). */
+  prompt: string;
+  result: string;
+  status: "ok" | "error";
+  started_at: string;
+  finished_at: string;
+  /** Whether any exit condition was satisfied after this iteration. */
+  exit_met: boolean;
+  /** Snapshot of PROGRESS.md from the workspace (if it exists). */
+  progress_snapshot?: string | null;
+}
 
 export type DiffLineType = "context" | "add" | "delete";
 
@@ -388,4 +492,3 @@ export interface SearchIndexStats {
   doc_count: number;
   term_count: number;
 }
-

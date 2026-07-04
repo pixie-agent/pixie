@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "../hooks/useTranslation";
+import { formatShortDate } from "../lib/i18nFormat";
 import type { KbSearchResult } from "../types";
 import { getConfig } from "../lib/storage";
 
@@ -18,6 +20,7 @@ export default function SearchPalette(props: SearchPaletteProps) {
 }
 
 function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps, "open">) {
+  const { t, currentLanguage } = useTranslation();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<KbSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -104,7 +107,11 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
       />
 
       {/* Popup panel */}
-      <div className="relative w-full max-w-xl bg-[var(--bg-secondary)] rounded-2xl border border-[var(--border-color)] shadow-2xl overflow-hidden search-palette-enter max-h-[55vh] flex flex-col">
+      <div
+        className="relative w-full max-w-xl bg-[var(--bg-secondary)] rounded-2xl border border-[var(--border-color)] shadow-2xl overflow-hidden search-palette-enter max-h-[55vh] flex flex-col"
+        role="dialog"
+        aria-label={t("search.title")}
+      >
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--border-color)]">
           <svg
@@ -138,7 +145,7 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
               }
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Search knowledge base…"
+            placeholder={t('search.placeholder')}
             className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none"
             autoFocus
           />
@@ -148,7 +155,8 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
           <button
             onClick={onClose}
             className="p-1 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-            title="Close (Esc)"
+            title={t('search.closeEsc', { key: t('keys.esc') })}
+            aria-label={t('common.close')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -195,7 +203,7 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
                   </p>
                   {result.created && (
                     <p className="text-[10px] text-[var(--text-secondary)] mt-1 opacity-60">
-                      {result.created.split("T")[0]}
+                      {formatShortDate(result.created, currentLanguage)}
                     </p>
                   )}
                 </div>
@@ -207,9 +215,9 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
         {/* Empty state */}
         {query.trim().length >= 2 && !loading && results.length === 0 && (
           <div className="px-4 py-8 text-center">
-            <p className="text-sm text-[var(--text-secondary)]">No results found</p>
+            <p className="text-sm text-[var(--text-secondary)]">{t('search.noResults')}</p>
             <p className="text-xs text-[var(--text-secondary)] mt-1 opacity-60">
-              Try different keywords or check your vault settings
+              {t('search.noResultsHint')}
             </p>
           </div>
         )}
@@ -218,7 +226,7 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
         {query.trim().length < 2 && (
           <div className="px-4 py-4 text-center">
             <p className="text-xs text-[var(--text-secondary)]">
-              Type at least 2 characters to search your knowledge base
+              {t('search.minCharsHint')}
             </p>
           </div>
         )}
@@ -226,13 +234,13 @@ function SearchPaletteInner({ onClose, onOpenPreview }: Omit<SearchPaletteProps,
 {/* Footer */}
         <div className="flex items-center gap-4 px-4 py-2 text-[10px] text-[var(--text-secondary)]">
           <span>
-            <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">↑↓</kbd> select
+            <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">{t('keys.arrowUpDown')}</kbd> {t('search.footerSelect')}
           </span>
           <span>
-            <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">Enter</kbd> preview
+            <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">{t('keys.enter')}</kbd> {t('search.footerPreview')}
           </span>
           <span>
-            <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">Esc</kbd> close
+            <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">{t('keys.esc')}</kbd> {t('search.footerClose')}
           </span>
         </div>
     </div>

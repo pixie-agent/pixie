@@ -4,9 +4,12 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { appLocale, formatTokenCount, formatDurationMs, formatCostUsd } from "../lib/i18nFormat";
 import type { Message, MessageUsage, PreviewRequest, ToolStep, PendingPermission } from "../types";
 import { isPreviewableFile } from "../preview";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import type { TFunction } from "i18next";
+import { useTranslation } from "../hooks/useTranslation";
 
 interface MessageBubbleProps {
   message: Message;
@@ -17,6 +20,7 @@ interface MessageBubbleProps {
 
 /** Render user message content, detecting and collapsing KB context blocks. */
 function UserContent({ content }: { content: string }) {
+  const { t } = useTranslation();
   const ctxMatch = content.match(/^<details\b[\s\S]*?<\/details>\s*/);
   if (ctxMatch) {
     const ctxRaw = ctxMatch[0];
@@ -33,7 +37,7 @@ function UserContent({ content }: { content: string }) {
 
     // Parse the summary line.
     const summaryMatch = ctxRaw.match(/<summary>(.*?)<\/summary>/);
-    const summary = summaryMatch?.[1] ?? "Knowledge Base Context";
+    const summary = summaryMatch?.[1] ?? t("messageBubble.kbContext");
 
     // Parse individual kb-entry divs: <strong> title / strong content <br> snippet.
     const entries = [...ctxRaw.matchAll(
@@ -106,6 +110,7 @@ function KbContextBlock({
 }
 
 function CopyButton({ text }: { text: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
@@ -117,7 +122,7 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <button onClick={handleCopy} className="copy-code-btn">
-      {copied ? "Copied" : "Copy"}
+      {copied ? t("messageBubble.copied") : t("messageBubble.copy")}
     </button>
   );
 }
@@ -133,12 +138,13 @@ function OpenableCode({
   kind: "file" | "url";
   onOpenPreview: (t: PreviewRequest) => void;
 }) {
+  const { t } = useTranslation();
   if (!value || (kind === "file" && !isPreviewableFile(value))) {
     return <code>{value}</code>;
   }
   return (
     <code
-      title="Open in preview"
+      title={t("messageBubble.openPreview")}
       onClick={(e) => {
         e.stopPropagation();
         onOpenPreview(kind === "url" ? { kind: "url", url: value } : { kind: "file", path: value });
@@ -177,7 +183,7 @@ function truncateText(s: string, max: number): string {
 }
 
 /** Colored status pill for the Task* todo tools (pending / in_progress / completed / deleted). */
-function taskStatusChip(status: string): ReactNode {
+function taskStatusChip(status: string, t: TFunction): ReactNode {
   const cls =
     status === "in_progress"
       ? "task-status--running"
@@ -186,7 +192,8 @@ function taskStatusChip(status: string): ReactNode {
         : status === "deleted"
           ? "task-status--deleted"
           : "task-status--pending";
-  return <span className={`task-status ${cls}`}>{status.replace("_", " ")}</span>;
+  const label = t(`messageBubble.taskStatus.${status}`, { defaultValue: status.replace("_", " ") });
+  return <span className={`task-status ${cls}`}>{label}</span>;
 }
 
 /**
@@ -195,7 +202,7 @@ function taskStatusChip(status: string): ReactNode {
  * tool ships an explicit `description`; we surface that as the purpose so the
  * transcript reads as a reasoning trace rather than a bare command.
  */
-function describeTool(step: ToolStep): { label: string; target?: string; open?: { kind: "file" | "url"; value: string } } {
+function describeTool(step: ToolStep, t: TFunction): { label: string; target?: string; open?: { kind: "file" | "url"; value: string } } {
   const input = (step.input ?? null) as Record<string, unknown> | null;
   const pick = (...keys: string[]): string | undefined => {
     for (const k of keys) {
@@ -210,33 +217,33 @@ function describeTool(step: ToolStep): { label: string; target?: string; open?: 
   const purpose = pick("description", "reason");
 
   switch (n) {
-    case "bash":         return { label: purpose ?? "Run command",       target: pick("command") };
-    case "read":         return { label: "Read file",                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
-    case "edit":         return { label: "Edit file",                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
-    case "multiedit":    return { label: "Edit file",                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
-    case "write":        return { label: "Write file",                   target: pick("file_path"), open: fileOpen(pick("file_path")) };
-    case "notebookedit": return { label: "Edit notebook",                target: pick("notebook_path"), open: fileOpen(pick("notebook_path")) };
-    case "glob":         return { label: "Find files",                   target: pick("pattern") };
-    case "grep":         return { label: "Search code",                  target: pick("pattern") };
+    case "bash":         return { label: purpose ?? t("messageBubble.tools.runCommand"),       target: pick("command") };
+    case "read":         return { label: t("messageBubble.tools.readFile"),                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "edit":         return { label: t("messageBubble.tools.editFile"),                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "multiedit":    return { label: t("messageBubble.tools.editFile"),                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "write":        return { label: t("messageBubble.tools.writeFile"),                   target: pick("file_path"), open: fileOpen(pick("file_path")) };
+    case "notebookedit": return { label: t("messageBubble.tools.editNotebook"),                target: pick("notebook_path"), open: fileOpen(pick("notebook_path")) };
+    case "glob":         return { label: t("messageBubble.tools.findFiles"),                   target: pick("pattern") };
+    case "grep":         return { label: t("messageBubble.tools.searchCode"),                  target: pick("pattern") };
     case "task":
-    case "agent":        return { label: purpose ?? "Delegate to agent", target: pick("description", "prompt") };
-    case "webfetch":     return { label: "Fetch URL",                    target: pick("url"), open: urlOpen(pick("url")) };
-    case "websearch":    return { label: "Web search",                   target: pick("query") };
-    case "taskcreate":   return { label: "Create task",                  target: pick("subject") };
+    case "agent":        return { label: purpose ?? t("messageBubble.tools.delegateAgent"), target: pick("description", "prompt") };
+    case "webfetch":     return { label: t("messageBubble.tools.fetchUrl"),                    target: pick("url"), open: urlOpen(pick("url")) };
+    case "websearch":    return { label: t("messageBubble.tools.webSearch"),                   target: pick("query") };
+    case "taskcreate":   return { label: t("messageBubble.tools.createTask"),                  target: pick("subject") };
     case "taskupdate": {
       const st = pick("status");
       const verb =
-        st === "in_progress" ? "Start task"
-        : st === "completed" ? "Complete task"
-        : st === "deleted" ? "Delete task"
-        : st === "pending" ? "Reset task"
-        : "Update task";
+        st === "in_progress" ? t("messageBubble.tools.startTask")
+        : st === "completed" ? t("messageBubble.tools.completeTask")
+        : st === "deleted" ? t("messageBubble.tools.deleteTask")
+        : st === "pending" ? t("messageBubble.tools.resetTask")
+        : t("messageBubble.tools.updateTask");
       return { label: verb, target: pick("subject") };
     }
-    case "taskget":      return { label: "Read task" };
-    case "tasklist":     return { label: "List tasks" };
-    case "taskoutput":   return { label: "Read task output" };
-    case "taskstop":     return { label: "Stop task" };
+    case "taskget":      return { label: t("messageBubble.tools.readTask") };
+    case "tasklist":     return { label: t("messageBubble.tools.listTasks") };
+    case "taskoutput":   return { label: t("messageBubble.tools.readTaskOutput") };
+    case "taskstop":     return { label: t("messageBubble.tools.stopTask") };
     default:             return { label: step.name };
   }
 }
@@ -354,9 +361,9 @@ function diffStats(step: ToolStep): { added: number; removed: number } | null {
  * Structured preview of a tool's INPUT, shown while the step is running so the
  * user can watch what it is about to do (command, target file, search pattern…).
  */
-function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => void): ReactNode {
+function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => void, t: TFunction): ReactNode {
   const input = (step.input ?? null) as Record<string, unknown> | null;
-  if (!input) return <span className="tool-field-empty">starting…</span>;
+  if (!input) return <span className="tool-field-empty">{t("messageBubble.starting")}</span>;
 
   const n = step.name.toLowerCase();
   const str = (...keys: string[]): string | undefined => {
@@ -370,26 +377,27 @@ function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => v
     typeof input[k] === "number" ? (input[k] as number) : undefined;
 
   const rows: ReactNode[] = [];
+  const f = (key: string) => t(`messageBubble.fields.${key}`);
   const push = (label: string, value: ReactNode) =>
     rows.push(<ToolField key={label} label={label} value={value} />);
 
   if (n === "bash") {
-    push("command", <code>{str("command")}</code>);
+    push(f("command"), <code>{str("command")}</code>);
   } else if (n === "read") {
-    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
-    if (num("offset") != null) push("offset", String(num("offset")));
-    if (num("limit") != null) push("limit", String(num("limit")));
+    push(f("file"), <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
+    if (num("offset") != null) push(f("offset"), String(num("offset")));
+    if (num("limit") != null) push(f("limit"), String(num("limit")));
   } else if (n === "edit") {
-    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
+    push(f("file"), <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     const oldS = str("old_string");
     const newS = str("new_string");
     if (oldS != null && newS != null) {
-      rows.push(<DiffBlock key="changes" diff={lineDiff(oldS, newS)} title="changes" />);
+      rows.push(<DiffBlock key="changes" diff={lineDiff(oldS, newS)} title={f("changes")} />);
     } else if (newS != null) {
-      push("new", truncateText(newS, 200));
+      push(f("new"), truncateText(newS, 200));
     }
   } else if (n === "multiedit") {
-    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
+    push(f("file"), <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     const edits = input.edits;
     if (Array.isArray(edits)) {
       edits.forEach((e, idx) => {
@@ -400,7 +408,7 @@ function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => v
               <DiffBlock
                 key={`change-${idx}`}
                 diff={lineDiff(ee.old_string, ee.new_string)}
-                title={edits.length > 1 ? `change ${idx + 1}` : "changes"}
+                title={edits.length > 1 ? t("messageBubble.fields.changeN", { n: idx + 1 }) : f("changes")}
               />,
             );
           }
@@ -408,7 +416,7 @@ function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => v
       });
     }
   } else if (n === "write") {
-    push("file", <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
+    push(f("file"), <OpenableCode value={str("file_path") ?? ""} kind="file" onOpenPreview={onOpenPreview} />);
     const content = str("content");
     if (content) {
       const lines = content.split("\n");
@@ -416,44 +424,44 @@ function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => v
       const shown: DiffLine[] = lines.slice(0, cap).map((text) => ({ type: "add", text }));
       const diff: DiffLine[] =
         lines.length > cap
-          ? [...shown, { type: "ctx", text: `… (${lines.length - cap} more lines not shown)` }]
+          ? [...shown, { type: "ctx", text: t("messageBubble.moreLinesNotShown", { count: lines.length - cap }) }]
           : shown;
-      rows.push(<DiffBlock key="content" diff={diff} title="content" />);
+      rows.push(<DiffBlock key="content" diff={diff} title={f("content")} />);
     }
   } else if (n === "notebookedit") {
-    push("notebook", <code>{str("notebook_path")}</code>);
+    push(f("notebook"), <code>{str("notebook_path")}</code>);
   } else if (n === "glob") {
-    push("pattern", <code>{str("pattern")}</code>);
-    if (str("path")) push("path", <code>{str("path")}</code>);
+    push(f("pattern"), <code>{str("pattern")}</code>);
+    if (str("path")) push(f("path"), <code>{str("path")}</code>);
   } else if (n === "grep") {
-    push("pattern", <code>{str("pattern")}</code>);
-    if (str("path")) push("path", <code>{str("path")}</code>);
-    if (str("glob")) push("glob", <code>{str("glob")}</code>);
+    push(f("pattern"), <code>{str("pattern")}</code>);
+    if (str("path")) push(f("path"), <code>{str("path")}</code>);
+    if (str("glob")) push(f("glob"), <code>{str("glob")}</code>);
   } else if (n === "task" || n === "agent") {
-    if (str("subagent_type")) push("agent", <code>{str("subagent_type")}</code>);
-    if (str("description")) push("task", str("description"));
+    if (str("subagent_type")) push(f("agent"), <code>{str("subagent_type")}</code>);
+    if (str("description")) push(f("task"), str("description"));
     const prompt = str("prompt");
-    if (prompt) push("prompt", truncateText(prompt, 160));
+    if (prompt) push(f("prompt"), truncateText(prompt, 160));
   } else if (n === "webfetch") {
-    push("url", <OpenableCode value={str("url") ?? ""} kind="url" onOpenPreview={onOpenPreview} />);
-    if (str("prompt")) push("prompt", str("prompt"));
+    push(f("url"), <OpenableCode value={str("url") ?? ""} kind="url" onOpenPreview={onOpenPreview} />);
+    if (str("prompt")) push(f("prompt"), str("prompt"));
   } else if (n === "websearch") {
-    push("query", <code>{str("query")}</code>);
+    push(f("query"), <code>{str("query")}</code>);
   } else if (n === "taskcreate") {
-    if (str("subject")) push("task", str("subject"));
-    if (str("activeForm")) push("doing", str("activeForm"));
-    if (str("description")) push("detail", truncateText(str("description")!, 160));
+    if (str("subject")) push(f("task"), str("subject"));
+    if (str("activeForm")) push(f("doing"), str("activeForm"));
+    if (str("description")) push(f("detail"), truncateText(str("description")!, 160));
   } else if (n === "taskupdate") {
     const st = str("status");
-    if (st) push("status", taskStatusChip(st));
-    if (str("activeForm")) push("doing", str("activeForm"));
-    if (str("subject")) push("rename to", str("subject"));
-    if (str("owner")) push("owner", <code>{str("owner")}</code>);
+    if (st) push(f("status"), taskStatusChip(st, t));
+    if (str("activeForm")) push(f("doing"), str("activeForm"));
+    if (str("subject")) push(f("renameTo"), str("subject"));
+    if (str("owner")) push(f("owner"), <code>{str("owner")}</code>);
     const tid = str("taskId") ?? str("task_id");
-    if (tid) push("id", <code>{tid.slice(0, 8)}</code>);
+    if (tid) push(f("id"), <code>{tid.slice(0, 8)}</code>);
   } else if (n === "taskget" || n === "taskoutput" || n === "taskstop") {
     const tid = str("taskId") ?? str("task_id");
-    if (tid) push("id", <code>{tid.slice(0, 8)}</code>);
+    if (tid) push(f("id"), <code>{tid.slice(0, 8)}</code>);
   } else {
     return <pre className="tool-detail">{JSON.stringify(input, null, 2)}</pre>;
   }
@@ -462,6 +470,7 @@ function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => v
 }
 
 function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPreview: (t: PreviewRequest) => void }) {
+  const { t } = useTranslation();
   // Convention: a running step is expanded (watch it work); once it has a
   // result it auto-collapses to keep the transcript readable. The user can
   // still click any card to expand/collapse manually.
@@ -473,7 +482,7 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
     setOpen(step.status === "running");
   }, [step.status]);
 
-  const { label, target, open: openable } = describeTool(step);
+  const { label, target, open: openable } = describeTool(step, t);
   const diffStat = useMemo(() => diffStats(step), [step]);
   const isRunning = step.status === "running";
   const hasResult = Boolean(step.result);
@@ -492,7 +501,7 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
   const hasBody = isRunning || hasResult;
 
   const body = showInput ? (
-    renderToolInput(step, onOpenPreview)
+    renderToolInput(step, onOpenPreview, t)
   ) : (
     <pre className={`tool-detail${step.status === "error" ? " tool-detail--error" : ""}`}>
       {step.result}
@@ -515,7 +524,7 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
           openable && (openable.kind === "url" || isPreviewableFile(openable.value)) ? (
             <span
               className="tool-target"
-              title="Open in preview"
+              title={t("messageBubble.openPreview")}
               style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
               onClick={(e) => {
                 e.stopPropagation();
@@ -535,17 +544,17 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
         {diffStat && (diffStat.added > 0 || diffStat.removed > 0) && (
           <span
             className="tool-diff-stat"
-            title={`${diffStat.added} added · ${diffStat.removed} removed`}
+            title={t("messageBubble.diffStat", { added: diffStat.added, removed: diffStat.removed })}
           >
             {diffStat.added > 0 && <span className="tool-diff-stat-add">+{diffStat.added}</span>}
             {diffStat.removed > 0 && <span className="tool-diff-stat-del">-{diffStat.removed}</span>}
           </span>
         )}
-        {taskStatusRaw && taskStatusChip(taskStatusRaw)}
+        {taskStatusRaw && taskStatusChip(taskStatusRaw, t)}
         <span className="tool-status">
-          {isRunning && <span className="tool-spinner" aria-label="running" />}
-          {step.status === "done" && <span className="tool-check" title="done">✓</span>}
-          {step.status === "error" && <span className="tool-x" title="error">✕</span>}
+          {isRunning && <span className="tool-spinner" aria-label={t("messageBubble.statusRunning")} />}
+          {step.status === "done" && <span className="tool-check" title={t("common.done")}>✓</span>}
+          {step.status === "error" && <span className="tool-x" title={t("common.error")}>✕</span>}
         </span>
         {hasBody && <span className="tool-chevron">{open ? "▾" : "▸"}</span>}
       </button>
@@ -557,22 +566,26 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
 const ToolStepCard = memo(ToolStepCardImpl);
 
 function ToolActivity({ tools, onOpenPreview }: { tools: ToolStep[]; onOpenPreview: (t: PreviewRequest) => void }) {
+  const { t } = useTranslation();
   if (!tools || tools.length === 0) return null;
-  const running = tools.filter((t) => t.status === "running").length;
-  const done = tools.filter((t) => t.status === "done").length;
-  const errored = tools.filter((t) => t.status === "error").length;
+  const running = tools.filter((s) => s.status === "running").length;
+  const done = tools.filter((s) => s.status === "done").length;
+  const errored = tools.filter((s) => s.status === "error").length;
   return (
     <div className="tool-activity">
       <div className="tool-activity-summary">
         {running > 0 ? (
           <span className="tool-summary-running">
-            <span className="tool-spinner" /> Running {running}
+            <span className="tool-spinner" /> {t("messageBubble.running", { count: running })}
           </span>
         ) : (
-          <span className="tool-summary-done">✓ {done + errored} tool{done + errored === 1 ? "" : "s"}</span>
+          <span className="tool-summary-done">{t("messageBubble.toolsCompleted", { count: done + errored })}</span>
         )}
         {running > 0 && (done > 0 || errored > 0) && (
-          <span className="tool-summary-count">· {done} done{errored > 0 ? ` · ${errored} failed` : ""}</span>
+          <span className="tool-summary-count">
+            {t("messageBubble.toolsProgress", { done })}
+            {errored > 0 ? t("messageBubble.toolsFailed", { count: errored }) : ""}
+          </span>
         )}
       </div>
       {tools.map((step) => (
@@ -587,7 +600,7 @@ function ToolActivity({ tools, onOpenPreview }: { tools: ToolStep[]; onOpenPrevi
 // ---------------------------------------------------------------------------
 
 /** Describe a tool permission request for display. */
-function describePermissionRequest(perm: PendingPermission): { label: string; detail?: string } {
+function describePermissionRequest(perm: PendingPermission, t: TFunction): { label: string; detail?: string } {
   const n = perm.toolName.toLowerCase();
   const input = perm.input as Record<string, unknown> | null;
   const pick = (...keys: string[]): string | undefined => {
@@ -599,11 +612,11 @@ function describePermissionRequest(perm: PendingPermission): { label: string; de
   };
 
   switch (n) {
-    case "bash": return { label: "Run command", detail: pick("command") };
-    case "edit": case "multiedit": return { label: "Edit file", detail: pick("file_path") };
-    case "write": return { label: "Write file", detail: pick("file_path") };
-    case "read": return { label: "Read file", detail: pick("file_path") };
-    case "askuserquestion": return { label: "Ask question", detail: pick("question") };
+    case "bash": return { label: t("messageBubble.tools.runCommand"), detail: pick("command") };
+    case "edit": case "multiedit": return { label: t("messageBubble.tools.editFile"), detail: pick("file_path") };
+    case "write": return { label: t("messageBubble.tools.writeFile"), detail: pick("file_path") };
+    case "read": return { label: t("messageBubble.tools.readFile"), detail: pick("file_path") };
+    case "askuserquestion": return { label: t("messageBubble.tools.askQuestion"), detail: pick("question") };
     default: return { label: perm.toolName };
   }
 }
@@ -615,7 +628,8 @@ function PermissionCard({
   perm: PendingPermission;
   onRespond: (requestId: string, allow: boolean) => void;
 }) {
-  const { label, detail } = describePermissionRequest(perm);
+  const { t } = useTranslation();
+  const { label, detail } = describePermissionRequest(perm, t);
   const input = perm.input as Record<string, unknown> | null;
   return (
     <div className="permission-card">
@@ -636,14 +650,14 @@ function PermissionCard({
           onClick={() => onRespond(perm.requestId, false)}
           type="button"
         >
-          Deny
+          {t("messageBubble.deny")}
         </button>
         <button
           className="permission-btn permission-btn--allow"
           onClick={() => onRespond(perm.requestId, true)}
           type="button"
         >
-          Allow
+          {t("messageBubble.allow")}
         </button>
       </div>
     </div>
@@ -651,6 +665,7 @@ function PermissionCard({
 }
 
 function ThinkingCard({ message }: { message: Message }) {
+  const { t, currentLanguage } = useTranslation();
   const [open, setOpen] = useState(false);
   const hasRunningTool = (message.tools ?? []).some((t) => t.status === "running");
   // Show the card while the model is reasoning (streaming, no answer text yet,
@@ -675,10 +690,10 @@ function ThinkingCard({ message }: { message: Message }) {
         ) : (
           <span className="thinking-card-icon">💭</span>
         )}
-        <span className="thinking-card-title">Thinking</span>
+        <span className="thinking-card-title">{t("chat.thinking")}</span>
         {message.thinkingTokens ? (
           <span className="thinking-card-tokens">
-            {formatTokens(message.thinkingTokens)} tokens
+            {formatTokenCount(message.thinkingTokens, currentLanguage)} {t("messageBubble.tokens")}
           </span>
         ) : null}
         {hasText && <span className="tool-chevron">{open ? "▾" : "▸"}</span>}
@@ -689,28 +704,8 @@ function ThinkingCard({ message }: { message: Message }) {
 }
 
 // ---------------------------------------------------------------------------
-// Formatting helpers + usage stats
+// Usage stats
 // ---------------------------------------------------------------------------
-
-function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
-}
-
-function formatDuration(ms?: number): string {
-  if (ms == null) return "";
-  if (ms < 1000) return `${ms}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m${Math.round(s % 60)}s`;
-}
-
-function formatCost(usd?: number): string {
-  if (usd == null) return "";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
-}
 
 function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
@@ -722,46 +717,50 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
 }
 
 function UsageStats({ usage }: { usage: MessageUsage }) {
+  const { t, currentLanguage } = useTranslation();
+  const locale = appLocale(currentLanguage);
   const totalIn = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
   const chips = [
-    <Stat key="in" label="input" value={formatTokens(usage.inputTokens)} />,
+    <Stat key="in" label={t("messageBubble.usage.input")} value={formatTokenCount(usage.inputTokens, currentLanguage)} />,
     usage.cacheReadTokens > 0 && (
-      <Stat key="cr" label="cache read" value={formatTokens(usage.cacheReadTokens)} />
+      <Stat key="cr" label={t("messageBubble.usage.cacheRead")} value={formatTokenCount(usage.cacheReadTokens, currentLanguage)} />
     ),
     usage.cacheCreationTokens > 0 && (
-      <Stat key="cc" label="cache write" value={formatTokens(usage.cacheCreationTokens)} />
+      <Stat key="cc" label={t("messageBubble.usage.cacheWrite")} value={formatTokenCount(usage.cacheCreationTokens, currentLanguage)} />
     ),
-    <Stat key="out" label="output" value={formatTokens(usage.outputTokens)} accent />,
-    usage.costUsd != null && <Stat key="cost" label="cost" value={formatCost(usage.costUsd)} />,
+    <Stat key="out" label={t("messageBubble.usage.output")} value={formatTokenCount(usage.outputTokens, currentLanguage)} accent />,
+    usage.costUsd != null && <Stat key="cost" label={t("messageBubble.usage.cost")} value={formatCostUsd(usage.costUsd, currentLanguage)} />,
     usage.durationMs != null && (
-      <Stat key="dur" label="time" value={formatDuration(usage.durationMs)} />
+      <Stat key="dur" label={t("messageBubble.usage.time")} value={formatDurationMs(usage.durationMs, t)} />
     ),
     usage.numTurns != null && usage.numTurns > 1 && (
-      <Stat key="turns" label="turns" value={String(usage.numTurns)} />
+      <Stat key="turns" label={t("messageBubble.usage.turns")} value={usage.numTurns.toLocaleString(locale)} />
     ),
   ].filter(Boolean);
 
   if (chips.length === 0) return null;
   return (
     <div className={`usage-stats${usage.live ? " usage-stats--live" : ""}`}>
-      <span className="usage-stats-arrow" title={`total in: ${formatTokens(totalIn)}`}>↗</span>
+      <span className="usage-stats-arrow" title={t("messageBubble.usage.totalIn", { value: formatTokenCount(totalIn, currentLanguage) })}>↗</span>
       {chips}
       {usage.model && (
-        <span className="usage-stats-model" title="model">{usage.model}</span>
+        <span className="usage-stats-model" title={t("messageBubble.usage.model")}>{usage.model}</span>
       )}
     </div>
   );
 }
 
 function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, conversationId }: MessageBubbleProps) {
+  const { t, currentLanguage } = useTranslation();
   const isUser = message.role === "user";
   const isStreamingAssistant = !isUser && message.status === "streaming";
+  const locale = appLocale(currentLanguage);
   const time = isUser
-    ? new Date(message.timestamp).toLocaleTimeString([], {
+    ? new Date(message.timestamp).toLocaleTimeString(locale, {
         hour: "2-digit",
         minute: "2-digit",
       })
-    : new Date(message.timestamp).toLocaleString([], {
+    : new Date(message.timestamp).toLocaleString(locale, {
         month: "2-digit",
         day: "2-digit",
         hour: "2-digit",
@@ -908,10 +907,10 @@ function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, conver
             {time}
           </span>
           {message.status === "error" && (
-            <span className="text-[10px] text-red-400">Error</span>
+            <span className="text-[10px] text-red-400">{t("common.error")}</span>
           )}
           {message.status === "streaming" && (
-            <span className="text-[10px] text-[var(--accent)]">Streaming...</span>
+            <span className="text-[10px] text-[var(--accent)]">{t("chat.streaming")}</span>
           )}
         </div>
 

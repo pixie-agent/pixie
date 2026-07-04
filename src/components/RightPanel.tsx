@@ -8,6 +8,7 @@ import type { FileEntry, PreviewTarget, DiffViewMode } from "../types";
 import { getExtension, PREVIEW_EXTENSIONS, IMAGE_EXTENSIONS, basename } from "../preview";
 import { languageFromExt } from "../lib/languages";
 import { useDragRegion } from "../hooks/useDragRegion";
+import { useTranslation } from "../hooks/useTranslation";
 import DiffViewer from "./DiffViewer";
 import Terminal from "./Terminal";
 
@@ -102,6 +103,7 @@ const MarkdownView = memo(function MarkdownView({ content }: { content: string }
 
 // Unified/split toggle shared by the Changes and commit-diff viewers.
 function DiffModeToggle({ mode, onChange }: { mode: DiffViewMode; onChange: (m: DiffViewMode) => void }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center rounded bg-[var(--bg-tertiary)] p-0.5">
       {(["unified", "split"] as DiffViewMode[]).map((m) => (
@@ -112,7 +114,7 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffViewMode; onChange: (m: 
             mode === m ? "bg-[var(--accent)] text-white" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           }`}
         >
-          {m}
+          {m === "unified" ? t("diffViewer.unified") : t("diffViewer.split")}
         </button>
       ))}
     </div>
@@ -120,6 +122,7 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffViewMode; onChange: (m: 
 }
 
 function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("files");
   const [currentPath, setCurrentPath] = useState(workspacePath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -175,10 +178,10 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         if (prev[ws] && prev[ws].length > 0) return prev;
         const id = makeTerminalId(ws);
         setActiveTermId((a) => ({ ...a, [ws]: id }));
-        return { ...prev, [ws]: [{ id, label: "Terminal 1", exited: false }] };
+        return { ...prev, [ws]: [{ id, label: t("rightPanel.terminalDefault"), exited: false }] };
       });
     },
-    [makeTerminalId],
+    [makeTerminalId, t],
   );
 
   // Lazily seed a terminal the first time the terminal tab is opened in a
@@ -194,13 +197,13 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         const id = makeTerminalId(ws);
         const next = [
           ...(prev[ws] ?? []),
-          { id, label: `Terminal ${(prev[ws]?.length ?? 0) + 1}`, exited: false },
+          { id, label: `${t("rightPanel.terminal")} ${(prev[ws]?.length ?? 0) + 1}`, exited: false },
         ];
         setActiveTermId((a) => ({ ...a, [ws]: id }));
         return { ...prev, [ws]: next };
       });
     },
-    [makeTerminalId],
+    [makeTerminalId, t],
   );
 
   const closeTerminal = useCallback(
@@ -307,7 +310,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const loadGit = useCallback(async () => {
     setGitLoading(true);
     const [status, log, workingDiff] = await Promise.all([
-      invoke<string>("git_status", { path: workspacePath }).catch(() => "Not a git repository"),
+      invoke<string>("git_status", { path: workspacePath }).catch(() => t("rightPanel.notGitRepo")),
       invoke<string>("git_log", { path: workspacePath, count: 30 }).catch(() => ""),
       invoke<string>("git_diff", { path: workspacePath, commit: "HEAD" }).catch(() => ""),
     ]);
@@ -315,7 +318,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     setGitLog(log);
     setGitWorkingDiff(workingDiff);
     setGitLoading(false);
-  }, [workspacePath]);
+  }, [workspacePath, t]);
 
   useEffect(() => {
     if (tab !== "git") return;
@@ -354,9 +357,9 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
       setPreviewContent(content);
       setTab("preview");
     } catch (e) {
-      setPreviewContent(`Failed to read file: ${e}`);
+      setPreviewContent(t("rightPanel.failedReadFile", { error: String(e) }));
     } finally { setPreviewLoading(false); }
-  }, []);
+  }, [t]);
 
   // React to an externally-requested file preview target (a file path clicked
   // in a chat message). URLs never reach here — they are handed off to the
@@ -387,7 +390,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     try {
       const diff = await invoke<string>("git_diff", { path: workspacePath, commit });
       setGitDiff(diff);
-    } catch { setGitDiff("Failed to load diff"); }
+    } catch { setGitDiff(t("rightPanel.failedLoadDiff")); }
   };
 
   // --- Resize logic ---
@@ -504,17 +507,17 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
           <div className="flex items-center px-4 py-2">
             <div className="flex gap-1">
               {([
-                ["files", "📁", "Files"],
-                ["preview", "📄", "Preview"],
-                ["git", "🔀", "Git"],
-                ["terminal", "⬛", "Terminal"],
-              ] as [Tab, string, string][]).map(([t, icon, name]) => (
+                ["files", "📁", t("rightPanel.files")],
+                ["preview", "📄", t("rightPanel.preview")],
+                ["git", "🔀", t("rightPanel.git")],
+                ["terminal", "⬛", t("rightPanel.terminal")],
+              ] as [Tab, string, string][]).map(([tabId, icon, name]) => (
                 <button
-                  key={t}
-                  onClick={() => setTab(t)}
+                  key={tabId}
+                  onClick={() => setTab(tabId)}
                   title={name}
                   className={`flex items-center justify-center w-8 h-8 rounded-lg text-base transition-colors ${
-                    tab === t
+                    tab === tabId
                       ? "bg-[var(--accent)]/15 text-[var(--accent)]"
                       : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
                   }`}
@@ -536,12 +539,14 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
           <>
             <div className="px-3 py-1.5 border-b border-[var(--border-color)] flex items-center gap-0.5 overflow-x-auto text-[11px] shrink-0">
               <button onClick={goBack} disabled={history.length === 0}
+                title={t("rightPanel.navigateBack")}
+                aria-label={t("rightPanel.navigateBack")}
                 className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] disabled:opacity-30 transition-colors">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                   <path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <button onClick={goUp} className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors">
+              <button onClick={goUp} title={t("rightPanel.navigateUp")} aria-label={t("rightPanel.navigateUp")} className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                   <path d="M3 9V3l7 6H3z" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" />
                 </svg>
@@ -565,7 +570,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                 </div>
               )}
               {!loading && entries.length === 0 && (
-                <p className="text-xs text-[var(--text-secondary)] text-center py-12">Empty directory</p>
+                <p className="text-xs text-[var(--text-secondary)] text-center py-12">{t('rightPanel.emptyDirectory')}</p>
               )}
               {entries.map((entry) => {
                 const e = getExtension(entry.name);
@@ -585,7 +590,8 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                     </div>
                     <button
                       type="button"
-                      title="在文件管理器中显示"
+                      title={t("rightPanel.revealInFileManager")}
+                      aria-label={t("rightPanel.revealInFileManager")}
                       onClick={(ev) => {
                         ev.stopPropagation();
                         void revealInFileManager(entry.path);
@@ -599,8 +605,8 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                       </svg>
                     </button>
                     {entry.is_dir
-                      ? <span className="text-[10px] text-[var(--text-secondary)] shrink-0">dir</span>
-                      : <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0 font-mono">{e || "--"}</span>
+                      ? <span className="text-[10px] text-[var(--text-secondary)] shrink-0">{t("rightPanel.directory")}</span>
+                      : <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0 font-mono">{e || t("common.notAvailable")}</span>
                     }
                   </div>
                 );
@@ -614,7 +620,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
           <div className="flex-1 flex flex-col min-h-0">
             {!previewFile ? (
               <p className="text-xs text-[var(--text-secondary)] text-center py-12 px-4">
-                Select a file in the Files tab to preview it here
+                {t('rightPanel.selectFileHint')}
               </p>
             ) : (
               <>
@@ -626,7 +632,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                     </svg>
                   </button>
                   <span className="text-xs text-[var(--text-primary)] truncate">{previewFile.name}</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || "text"}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>
                 </div>
                 <div className="flex-1 overflow-auto">
                   {previewLoading ? (
@@ -689,13 +695,14 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                         >
                           ▾
                         </span>
-                        <span className="text-[11px] font-semibold text-[var(--text-secondary)]">Changes</span>
+                        <span className="text-[11px] font-semibold text-[var(--text-secondary)]">{t('rightPanel.changes')}</span>
                       </button>
                       <div className="flex items-center gap-2">
                         <DiffModeToggle mode={diffViewMode} onChange={setDiffViewMode} />
                         <button
                           onClick={loadGit}
-                          title="Refresh"
+                          title={t("rightPanel.refresh")}
+                          aria-label={t("rightPanel.refresh")}
                           className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -710,17 +717,18 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                         {gitWorkingDiff ? (
                           <DiffViewer diff={gitWorkingDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
                         ) : (
-                          <p className="px-3 pb-2 text-xs text-[var(--text-secondary)]">No uncommitted changes</p>
+                          <p className="px-3 pb-2 text-xs text-[var(--text-secondary)]">{t('rightPanel.noUncommittedChanges')}</p>
                         )}
                         {untracked.length > 0 && (
                           <div className="border-t border-[var(--border-color)]">
-                            <div className="px-3 py-1 text-[10px] text-[var(--text-secondary)]">Untracked</div>
+                            <div className="px-3 py-1 text-[10px] text-[var(--text-secondary)]">{t('rightPanel.untracked')}</div>
                             {untracked.map((f, i) => (
                               <div key={i} className="px-3 py-0.5 flex items-center gap-2 text-[11px] font-mono text-[var(--text-secondary)]">
                                 <span className="flex-1 min-w-0 truncate">+ {f}</span>
                                 <button
                                   type="button"
-                                  title="在文件管理器中显示"
+                                  title={t("rightPanel.revealInFileManager")}
+                      aria-label={t("rightPanel.revealInFileManager")}
                                   onClick={(ev) => {
                                     ev.stopPropagation();
                                     void revealInFileManager(f);
@@ -746,14 +754,14 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                     <div
                       onMouseDown={startChangesResize}
                       className="h-1.5 cursor-row-resize bg-transparent hover:bg-[var(--accent)]/30 active:bg-[var(--accent)]/40 transition-colors shrink-0"
-                      title="Drag to resize"
+                      title={t("rightPanel.dragToResize")}
                     />
                   )}
 
                   {/* Git Log */}
                   <div className="flex-1 overflow-y-auto min-h-0">
                     <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--text-secondary)] sticky top-0 bg-[var(--bg-secondary)]">
-                      History
+                      {t('rightPanel.history')}
                     </div>
                     {gitLog ? (
                       gitLog.split("\n").filter(Boolean).map((line) => {
@@ -773,7 +781,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                         );
                       })
                     ) : (
-                      <p className="text-xs text-[var(--text-secondary)] px-3 py-2">No commits</p>
+                      <p className="text-xs text-[var(--text-secondary)] px-3 py-2">{t('rightPanel.noCommits')}</p>
                     )}
                   </div>
                 </div>
@@ -782,10 +790,11 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                   <div className="border-t border-[var(--border-color)] max-h-[55%] overflow-auto shrink-0 flex flex-col">
                     <div className="flex items-center justify-between px-3 py-1.5 sticky top-0 z-10 bg-[var(--bg-secondary)] border-b border-[var(--border-color)]">
                       <span className="text-[11px] font-semibold text-[var(--text-secondary)]">
-                        Diff {selectedCommit?.slice(0, 7)}
+                        {t("rightPanel.diffCommit", { hash: selectedCommit?.slice(0, 7) })}
                       </span>
                       <button onClick={() => { setSelectedCommit(null); setGitDiff(""); }}
-                        className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors">
+                        className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+                        aria-label={t("common.close")}>
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                           </svg>
@@ -837,7 +846,8 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                         <span className={inst.exited ? "opacity-60" : ""}>{inst.label}</span>
                         <button
                           type="button"
-                          title={canClose ? "Close terminal" : "At least one terminal must remain"}
+                          title={canClose ? t("rightPanel.closeTerminal") : t("rightPanel.minOneTerminal")}
+                          aria-label={canClose ? t("rightPanel.closeTerminal") : t("rightPanel.minOneTerminal")}
                           disabled={!canClose}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -856,7 +866,8 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                   })}
                   <button
                     type="button"
-                    title="New terminal"
+                    title={t("rightPanel.newTerminal")}
+                    aria-label={t("rightPanel.newTerminal")}
                     onClick={() => createTerminal(ws)}
                     className="p-1 ml-0.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors shrink-0"
                   >
@@ -880,13 +891,13 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                     >
                       {inst.exited ? (
                         <div className="flex flex-col items-center justify-center h-full gap-3 bg-[#1a1b26] text-center px-4">
-                          <p className="text-xs text-[var(--text-secondary)]">Process exited</p>
+                          <p className="text-xs text-[var(--text-secondary)]">{t('rightPanel.processExited')}</p>
                           <button
                             type="button"
                             onClick={() => restartTerminal(ws, inst.id)}
                             className="px-3 py-1 rounded bg-[var(--accent)] text-white text-xs hover:opacity-90 transition-opacity"
                           >
-                            Restart
+                            {t("rightPanel.restartTerminal")}
                           </button>
                         </div>
                       ) : (

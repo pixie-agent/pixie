@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, startTransition } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import i18n from "../i18n";
 import type {
   Conversation,
   Message,
@@ -19,6 +20,8 @@ import type {
   WorkspaceState,
   EngineModelConfigs,
   TaskRunRecord,
+  LoopTask,
+  LoopIterationRecord,
 } from "../types";
 import { AGENT_ENGINES } from "../types";
 import { getConfig, getHistory, setHistory, updateConfig } from "../lib/storage";
@@ -32,7 +35,7 @@ function basename(p: string): string {
 function normalizeConversation(conv: Conversation): Conversation {
   return {
     ...conv,
-    engine: conv.engine ?? "claude",
+    engine: conv.engine ?? "builtin",
   };
 }
 
@@ -71,7 +74,7 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
   for (const msg of messages) {
     if (msg.role === "system") continue;
 
-    const heading = msg.role === "user" ? "## User" : "## Assistant";
+    const heading = msg.role === "user" ? `## ${i18n.t("chat.user")}` : `## ${i18n.t("chat.assistant")}`;
     const subParts: string[] = [];
 
     // Text content.
@@ -91,9 +94,9 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
     if (msg.tools?.length) {
       const toolLines = msg.tools.map((t) => {
         let line = `> **🔧 ${t.name}**`;
-        if (t.rawInput) line += `\n> Input: \`${truncateStr(t.rawInput, 200)}\``;
-        else if (t.input) line += `\n> Input: \`${truncateStr(JSON.stringify(t.input), 200)}\``;
-        if (t.result) line += `\n> Result: ${truncateStr(t.result, 300)}`;
+        if (t.rawInput) line += `\n> ${i18n.t("chat.kbToolInput")}: \`${truncateStr(t.rawInput, 200)}\``;
+        else if (t.input) line += `\n> ${i18n.t("chat.kbToolInput")}: \`${truncateStr(JSON.stringify(t.input), 200)}\``;
+        if (t.result) line += `\n> ${i18n.t("chat.kbToolResult")}: ${truncateStr(t.result, 300)}`;
         return line;
       });
       subParts.push(toolLines.join("\n\n"));
@@ -101,7 +104,7 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
 
     // Thinking content.
     if (msg.thinking?.trim()) {
-      subParts.push(`<details>\n<summary>Thinking</summary>\n\n${msg.thinking.trim()}\n\n</details>`);
+      subParts.push(`<details>\n<summary>${i18n.t("chat.thinking")}</summary>\n\n${msg.thinking.trim()}\n\n</details>`);
     }
 
     if (subParts.length === 0) continue;
@@ -113,7 +116,7 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
     const lastPart = parts[parts.length - 1];
     const trimmed = finalAssistantText.trim();
     if (!lastPart || !lastPart.endsWith(trimmed)) {
-      parts.push(`## Assistant\n\n${trimmed}`);
+      parts.push(`## ${i18n.t("chat.assistant")}\n\n${trimmed}`);
     }
   }
 
@@ -570,6 +573,93 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     ensureDefault();
   }, []);
 
+  // Reconstruct loop-iteration conversations from durable backend data
+  // (loop_iterations.json). Loop iterations are backend-owned; the chat-history
+  // debounce/quit path is unreliable for them, so we rebuild any iteration not
+  // already present in memory (e.g. a live-streamed transcript that DID persist
+  // takes precedence). Live streaming during a run is unaffected — this only
+  // guarantees iterations survive restart.
+  useEffect(() => {
+    if (!loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [tasks, iterations] = await Promise.all([
+          invoke<LoopTask[]>("list_loop_tasks"),
+          invoke<LoopIterationRecord[]>("list_all_loop_iterations"),
+        ]);
+        if (cancelled || iterations.length === 0) return;
+        const taskById = new Map(tasks.map((t) => [t.id, t]));
+        // Build candidate conversations from a snapshot (ids are stable; we
+        // re-check against the latest state inside the updater to avoid races).
+        const snapshot = allConversationsRef.current;
+        const seen = new Set<string>();
+        for (const convs of Object.values(snapshot))
+          for (const c of convs) seen.add(c.id);
+        const candidates: { conv: Conversation; wsId: string }[] = [];
+        for (const it of iterations) {
+          if (seen.has(it.id)) continue; // full transcript from history wins
+          const task = taskById.get(it.loop_task_id);
+          if (!task) continue;
+          const created = Date.parse(it.started_at) || Date.now();
+          const updated = Date.parse(it.finished_at) || created;
+          candidates.push({
+            wsId: task.workspace,
+            conv: {
+              id: it.id,
+              title: i18n.t("loops.conversationTitle", { name: task.name, iteration: it.iteration }),
+              createdAt: created,
+              updatedAt: updated,
+              engine: task.engine,
+              loopTaskId: task.id,
+              loopTaskName: task.name,
+              messages: [
+                {
+                  id: generateId(),
+                  role: "user",
+                  content: it.prompt,
+                  timestamp: created,
+                  status: "done",
+                },
+                {
+                  id: generateId(),
+                  role: "assistant",
+                  content:
+                    it.result ||
+                    (it.exit_met ? "(exit condition met, no output)" : "(no output)"),
+                  timestamp: updated,
+                  status: it.status === "error" ? "error" : "done",
+                },
+              ],
+            },
+          });
+        }
+        if (cancelled || candidates.length === 0) return;
+        setAllConversations((curr) => {
+          const have = new Set<string>();
+          for (const convs of Object.values(curr))
+            for (const c of convs) have.add(c.id);
+          let changed = false;
+          const next = { ...curr };
+          for (const { conv, wsId } of candidates) {
+            if (have.has(conv.id)) continue;
+            next[wsId] = [...(next[wsId] ?? []), conv];
+            have.add(conv.id);
+            changed = true;
+          }
+          return changed ? next : curr;
+        });
+        // Sync the conv→workspace index for the reconstructed iterations.
+        for (const { conv, wsId } of candidates) convIndexRef.current.set(conv.id, wsId);
+      } catch (e) {
+        console.error("[loop] reconstruct iterations on load failed", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loaded]);
+
   // Persist history to disk. Reacts only to conversation changes (not workspace
   // selection) so switching the active session never rewrites the whole file.
   // Debounced while an agent is streaming; immediate when idle. The storage
@@ -614,10 +704,14 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     invoke<EngineStatus[]>("check_engines_available")
       .then((statuses) => setEngineStatuses(statuses))
       .catch(() =>
-        setEngineStatuses([
-          { id: "claude", display_name: "Claude Code", available: false, error: "Failed to check engines" },
-          { id: "cursor", display_name: "Cursor Agent", available: false, error: "Failed to check engines" },
-        ])
+        setEngineStatuses(
+          AGENT_ENGINES.map((e) => ({
+            id: e.id,
+            display_name: i18n.t(`engines.${e.id}`, { defaultValue: e.label }),
+            available: false,
+            error: i18n.t("engineSetup.messages.failedCheckEngines"),
+          })),
+        )
       );
   }, []);
 
@@ -674,7 +768,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           const convId = done.conversation_id;
           const wsId = findWorkspaceForConversation(allConversationsRef.current, convId, convIndexRef);
           const conv = wsId ? allConversationsRef.current[wsId]?.find((c) => c.id === convId) : undefined;
-          if (conv) {
+          // Skip per-turn KB summarization for loop iterations — a loop can run
+          // many turns and we don't want to spam the vault / burn tokens per iter.
+          if (conv && !conv.loopTaskId) {
             const vault = getConfig().vaultPath ?? null;
             // Always invoke — backend falls back to <data_dir>/kb/ if vaultPath is null.
             const transcript = buildTranscript(conv.messages, done.full_text);
@@ -767,8 +863,45 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         );
       });
 
-      if (!mounted) { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); return; }
-      unlistenRefs.current = [u1, u2, u3, u4, u5, u6, u7, u8];
+      // A loop iteration is starting: open a real (streaming) conversation for
+      // it so the existing agent-* listeners populate it live and it renders in
+      // the sidebar, folded under its loop via the loopTaskId marker.
+      const u9 = await listen<{
+        task_id: string;
+        task_name: string;
+        iteration: number;
+        conversation_id: string;
+        workspace: string;
+        engine: string;
+        prompt: string;
+      }>("loop-iteration-started", (event) => {
+        const p = event.payload;
+        const now = Date.now();
+        const conv: Conversation = {
+          id: p.conversation_id,
+          title: i18n.t("loops.conversationTitle", { name: p.task_name, iteration: p.iteration }),
+          createdAt: now,
+          updatedAt: now,
+          engine: p.engine as AgentEngineId,
+          loopTaskId: p.task_id,
+          loopTaskName: p.task_name,
+          messages: [
+            { id: generateId(), role: "user", content: p.prompt, timestamp: now, status: "done" },
+            { id: generateId(), role: "assistant", content: "", timestamp: now, status: "streaming" },
+          ],
+        };
+        const wsId = p.workspace;
+        convIndexRef.current.set(p.conversation_id, wsId);
+        setAllConversations((prev) => {
+          const list = prev[wsId] ?? [];
+          const without = list.filter((c) => c.id !== conv.id);
+          return { ...prev, [wsId]: [conv, ...without] };
+        });
+        setGeneratingIds((prev) => new Set(prev).add(p.conversation_id));
+      });
+
+      if (!mounted) { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); return; }
+      unlistenRefs.current = [u1, u2, u3, u4, u5, u6, u7, u8, u9];
     }
 
     setup();
@@ -827,7 +960,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     if (!wsId) return "";
     const id = generateId();
     const conv: Conversation = {
-      id, title: "New Agent", messages: [],
+      id, title: i18n.t("sidebar.newAgent"), messages: [],
       createdAt: Date.now(), updatedAt: Date.now(),
       engine: engine ?? defaultEngine,
       model,
@@ -1077,7 +1210,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       title: run.task_name || generateTitle(run.prompt),
       createdAt: startedMs,
       updatedAt: finishedMs,
-      engine: "claude",
+      engine: "builtin",
       messages: [
         { id: generateId(), role: "user", content: run.prompt, timestamp: startedMs },
         {
@@ -1085,7 +1218,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           role: "assistant",
           content:
             run.result ||
-            (run.status === "error" ? "(task failed)" : "(no output)"),
+            (run.status === "error" ? i18n.t("common.failed") : i18n.t("common.noOutput")),
           timestamp: finishedMs,
           status: run.status === "error" ? "error" : "done",
         },
@@ -1112,10 +1245,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         title: opts.taskName || generateTitle(opts.prompt),
         createdAt: now,
         updatedAt: now,
-        engine: "claude",
+        engine: "builtin",
         messages: [
           { id: generateId(), role: "user", content: opts.prompt, timestamp: now, status: "done" },
-          { id: generateId(), role: "assistant", content: "Running…", timestamp: now, status: "streaming" },
+          { id: generateId(), role: "assistant", content: i18n.t("chat.taskRunning"), timestamp: now, status: "streaming" },
         ],
       };
       setAllConversations((prev) => {
@@ -1191,7 +1324,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       setEngineStatuses((prev) =>
         (prev ?? []).map((s) =>
           s.id === engineId
-            ? { ...s, auth_state: "no_response", probe_error: "检测未返回，请点重新检测重试" }
+            ? { ...s, auth_state: "no_response", probe_error: i18n.t("engineSetup.messages.probeNoResponse") }
             : s,
         ),
       );

@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useTranslation } from "../hooks/useTranslation";
+import { appLocale } from "../lib/i18nFormat";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -105,6 +107,8 @@ export default function InputBar({
   kbEnabled,
   onToggleKb,
 }: InputBarProps) {
+  const { t, currentLanguage } = useTranslation();
+  const numberLocale = appLocale(currentLanguage);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [customModelInput, setCustomModelInput] = useState("");
@@ -394,11 +398,11 @@ export default function InputBar({
   const canSend = (value.trim().length > 0 || attachments.length > 0) && !disabled;
 
   const defaultModelLabel = (() => {
-    if (!engine) return "Auto";
+    if (!engine) return t('common.auto');
     const configured = configuredDefaultModelId();
     const fallback = availableModels[0]?.id;
     const id = configured ?? fallback;
-    if (!id) return "Auto";
+    if (!id) return t('common.auto');
     return availableModels.find((m) => m.id === id)?.label ?? id;
   })();
 
@@ -446,7 +450,8 @@ export default function InputBar({
                   <button
                     type="button"
                     onClick={() => removeAttachment(path)}
-                    title="Remove"
+                    title={t('inputBar.removeAttachment')}
+                    aria-label={t('inputBar.removeAttachment')}
                     className="shrink-0 flex items-center justify-center w-4 h-4 rounded text-[var(--text-secondary)] hover:bg-[var(--border-color)] hover:text-[var(--text-primary)] transition-colors"
                   >
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
@@ -474,10 +479,10 @@ export default function InputBar({
             onPaste={handlePaste}
             placeholder={
               disabled
-                ? (disabledHint ?? "Type a message… (add a workspace to send)")
+                ? (disabledHint ?? t('chat.addWorkspaceHint'))
                 : isGenerating
-                  ? "Type next message… (Enter to send, Shift+Enter for newline)"
-                  : "Type a message... (Enter to send, Shift+Enter for newline)"
+                  ? t('chat.newMessage')
+                  : t('chat.newMessage')
             }
             rows={3}
             className="flex-1 bg-transparent text-[var(--text-primary)] placeholder-[var(--text-secondary)] resize-none outline-none text-sm leading-6 max-h-[192px] px-4 py-2.5"
@@ -487,7 +492,8 @@ export default function InputBar({
             <button
               onClick={onStop}
               className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors mr-2 self-end mb-2"
-              title="Stop generation (Escape)"
+              title={t('inputBar.stopTitle', { key: t('keys.escape') })}
+              aria-label={t('chat.stop')}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <rect x="3" y="3" width="10" height="10" rx="1" />
@@ -498,7 +504,8 @@ export default function InputBar({
               onClick={handleSend}
               disabled={!canSend}
               className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-30 disabled:cursor-not-allowed text-white transition-colors mr-2 self-end mb-2"
-              title="Send message (Enter)"
+              title={t('inputBar.sendTitle', { key: t('keys.enter') })}
+              aria-label={t('chat.send')}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8 2L14 9H10V14H6V9H2L8 2Z" />
@@ -513,7 +520,8 @@ export default function InputBar({
             type="button"
             onClick={handlePickFiles}
             disabled={disabled || isGenerating}
-            title="Attach files"
+            title={t('inputBar.attachFiles')}
+            aria-label={t('inputBar.attachFiles')}
             className="flex items-center justify-center w-7 h-6 rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -527,7 +535,8 @@ export default function InputBar({
               type="button"
               onClick={toggleDropdown}
               disabled={disabled || isGenerating}
-              title="Browse skills"
+              title={t('inputBar.browseSkills')}
+              aria-label={t('inputBar.browseSkills')}
               className="flex items-center justify-center w-7 h-6 rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -548,7 +557,8 @@ export default function InputBar({
             type="button"
             onClick={onToggleKb}
             disabled={disabled || isGenerating}
-            title={kbEnabled ? "Knowledge base active — click to disable" : "Include knowledge base context"}
+            title={kbEnabled ? t('inputBar.kbActive') : t('inputBar.kbInclude')}
+            aria-label={kbEnabled ? t('inputBar.kbActive') : t('inputBar.kbInclude')}
             className={`flex items-center justify-center w-7 h-6 rounded-md transition-colors ${
               kbEnabled
                 ? "text-[var(--accent)] bg-[var(--accent)]/15"
@@ -575,7 +585,8 @@ export default function InputBar({
                   });
                 }}
                 disabled={isGenerating}
-                title="Select model"
+                title={t('inputBar.selectModel')}
+                aria-label={t('inputBar.selectModel')}
                 className={`flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] transition-colors ${
                   model
                     ? "text-[var(--accent)] bg-[var(--accent)]/10"
@@ -612,7 +623,7 @@ export default function InputBar({
                       !model ? "text-[var(--accent)] font-medium" : "text-[var(--text-primary)]"
                     }`}
                   >
-                    {defaultModelLabel} (auto)
+                    {defaultModelLabel} {t('inputBar.autoSuffix')}
                   </button>
                   {availableModels.map((m) => (
                     <button
@@ -639,7 +650,7 @@ export default function InputBar({
                             handleSelectModel(customModelInput.trim());
                           }
                         }}
-                        placeholder="Custom model..."
+                        placeholder={t('inputBar.customModelPlaceholder')}
                         className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-1 text-[var(--text-primary)] placeholder:text-[var(--text-secondary)]/50 outline-none focus:border-[var(--accent)]"
                       />
                       {customModelInput.trim() && (
@@ -648,7 +659,7 @@ export default function InputBar({
                           onClick={() => handleSelectModel(customModelInput.trim())}
                           className="text-[10px] text-[var(--accent)] hover:underline shrink-0"
                         >
-                          Apply
+                          {t('common.apply')}
                         </button>
                       )}
                     </div>
@@ -665,7 +676,7 @@ export default function InputBar({
                 nearLimit ? "text-red-400" : "text-[var(--text-secondary)] opacity-60"
               }`}
             >
-              {charCount.toLocaleString()} / {MAX_CHARS.toLocaleString()}
+              {charCount.toLocaleString(numberLocale)} / {MAX_CHARS.toLocaleString(numberLocale)}
             </span>
           )}
         </div>

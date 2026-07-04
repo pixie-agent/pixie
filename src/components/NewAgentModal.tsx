@@ -1,4 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "../hooks/useTranslation";
+import { engineLabel } from "../lib/i18nFormat";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentEngineId, EngineModelConfigs, ModelEntry, WorkspaceState } from "../types";
 import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
@@ -28,8 +30,8 @@ export default function NewAgentModal({
   onCreate: (opts: { workspaceId: string; engine: AgentEngineId; model?: string }) => void;
   onClose: () => void;
 }) {
-  // Only ready engines can be used — a not-ready (not installed / not logged in)
-  // engine is excluded from the picker entirely.
+  const { t } = useTranslation();
+  // Only ready engines can be used
   const availableEngines = useMemo(
     () => AGENT_ENGINES.filter((e) => readyEngineIds.includes(e.id)),
     [readyEngineIds],
@@ -132,7 +134,7 @@ export default function NewAgentModal({
   const wsLabel = selectedWorkspaceId ? workspaceLabel(workspaces, selectedWorkspaceId) : "";
   const modelSummary =
     selectedModel === "__custom__"
-      ? (customModel.trim() || "Custom")
+      ? (customModel.trim() || t('common.custom'))
       : (selectedModel || "");
 
   const defaultModelFromConfig = (() => {
@@ -144,7 +146,7 @@ export default function NewAgentModal({
     const configured = typeof defaultModelFromConfig === "string" ? defaultModelFromConfig.trim() : "";
     const fallback = availableModels[0]?.id;
     const id = (configured || undefined) ?? fallback;
-    if (!id) return "Auto";
+    if (!id) return t('common.auto');
     return availableModels.find((m) => m.id === id)?.label ?? id;
   })();
 
@@ -172,7 +174,7 @@ export default function NewAgentModal({
       >
         <div className="px-4 py-3 border-b border-[var(--border-color)] flex items-center justify-between">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-[var(--text-primary)]">New Agent</div>
+            <div className="text-sm font-semibold text-[var(--text-primary)]">{t('newAgent.title')}</div>
             <div className="text-[10px] text-[var(--text-secondary)] truncate" title={selectedWorkspaceId}>
               <EngineBadge engine={selectedEngine} />
               <span className="mx-1">·</span>
@@ -189,7 +191,8 @@ export default function NewAgentModal({
             type="button"
             className="p-1 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             onClick={onClose}
-            title="Close"
+            title={t('common.close')}
+            aria-label={t('common.close')}
           >
             <svg width="14" height="14" viewBox="0 0 12 12" fill="none">
               <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -199,7 +202,7 @@ export default function NewAgentModal({
 
         <div className="px-4 py-3 space-y-3">
           <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">Workspace</div>
+            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">{t('newAgent.workspace')}</div>
             <select
               value={selectedWorkspaceId}
               onChange={(e) => setSelectedWorkspaceId(e.target.value)}
@@ -220,7 +223,7 @@ export default function NewAgentModal({
           </div>
 
           <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">Engine</div>
+            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">{t('newAgent.engine')}</div>
             <select
               value={selectedEngine}
               onChange={(e) => {
@@ -237,7 +240,7 @@ export default function NewAgentModal({
             >
               {availableEngines.map((e) => (
                 <option key={e.id} value={e.id}>
-                  {e.label}
+                  {engineLabel(e.id, t)}
                 </option>
               ))}
             </select>
@@ -248,12 +251,12 @@ export default function NewAgentModal({
                 checked={setAsDefaultEngine}
                 onChange={(e) => setSetAsDefaultEngine(e.target.checked)}
               />
-              Set as default engine
+              {t('newAgent.setDefaultEngine')}
             </label>
           </div>
 
           <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">Model (optional)</div>
+            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">{t('newAgent.modelOptional')}</div>
             <div ref={modelWrapperRef} className="relative">
               <button
                 type="button"
@@ -261,14 +264,14 @@ export default function NewAgentModal({
                   setModelDropdownOpen((v) => !v);
                 }}
                 className="w-full text-left text-xs rounded-lg px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)] hover:border-[var(--accent)]/60 transition-colors"
-                title="Select model"
+                title={t('inputBar.selectModel')}
               >
                 {selectedModel === "__custom__"
-                  ? (customModel.trim() || "Custom")
+                  ? (customModel.trim() || t('common.custom'))
                   : selectedModel
                     ? (availableModels.find((m) => m.id === selectedModel)?.label ?? selectedModel)
                     : defaultModelLabel}
-                {modelsLoading && <span className="ml-2 text-[10px] text-[var(--text-secondary)]">Loading…</span>}
+                {modelsLoading && <span className="ml-2 text-[10px] text-[var(--text-secondary)]">{t('newAgent.loadingModels')}</span>}
               </button>
 
               {modelDropdownOpen && (
@@ -283,18 +286,18 @@ export default function NewAgentModal({
                       !selectedModel ? "text-[var(--accent)] font-medium" : "text-[var(--text-primary)]"
                     }`}
                   >
-                    {defaultModelLabel} (auto)
+                    {defaultModelLabel} {t('inputBar.autoSuffix')}
                   </button>
 
                   {modelsLoading && (
                     <div className="px-3 py-1.5 text-xs text-[var(--text-secondary)]">
-                      Loading models…
+                      {t('newAgent.loadingModels')}
                     </div>
                   )}
 
                   {!modelsLoading && availableModels.length === 0 && (
                     <div className="px-3 py-1.5 text-xs text-[var(--text-secondary)]">
-                      No models found
+                      {t('newAgent.noModelsFound')}
                     </div>
                   )}
 
@@ -325,7 +328,7 @@ export default function NewAgentModal({
                             setModelDropdownOpen(false);
                           }
                         }}
-                        placeholder="Custom model..."
+                        placeholder={t('inputBar.customModelPlaceholder')}
                         className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-1 text-[var(--text-primary)] placeholder:text-[var(--text-secondary)]/50 outline-none focus:border-[var(--accent)]"
                       />
                       {customModel.trim() && (
@@ -337,7 +340,7 @@ export default function NewAgentModal({
                           }}
                           className="text-[10px] text-[var(--accent)] hover:underline shrink-0"
                         >
-                          Apply
+                          {t('common.apply')}
                         </button>
                       )}
                     </div>
@@ -346,7 +349,7 @@ export default function NewAgentModal({
               )}
             </div>
             <div className="text-[10px] text-[var(--text-secondary)]">
-              You can also change the model later from the composer.
+              {t('newAgent.changeModelLater')}
             </div>
           </div>
         </div>
@@ -357,7 +360,7 @@ export default function NewAgentModal({
             onClick={onClose}
             className="px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs hover:opacity-90 transition-opacity"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -373,7 +376,7 @@ export default function NewAgentModal({
             }}
             className="px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
           >
-            Create
+            {t('common.create')}
           </button>
         </div>
       </div>

@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useDragRegion } from "./hooks/useDragRegion";
+import { useTranslation } from "./hooks/useTranslation";
+import { formatShortDate, formatModShortcut } from "./lib/i18nFormat";
 import Sidebar from "./components/Sidebar";
 import InputBar from "./components/InputBar";
 import { openExternal } from "./openExternal";
@@ -15,9 +17,11 @@ const ChatView = lazy(() => import("./components/ChatView"));
 const Settings = lazy(() => import("./components/Settings"));
 const MarketplacePanel = lazy(() => import("./components/MarketplacePanel"));
 const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel"));
+const LoopTasksPanel = lazy(() => import("./components/LoopTasksPanel"));
 const FileExplorer = lazy(() => import("./components/RightPanel"));
 const SearchPalette = lazy(() => import("./components/SearchPalette"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
+import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
   AgentEngineId,
   AuthState,
@@ -30,6 +34,7 @@ import type {
   EngineStatus,
 } from "./types";
 import { AGENT_ENGINES } from "./types";
+import { engineLabel } from "./lib/i18nFormat";
 import { bootstrap, getConfig, getHistory, updateConfig } from "./lib/storage";
 
 // Brand mark — same art as the app/README icon.
@@ -45,17 +50,23 @@ function LoadingPanel() {
 }
 
 function SplashScreen() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-[var(--bg-primary)]">
       <img
         src={iconUrl}
-        alt="Pixie"
+        alt={t('app.name')}
         className="w-16 h-16 rounded-2xl mb-6"
       />
-      <h1 className="text-xl font-semibold text-[var(--text-primary)] mb-3">Pixie</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-xl font-semibold text-[var(--text-primary)]">{t('app.name')}</h1>
+        <span className="px-2 py-1 text-xs font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded">
+          {t('app.beta')}
+        </span>
+      </div>
       <div className="flex items-center gap-2">
         <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-        <span className="text-sm text-[var(--text-secondary)]">Initializing...</span>
+        <span className="text-sm text-[var(--text-secondary)]">{t('splash.initializing')}</span>
       </div>
     </div>
   );
@@ -65,29 +76,37 @@ function SplashScreen() {
 /// official npm package — its install is the curl script from cursor.com/cli.
 const ENGINE_SETUP_INFO: Record<
   AgentEngineId,
-  { install: string; login: string; loginHint?: string; docs: string }
+  { install: string; login: string; docs: string }
 > = {
   claude: {
     install: "npm install -g @anthropic-ai/claude-code",
     login: "claude auth login",
-    loginHint: "浏览器完成 Anthropic 登录后回来点「重新检测」",
     docs: "https://docs.claude.com/en/docs/claude-code",
   },
   cursor: {
     install: "curl https://cursor.com/install -fsS | bash",
     login: "cursor-agent login",
-    loginHint: "会打开浏览器完成 Cursor 登录",
     docs: "https://cursor.com/cli",
   },
   codebuddy: {
     install: "npm install -g @tencent-ai/codebuddy-code",
     login: "cbc login",
-    loginHint: "选择登录方式，浏览器完成认证",
     docs: "https://www.codebuddy.ai/docs/cli/quickstart",
+  },
+  builtin: {
+    install: "",
+    login: "",
+    docs: "https://docs.anthropic.com/en/api",
+  },
+  codex: {
+    install: "npm install -g @openai/codex",
+    login: "codex login",
+    docs: "https://platform.openai.com/docs/cli",
   },
 };
 
 function CommandRow({ command, label }: { command: string; label: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex items-center gap-2">
@@ -106,7 +125,7 @@ function CommandRow({ command, label }: { command: string; label: string }) {
         }}
         className="shrink-0 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80"
       >
-        {copied ? "已复制" : label}
+        {copied ? t('common.copied') : label}
       </button>
     </div>
   );
@@ -127,12 +146,14 @@ function EngineCard({
   onLogin: (id: AgentEngineId) => void;
   onInstall: (id: AgentEngineId) => Promise<{ success: boolean; output: string }>;
 }) {
+  const { t } = useTranslation();
+  const isBuiltin = engineId === "builtin";
   const info = ENGINE_SETUP_INFO[engineId];
-  const installed = !!status?.available;
+  const installed = isBuiltin || !!status?.available;
   const authState: AuthState = status?.auth_state ?? "unknown";
   const ready = installed && authState === "ready";
   const notReady = installed && !ready;
-  const probing = installed && authState === "unknown";
+  const probing = installed && authState === "unknown" && (!isBuiltin || !!status?.available);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
 
@@ -141,7 +162,7 @@ function EngineCard({
     setInstallError(null);
     try {
       const res = await onInstall(engineId);
-      if (!res.success) setInstallError(res.output || "安装失败，请用下方命令手动安装");
+      if (!res.success) setInstallError(res.output || t('engineSetup.messages.installFailed'));
     } catch (e) {
       setInstallError(String(e));
     } finally {
@@ -154,7 +175,7 @@ function EngineCard({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm font-semibold text-[var(--text-primary)] truncate">{label}</span>
-          {installed && status?.version && (
+          {!isBuiltin && installed && status?.version && (
             <span className="text-[10px] text-[var(--text-secondary)] shrink-0">v{status.version}</span>
           )}
         </div>
@@ -166,16 +187,33 @@ function EngineCard({
                 : "text-amber-400 bg-amber-500/10"
             }`}
           >
-            {ready ? "就绪" : probing ? "检测中…" : "未就绪"}
+            {isBuiltin ? t('engineSetup.status.builtin') : ready ? t('engineSetup.status.ready') : probing ? t('engineSetup.status.probing') : t('engineSetup.status.notReady')}
           </span>
         ) : (
           <span className="text-xs font-medium px-2 py-0.5 rounded-full text-[var(--text-secondary)] bg-[var(--bg-tertiary)] shrink-0">
-            未安装
+            {t('engineSetup.status.notInstalled')}
           </span>
         )}
       </div>
 
-      {!installed && (
+      {isBuiltin && notReady && !probing && (
+        <div className="space-y-2">
+          <p className="text-xs text-amber-400">
+            {t('engineSetup.messages.builtinConfigHint')}
+          </p>
+          <p className="text-[11px] text-[var(--text-secondary)]">
+            {t('engineSetup.messages.builtinDesc')}
+          </p>
+          <button
+            onClick={() => onProbe(engineId)}
+            className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80"
+          >
+            {t('engineSetup.actions.reprobe')}
+          </button>
+        </div>
+      )}
+
+      {!isBuiltin && !installed && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <button
@@ -183,7 +221,7 @@ function EngineCard({
               disabled={installing}
               className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-50"
             >
-              {installing ? "安装中…" : "一键安装"}
+              {installing ? t('engineSetup.actions.installing') : t('engineSetup.actions.oneClickInstall')}
             </button>
             {installing && (
               <div className="w-3.5 h-3.5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
@@ -194,10 +232,10 @@ function EngineCard({
           )}
           <details className="text-[11px] text-[var(--text-secondary)]">
             <summary className="cursor-pointer hover:text-[var(--text-primary)]">
-              手动安装（复制命令到终端运行）
+              {t('engineSetup.actions.manualInstall')}
             </summary>
             <div className="mt-1">
-              <CommandRow command={info.install} label="复制" />
+              <CommandRow command={info.install || t('engineSetup.installNotes.builtin')} label={t('engineSetup.commands.copy')} />
             </div>
           </details>
         </div>
@@ -206,36 +244,36 @@ function EngineCard({
       {probing && (
         <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
           <div className="w-3.5 h-3.5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-          正在发送 ping 检测就绪状态…
+          {t('engineSetup.messages.probing')}
         </div>
       )}
 
-      {ready && <p className="text-xs text-emerald-400">已就绪，可以使用。</p>}
+      {ready && <p className="text-xs text-emerald-400">{t('engineSetup.messages.readyMessage')}</p>}
 
-      {notReady && !probing && (
+      {!isBuiltin && notReady && !probing && (
         <div className="space-y-2">
-          <p className="text-xs text-amber-400">未就绪。点「一键登录」在浏览器登录，完成后点「重新检测」。</p>
+          <p className="text-xs text-amber-400">{t('engineSetup.messages.notReadyHint')}</p>
           <div className="flex gap-2">
             <button
               onClick={() => onLogin(engineId)}
               className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
             >
-              一键登录
+              {t('engineSetup.actions.oneClickLogin')}
             </button>
             <button
               onClick={() => onProbe(engineId)}
               className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80"
             >
-              重新检测
+              {t('engineSetup.actions.reprobe')}
             </button>
           </div>
-          <CommandRow command={info.login} label="复制登录命令" />
-          {info.loginHint && (
-            <p className="text-[11px] text-[var(--text-secondary)]">{info.loginHint}</p>
-          )}
+          <CommandRow command={info.login} label={t('engineSetup.actions.copyLoginCommand')} />
+          <p className="text-[11px] text-[var(--text-secondary)]">
+            {t(`engineSetup.loginHints.${engineId}`)}
+          </p>
           {status?.probe_error && (
             <p className="text-[11px] text-[var(--text-secondary)] break-all">
-              引擎返回：{status.probe_error}
+              {t('engineSetup.messages.engineResponse')}{status.probe_error}
             </p>
           )}
         </div>
@@ -247,7 +285,7 @@ function EngineCard({
             onClick={() => onProbe(engineId)}
             className="text-xs px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium transition-colors hover:opacity-80"
           >
-            重新检测
+            {t('engineSetup.actions.reprobe')}
           </button>
         </div>
       )}
@@ -268,19 +306,20 @@ function EngineSetup({
   onInstall: (id: AgentEngineId) => Promise<{ success: boolean; output: string }>;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const anyReady = statuses.some((s) => s.available && s.auth_state === "ready");
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="w-full max-w-2xl max-h-[90vh] flex flex-col bg-[var(--bg-secondary)] rounded-2xl border border-[var(--border-color)] shadow-2xl">
         <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]">
           <div className="flex items-center gap-2">
-            <img src={iconUrl} alt="Pixie" className="w-7 h-7 rounded-lg" />
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">配置 Agent 引擎</h2>
+            <img src={iconUrl} alt={t('app.name')} className="w-7 h-7 rounded-lg" />
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">{t('engineSetup.title')}</h2>
           </div>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-            aria-label="关闭"
+            aria-label={t('common.close')}
           >
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
               <path d="M4 4L14 14M14 4L4 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -290,13 +329,13 @@ function EngineSetup({
 
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <p className="text-sm text-[var(--text-secondary)] mb-2">
-            Pixie 不自带模型，安装并登录一个引擎即可。检测就绪 = 能成功 ping 通该模型。
+            {t('engineSetup.description')}
           </p>
           {AGENT_ENGINES.map((e) => (
             <EngineCard
               key={e.id}
               engineId={e.id}
-              label={e.label}
+              label={engineLabel(e.id, t)}
               status={statuses.find((s) => s.id === e.id)}
               onProbe={onProbe}
               onLogin={onLogin}
@@ -304,19 +343,19 @@ function EngineSetup({
             />
           ))}
           <p className="text-[11px] text-[var(--text-secondary)] pt-1">
-            提示：检测会向引擎发送一条 ping 消息，可能产生极少量调用费用。
+            {t('engineSetup.hint')}
           </p>
         </div>
 
         <div className="shrink-0 flex items-center justify-between px-5 py-3 border-t border-[var(--border-color)]">
           <span className={`text-xs ${anyReady ? "text-emerald-400" : "text-[var(--text-secondary)]"}`}>
-            {anyReady ? "已有引擎就绪" : "还没有就绪的引擎"}
+            {anyReady ? t('engineSetup.anyReady') : t('engineSetup.noneReady')}
           </span>
           <button
             onClick={onClose}
             className="px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-colors"
           >
-            进入应用
+            {t('engineSetup.enterApp')}
           </button>
         </div>
       </div>
@@ -325,6 +364,7 @@ function EngineSetup({
 }
 
 function AppShell() {
+  const { t, currentLanguage } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
   const [headerEditing, setHeaderEditing] = useState(false);
@@ -335,7 +375,7 @@ function AppShell() {
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   // Which full-page view the main column shows. The sidebar buttons switch
   // this; New Agent / selecting a conversation returns to "chat".
-  const [mainView, setMainView] = useState<"chat" | "tasks" | "skills" | "settings">("chat");
+  const [mainView, setMainView] = useState<"chat" | "tasks" | "loops" | "skills" | "settings">("chat");
   const [theme, setTheme] = useState<"dark" | "light">(() => getConfig().theme);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
@@ -452,6 +492,22 @@ function AppShell() {
     toggle: toggleTask,
     runNow: runTaskNow,
   } = useScheduledTasks();
+
+  const {
+    tasks: loopTasks,
+    iterations: loopIterations,
+    create: createLoopTask,
+    update: updateLoopTask,
+    remove: deleteLoopTask,
+    toggle: toggleLoopTask,
+    start: startLoopTask,
+    pause: pauseLoopTask,
+    resume: resumeLoopTask,
+    resumeWithPrompt: resumeLoopTaskWithPrompt,
+    stop: stopLoopTask,
+    discard: discardLoopTask,
+    loadIterations: loadLoopIterations,
+  } = useLoopTasks();
 
   // Surface completed scheduled runs as conversations in their workspace, so the
   // result is viewable like any chat. On first load we seed the seen-set with all
@@ -576,17 +632,17 @@ function AppShell() {
   }, []);
 
   const handleBackfill = useCallback(async () => {
-    setBackfillStatus("Scanning…");
+    setBackfillStatus(t('settings.backfill.scanning'));
     try {
       const vaultPath = getConfig().vaultPath ?? null;
       const missing = await invoke<
         { conversation_id: string; workspace_id: string; title: string }[]
       >("backfill_list", { vaultPath });
       if (missing.length === 0) {
-        setBackfillStatus("All conversations already in knowledge base.");
+        setBackfillStatus(t('settings.backfill.allDone'));
         return;
       }
-      setBackfillStatus(`Found ${missing.length} conversations to backfill…`);
+      setBackfillStatus(t('settings.backfill.found', { count: missing.length }));
       const history = getHistory();
       let done = 0;
       for (const entry of missing) {
@@ -599,7 +655,7 @@ function AppShell() {
         const parts: string[] = [];
         for (const msg of conv.messages) {
           if (msg.role === "system") continue;
-          const heading = msg.role === "user" ? "## User" : "## Assistant";
+          const heading = msg.role === "user" ? `## ${t('chat.user')}` : `## ${t('chat.assistant')}`;
           const subParts: string[] = [];
           const text = msg.content.trim();
           if (text) subParts.push(text);
@@ -607,16 +663,16 @@ function AppShell() {
             subParts.push(msg.images.map((img: string) => `![[${img.split("/").pop() ?? img}]]`).join("\n"));
           }
           if (msg.tools?.length) {
-            subParts.push(msg.tools.map((t: { name: string; rawInput?: string; input?: unknown; result?: string }) => {
-              let line = `> **🔧 ${t.name}**`;
-              if (t.rawInput) line += `\n> Input: \`${t.rawInput.slice(0, 200)}\``;
-              else if (t.input) line += `\n> Input: \`${JSON.stringify(t.input).slice(0, 200)}\``;
-              if (t.result) line += `\n> Result: ${t.result.slice(0, 300)}`;
+            subParts.push(msg.tools.map((tool: { name: string; rawInput?: string; input?: unknown; result?: string }) => {
+              let line = `> **🔧 ${tool.name}**`;
+              if (tool.rawInput) line += `\n> ${t('chat.kbToolInput')}: \`${tool.rawInput.slice(0, 200)}\``;
+              else if (tool.input) line += `\n> ${t('chat.kbToolInput')}: \`${JSON.stringify(tool.input).slice(0, 200)}\``;
+              if (tool.result) line += `\n> ${t('chat.kbToolResult')}: ${tool.result.slice(0, 300)}`;
               return line;
             }).join("\n\n"));
           }
           if (msg.thinking?.trim()) {
-            subParts.push(`<details>\n<summary>Thinking</summary>\n\n${msg.thinking.trim()}\n\n</details>`);
+            subParts.push(`<details>\n<summary>${t('chat.thinking')}</summary>\n\n${msg.thinking.trim()}\n\n</details>`);
           }
           if (subParts.length === 0) continue;
           parts.push(`${heading}\n\n${subParts.join("\n\n")}`);
@@ -634,16 +690,16 @@ function AppShell() {
             forceOverwrite: true,
           });
           done++;
-          setBackfillStatus(`Backfilling… ${done}/${missing.length}`);
+          setBackfillStatus(t('settings.backfill.progress', { done, total: missing.length }));
         } catch {
           // Skip failed entries.
         }
       }
-      setBackfillStatus(`Done! ${done}/${missing.length} conversations added to knowledge base.`);
+      setBackfillStatus(t('settings.backfill.complete', { done, total: missing.length }));
     } catch (e) {
-      setBackfillStatus(`Backfill failed: ${e}`);
+      setBackfillStatus(t('settings.backfill.failed', { error: String(e) }));
     }
-  }, []);
+  }, [t]);
 
   function stripHtmlTags(input: string): string {
     return input.replace(/<\/?[^>]+>/g, " ");
@@ -667,7 +723,7 @@ function AppShell() {
     try {
       const installed = await invoke<boolean>("check_obsidian_installed");
       if (!installed) {
-        alert("Obsidian is not installed. Download it from https://obsidian.md to view your knowledge base.");
+        alert(t('settings.obsidianNotInstalled'));
         return;
       }
       const vaultPath = getConfig().vaultPath ?? null;
@@ -696,8 +752,10 @@ function AppShell() {
       .slice(0, 3)
       .map(
         (r, i) => {
-          const title = sanitizeKbText(r.title ?? "Untitled", 120);
-          const date = sanitizeKbText(r.created?.split("T")[0] ?? "unknown date", 40);
+          const title = sanitizeKbText(r.title ?? t('chat.untitled'), 120);
+          const date = r.created
+            ? sanitizeKbText(formatShortDate(r.created, currentLanguage), 40)
+            : sanitizeKbText(t('time.unknownDate'), 40);
           const snippet = sanitizeKbText(r.snippet ?? "", 800);
           return `<div class="kb-entry"><strong>${i + 1}. ${title}</strong> (${date})<br>${snippet}</div>`;
         },
@@ -705,7 +763,7 @@ function AppShell() {
       .join("\n");
     return `\
 <details class="user-msg-details">
-<summary>Knowledge Base Context (${results.length} notes)</summary>
+<summary>${t('chat.kbContextNotes', { count: results.length })}</summary>
 
 ${entries}
 
@@ -755,9 +813,11 @@ ${entries}
         onSetWorkspaceFilter={setWorkspaceFilter}
         onOpenSettings={() => setMainView("settings")}
         onOpenTasks={() => setMainView("tasks")}
+        onOpenLoops={() => setMainView("loops")}
         onOpenSkills={() => setMainView("skills")}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        loopTasks={loopTasks}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -777,7 +837,8 @@ ${entries}
                     }}
                     disabled={!activeWorkspace}
                     className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="New session (Ctrl+N)"
+                    title={t('header.newSession', { shortcut: formatModShortcut(t, 'N') })}
+                    aria-label={t('header.newSession', { shortcut: formatModShortcut(t, 'N') })}
                   >
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                       <path d="M10 4v12M4 10h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -787,7 +848,8 @@ ${entries}
                 <button
                   onClick={() => setSidebarOpen((prev) => !prev)}
                   className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-                  title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+                  title={sidebarOpen ? t('header.hideSidebar') : t('header.showSidebar')}
+                  aria-label={sidebarOpen ? t('header.hideSidebar') : t('header.showSidebar')}
                 >
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                     <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -808,10 +870,13 @@ ${entries}
                       className="text-sm font-semibold text-[var(--text-primary)] bg-[var(--bg-primary)] border border-[var(--accent)] rounded px-1 py-0 outline-none w-full"
                     />
                   ) : (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-2">
                       <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
-                        {activeConversation?.title ?? "Pixie"}
+                        {activeConversation?.title ?? t('app.name')}
                       </h1>
+                      <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded shrink-0">
+                        {t('app.beta')}
+                      </span>
                       {activeConversation && (
                         <button
                           onClick={() => {
@@ -820,7 +885,8 @@ ${entries}
                             setTimeout(() => headerEditRef.current?.select(), 0);
                           }}
                           className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors shrink-0"
-                          title="Edit title"
+                          title={t('header.editTitle')}
+                          aria-label={t('header.editTitle')}
                         >
                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                             <path d="M10.5 1.5l2 2-9 9H1.5v-2l9-9zM13.5 4.5l-2-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -847,7 +913,8 @@ ${entries}
               <button
                 onClick={() => setSearchOpen(true)}
                 className="shrink-0 ml-2 p-1.5 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-                title="Search knowledge base (Ctrl+K)"
+                title={t('header.searchKb', { shortcut: formatModShortcut(t, 'K') })}
+                aria-label={t('header.searchKb', { shortcut: formatModShortcut(t, 'K') })}
               >
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                   <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="1.5" />
@@ -857,7 +924,8 @@ ${entries}
               <button
                 onClick={handleOpenObsidian}
                 className="shrink-0 ml-1 p-1.5 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--text-secondary)]/10 hover:text-[var(--text-primary)] transition-colors"
-                title="Open knowledge base in Obsidian"
+                title={t('header.openKbObsidian')}
+                aria-label={t('header.openKbObsidian')}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <ellipse cx="12" cy="6" rx="8" ry="3" />
@@ -873,7 +941,8 @@ ${entries}
                     ? "text-[var(--accent)] hover:bg-[var(--bg-tertiary)]"
                     : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
                 } disabled:opacity-30 disabled:cursor-not-allowed`}
-                title={activeWorkspace ? "Toggle preview panel" : "Add a workspace first"}
+                title={activeWorkspace ? t('header.togglePreview') : t('header.addWorkspaceFirst')}
+                aria-label={activeWorkspace ? t('header.togglePreview') : t('header.addWorkspaceFirst')}
               >
                 {/* Right side-panel toggle */}
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -886,7 +955,7 @@ ${entries}
             {error && (
               <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-center justify-between">
                 <span>{error}</span>
-                <button onClick={clearError} className="text-red-400 hover:text-red-200 transition-colors">Dismiss</button>
+                <button onClick={clearError} className="text-red-400 hover:text-red-200 transition-colors">{t('common.dismiss')}</button>
               </div>
             )}
 
@@ -922,7 +991,7 @@ ${entries}
               onStop={() => stopGeneration()}
               isGenerating={isGenerating}
               disabled={!activeWorkspace}
-              disabledHint="Add a workspace to send"
+              disabledHint={t('chat.addWorkspaceHint')}
               value={draft}
               onChange={handleDraftChange}
               textareaRef={composerRef}
@@ -965,6 +1034,29 @@ ${entries}
                 console.error("run now failed", e);
               }
             }}
+            onClose={() => setMainView("chat")}
+          />
+          </Suspense>
+        )}
+
+        {mainView === "loops" && (
+          <Suspense fallback={<LoadingPanel />}>
+          <LoopTasksPanel
+            workspaces={workspaces}
+            activeWorkspacePath={activeWorkspace?.path ?? null}
+            tasks={loopTasks}
+            iterations={loopIterations}
+            onCreate={createLoopTask}
+            onUpdate={updateLoopTask}
+            onDelete={deleteLoopTask}
+            onToggle={toggleLoopTask}
+            onStart={startLoopTask}
+            onPause={pauseLoopTask}
+            onResume={resumeLoopTask}
+            onResumeWithPrompt={resumeLoopTaskWithPrompt}
+            onStop={stopLoopTask}
+            onDiscard={discardLoopTask}
+            onLoadIterations={loadLoopIterations}
             onClose={() => setMainView("chat")}
           />
           </Suspense>

@@ -12,6 +12,7 @@ export default defineConfig([
     'src-tauri/target',
     'src-tauri/target/**',
     '**/target/**',
+    '.codebuddy/**',
   ]),
   {
     files: ['**/*.{ts,tsx}'],
