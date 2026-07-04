@@ -867,11 +867,9 @@ ${entries}
                       <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
                         {activeConversation?.title ?? "Pixie"}
                       </h1>
-                      {!activeConversation && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded shrink-0">
-                          BETA
-                        </span>
-                      )}
+                      <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded shrink-0">
+                        BETA
+                      </span>
                       {activeConversation && (
                         <button
                           onClick={() => {
