@@ -28,19 +28,25 @@ pub async fn get_codex_version() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// List known Codex models.
-/// Codex supports various OpenAI models; we provide common ones here.
+/// Known Codex model ids to surface in the model picker.
+///
+/// Codex has no `list models` command, and the ids it accepts via `-m` shift as
+/// OpenAI ships new models — so this is a curated set of the current GPT-5
+/// family, not an exhaustive list. `gpt-5.5` is the default for ChatGPT-authed
+/// sessions, so it goes first (the picker uses the first entry as its fallback
+/// label). Users can type any other id (e.g. a preview rollout) in the picker's
+/// custom-model input.
 pub async fn list_models() -> Vec<(String, String)> {
     log::info!("[list_models] codex: starting");
     let models = vec![
-        ("gpt-4o".to_string(), "GPT-4o".to_string()),
-        ("gpt-4o-mini".to_string(), "GPT-4o Mini".to_string()),
-        ("o1".to_string(), "o1".to_string()),
-        ("o1-mini".to_string(), "o1 Mini".to_string()),
-        ("o3".to_string(), "o3".to_string()),
-        ("gpt-4-turbo".to_string(), "GPT-4 Turbo".to_string()),
-        ("gpt-4".to_string(), "GPT-4".to_string()),
-        ("gpt-3.5-turbo".to_string(), "GPT-3.5 Turbo".to_string()),
+        ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
+        ("gpt-5.5-pro".to_string(), "GPT-5.5 Pro".to_string()),
+        ("gpt-5-codex".to_string(), "GPT-5 Codex".to_string()),
+        (
+            "gpt-5-codex-mini".to_string(),
+            "GPT-5 Codex Mini".to_string(),
+        ),
+        ("gpt-5.4".to_string(), "GPT-5.4".to_string()),
     ];
     log::info!("[list_models] codex: returning {} models", models.len());
     models
