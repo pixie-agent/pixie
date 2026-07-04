@@ -340,6 +340,15 @@ pub struct LoopTask {
     /// ISO-8601 (UTC) creation timestamp.
     #[serde(default = "default_created_at")]
     pub created_at: String,
+    /// Human-readable reason explaining why the loop was aborted or completed.
+    /// For aborted: describes who stopped it (user/system) and why.
+    /// For completed: describes which exit condition was satisfied.
+    #[serde(default)]
+    pub completion_reason: Option<String>,
+    /// Summary of changes made during the loop (extracted from tool use events).
+    /// Populated when the loop completes successfully.
+    #[serde(default)]
+    pub changes_summary: Option<String>,
 }
 
 fn default_loop_status() -> LoopTaskStatus {
@@ -3606,6 +3615,134 @@ fn check_exit_conditions(
     false
 }
 
+/// Format a human-readable description of which exit condition was met.
+fn format_exit_condition_met(
+    conditions: &[LoopExitCondition],
+    iteration: u32,
+    result: &str,
+    unchanged_streak: u32,
+) -> String {
+    for cond in conditions {
+        match cond {
+            LoopExitCondition::MaxIterations { max } => {
+                if iteration >= *max {
+                    return format!("Reached maximum iteration count ({} iterations)", max);
+                }
+            }
+            LoopExitCondition::NoErrorPattern { pattern } => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if !re.is_match(result) {
+                        return format!("No errors matching pattern /{}/ found", pattern);
+                    }
+                }
+            }
+            LoopExitCondition::SuccessPattern { pattern } => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(result) {
+                        return format!("Success pattern /{}/ matched", pattern);
+                    }
+                }
+            }
+            LoopExitCondition::OutputUnchanged { streak } => {
+                if unchanged_streak >= *streak {
+                    return format!("Output unchanged for {} consecutive iteration(s)", streak);
+                }
+            }
+            LoopExitCondition::ManualOnly => {}
+        }
+    }
+    "Exit condition met".to_string()
+}
+
+/// Extract a summary of changes from the agent output.
+/// This parses tool use events like file edits to summarize what was changed.
+fn extract_changes_summary(result: &str) -> Option<String> {
+    let mut files_edited: Vec<String> = Vec::new();
+    let mut files_created: Vec<String> = Vec::new();
+    let mut commands_run: Vec<String> = Vec::new();
+
+    for line in result.lines() {
+        // Look for patterns indicating file operations
+        if line.contains("Edit:") || line.contains("Editing") {
+            if let Some(path) = extract_file_path(line) {
+                files_edited.push(path);
+            }
+        }
+        if line.contains("Write:") || line.contains("Writing") || line.contains("Created") {
+            if let Some(path) = extract_file_path(line) {
+                files_created.push(path);
+            }
+        }
+        if line.contains("Bash:") || line.contains("Command:") || line.contains("Running") {
+            if let Some(cmd) = extract_command(line) {
+                commands_run.push(cmd);
+            }
+        }
+    }
+
+    if files_edited.is_empty() && files_created.is_empty() && commands_run.is_empty() {
+        return None;
+    }
+
+    let mut summary_parts = Vec::new();
+    if !files_edited.is_empty() {
+        let unique: Vec<_> = files_edited.iter().map(|s| s.as_str()).collect();
+        let unique: HashSet<_> = unique.into_iter().collect();
+        if unique.len() == 1 {
+            summary_parts.push(format!("Edited 1 file"));
+        } else {
+            summary_parts.push(format!("Edited {} files", unique.len()));
+        }
+    }
+    if !files_created.is_empty() {
+        let unique: Vec<_> = files_created.iter().map(|s| s.as_str()).collect();
+        let unique: HashSet<_> = unique.into_iter().collect();
+        if unique.len() == 1 {
+            summary_parts.push(format!("Created 1 file"));
+        } else {
+            summary_parts.push(format!("Created {} files", unique.len()));
+        }
+    }
+    if !commands_run.is_empty() {
+        summary_parts.push(format!("Ran {} command(s)", commands_run.len()));
+    }
+
+    if summary_parts.is_empty() {
+        None
+    } else {
+        Some(summary_parts.join(", "))
+    }
+}
+
+/// Extract a file path from a line mentioning file operations.
+fn extract_file_path(line: &str) -> Option<String> {
+    // Look for patterns like "Edit: src/main.rs" or "Writing to file: /path/to/file.txt"
+    let line = line.trim();
+    if let Some(idx) = line.find(":") {
+        let after = line[idx + 1..].trim();
+        if !after.is_empty() && (after.contains("/") || after.contains("\\")) {
+            Some(after.to_string())
+        } else if let Some(rest) = line.split("file:").nth(1) {
+            Some(rest.trim().to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Extract a command from a line mentioning command execution.
+fn extract_command(line: &str) -> Option<String> {
+    if let Some(idx) = line.find("$") {
+        Some(line[idx + 1..].trim().to_string())
+    } else if let Some(rest) = line.split("Command:").nth(1) {
+        Some(rest.trim().to_string())
+    } else {
+        None
+    }
+}
+
 fn should_schedule_next_loop_cycle(status: &LoopTaskStatus, enabled: bool) -> bool {
     enabled && matches!(status, LoopTaskStatus::Completed)
 }
@@ -4316,11 +4453,13 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
 
         if outcome.status != "ok" {
             let mut should_emit_error = false;
+            let error_reason = format!("Iteration failed: {}", outcome.result.chars().take(200).collect::<String>());
             {
                 let mut tasks = load_loop_tasks(&app);
                 if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
                     if outcome_applied {
                         t.status = LoopTaskStatus::Error;
+                        t.completion_reason = Some(error_reason.clone());
                         should_emit_error = true;
                         let _ = persist_loop_tasks(&app, &tasks);
                     }
@@ -4329,7 +4468,7 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
             if should_emit_error {
                 let _ = app.emit(
                     "loop-cycle-complete",
-                    serde_json::json!({ "task_id": task_id.clone(), "status": "error" }),
+                    serde_json::json!({ "task_id": task_id.clone(), "status": "error", "reason": error_reason }),
                 );
             }
             break;
@@ -4344,10 +4483,13 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
             use tauri_plugin_notification::NotificationExt;
             let title = format!("🔄 {}", fresh_task.name);
             let preview: String = outcome.result.chars().take(160).collect();
+            let exit_reason = format_exit_condition_met(&fresh_task.exit_conditions, fresh_task.iteration + 1, &outcome.result, outcome.unchanged_streak);
             {
                 let mut tasks = load_loop_tasks(&app);
                 if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
                     t.status = LoopTaskStatus::Completed;
+                    t.completion_reason = Some(exit_reason.clone());
+                    t.changes_summary = extract_changes_summary(&outcome.result);
                     let _ = persist_loop_tasks(&app, &tasks);
                 }
             }
@@ -4359,7 +4501,7 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
                 .show();
             let _ = app.emit(
                 "loop-cycle-complete",
-                serde_json::json!({ "task_id": task_id.clone(), "status": "completed" }),
+                serde_json::json!({ "task_id": task_id.clone(), "status": "completed", "reason": exit_reason }),
             );
             break;
         }
@@ -4392,6 +4534,7 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
                 // this can happen if the app was shutting down. Mark as
                 // Aborted so the user can restart.
                 t.status = LoopTaskStatus::Aborted;
+                t.completion_reason = Some("Loop interrupted by system shutdown".to_string());
             }
             // Only successfully completed scheduled loops should be queued for
             // their next cycle. Preserve explicit Paused/Aborted/Error states.
@@ -4500,13 +4643,14 @@ async fn stop_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
     let mut tasks = load_loop_tasks(&app);
     if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
         t.status = LoopTaskStatus::Aborted;
+        t.completion_reason = Some("Stopped by user".to_string());
         // Keep enabled so the user can restart if desired.
         // next_run is cleared because the current cycle is cancelled.
         t.next_run = None;
         persist_loop_tasks(&app, &tasks)?;
         let _ = app.emit(
             "loop-cycle-complete",
-            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted" }),
+            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted", "reason": "Stopped by user" }),
         );
     } else {
         return Err("Loop task not found".into());
@@ -4576,11 +4720,12 @@ async fn discard_loop_task(app: AppHandle, task_id: String) -> Result<(), String
     if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
         t.status = LoopTaskStatus::Aborted;
         t.enabled = false;
+        t.completion_reason = Some("Discarded by user".to_string());
         t.next_run = None;
         persist_loop_tasks(&app, &tasks)?;
         let _ = app.emit(
             "loop-cycle-complete",
-            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted" }),
+            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted", "reason": "Discarded by user" }),
         );
     } else {
         return Err("Loop task not found".into());

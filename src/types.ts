@@ -404,6 +404,13 @@ export interface LoopTask {
   last_run: string | null;
   enabled: boolean;
   created_at: string;
+  /** Human-readable reason explaining why the loop was aborted or completed.
+   *  For aborted: describes who stopped it (user/system) and why.
+   *  For completed: describes which exit condition was satisfied. */
+  completion_reason: string | null;
+  /** Summary of changes made during the loop (extracted from tool use events).
+   *  Populated when the loop completes successfully. */
+  changes_summary: string | null;
 }
 
 /** Record of a single iteration within a loop cycle. */

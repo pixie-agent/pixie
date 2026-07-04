@@ -729,6 +729,7 @@ export default function LoopTasksPanel({
                       ? "border-[var(--accent)] bg-[var(--accent)]/5"
                       : "border-[var(--border-color)] hover:border-[var(--accent)]/50"
                   }`}
+                  title={t.completion_reason ?? undefined}
                 >
                   <div className="flex items-center gap-2">
                     {t.status === "running" && (
@@ -755,6 +756,12 @@ export default function LoopTasksPanel({
                     {t.schedule && <span>⏱ {formatSchedule(t.schedule)}</span>}
                     {t.last_run && <span>last: {relativeFromIso(t.last_run)}</span>}
                   </div>
+                  {/* Show completion reason inline for completed/aborted tasks */}
+                  {t.completion_reason && (t.status === "completed" || t.status === "aborted") && (
+                    <div className="mt-1.5 text-[10px] text-[var(--text-secondary)] truncate" title={t.completion_reason}>
+                      {t.completion_reason}
+                    </div>
+                  )}
                   {/* Inline delete for completed/aborted/error loops */}
                   {(t.status === "completed" || t.status === "aborted" || t.status === "error" || (t.status === "idle" && t.iteration === 0)) && (
                     <div className="mt-1">
@@ -1012,11 +1019,58 @@ export default function LoopTasksPanel({
                 const exitIter = selectedIterations.find((i) => i.exit_met);
                 const resultIter = exitIter ?? last;
                 return (
-                  <div className="space-y-2">
-                    <h4 className="text-xs font-medium text-[var(--text-primary)]">
-                      {selectedTask.status === "completed" ? "Final Result" : "Last Result (aborted)"}
-                    </h4>
-                    <ResultCard iter={resultIter} />
+                  <div className="space-y-3">
+                    {/* Completion reason */}
+                    {selectedTask.completion_reason && (
+                      <div className={`rounded-lg p-3 text-xs ${
+                        selectedTask.status === "completed"
+                          ? "bg-green-500/5 border border-green-500/20"
+                          : "bg-orange-500/5 border border-orange-500/20"
+                      }`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          {selectedTask.status === "completed" ? (
+                            <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                          )}
+                          <span className={`font-medium ${
+                            selectedTask.status === "completed" ? "text-green-400" : "text-orange-400"
+                          }`}>
+                            {selectedTask.status === "completed" ? "Loop completed" : "Loop stopped"}
+                          </span>
+                        </div>
+                        <p className="text-[var(--text-primary)] leading-relaxed">
+                          {selectedTask.completion_reason}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Changes summary */}
+                    {selectedTask.changes_summary && (
+                      <div className="rounded-lg p-3 bg-blue-500/5 border border-blue-500/20">
+                        <div className="flex items-center gap-2 mb-1">
+                          <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                          </svg>
+                          <span className="font-medium text-blue-400 text-xs">Changes made</span>
+                        </div>
+                        <p className="text-[var(--text-primary)] text-xs leading-relaxed">
+                          {selectedTask.changes_summary}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Result card */}
+                    <div className="space-y-2">
+                      <h4 className="text-xs font-medium text-[var(--text-primary)]">
+                        {selectedTask.status === "completed" ? "Final Result" : "Last Result (aborted)"}
+                      </h4>
+                      <ResultCard iter={resultIter} />
+                    </div>
                   </div>
                 );
               })()}
