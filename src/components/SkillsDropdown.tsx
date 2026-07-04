@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "../hooks/useTranslation";
 import type { SkillEntry } from "../types";
+
+function skillSourceLabel(source: SkillEntry["source"], t: TFunction): string {
+  if (source === "project") return t("skills.project");
+  if (source === "user") return t("skills.user");
+  if (source === "plugin") return t("skills.plugin");
+  return source;
+}
 
 interface SkillsDropdownProps {
   skills: SkillEntry[];
@@ -15,6 +24,7 @@ interface SkillsDropdownProps {
  * single-counter scheme even though rows are rendered under group headers.
  */
 export default function SkillsDropdown({ skills, onSelect, onClose }: SkillsDropdownProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [prevQuery, setPrevQuery] = useState(query);
@@ -90,7 +100,7 @@ export default function SkillsDropdown({ skills, onSelect, onClose }: SkillsDrop
           /{skill.name}
         </span>
         <span className="text-[9px] uppercase px-1 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border-color)]">
-          {skill.source[0].toUpperCase() + skill.source.slice(1)}
+          {skillSourceLabel(skill.source, t)}
         </span>
       </span>
       {skill.description && (
@@ -117,20 +127,24 @@ export default function SkillsDropdown({ skills, onSelect, onClose }: SkillsDrop
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Filter skills… (↑↓ to navigate, Enter to insert, Esc to close)"
+          placeholder={t('skills.filterPlaceholder', {
+            nav: t('keys.arrowUpDown'),
+            enter: t('keys.enter'),
+            esc: t('keys.esc'),
+          })}
           className="w-full bg-[var(--bg-tertiary)] text-[var(--text-primary)] placeholder-[var(--text-secondary)] rounded-lg px-3 py-1.5 text-sm outline-none border border-transparent focus:border-[var(--accent)]"
         />
       </div>
       <div ref={listRef} className="overflow-y-auto flex-1 pb-1">
         {isEmpty ? (
           <div className="px-3 py-4 text-center text-xs text-[var(--text-secondary)]">
-            {query ? "No skills match your filter" : "No skills found"}
+            {query ? t('skills.noMatch') : t('skills.notFound')}
           </div>
         ) : (
           <>
-            {renderGroup("Project", project, 0)}
-            {renderGroup("User", user, project.length)}
-            {renderGroup("Plugin", plugin, project.length + user.length)}
+            {renderGroup(t('skills.project'), project, 0)}
+            {renderGroup(t('skills.user'), user, project.length)}
+            {renderGroup(t('skills.plugin'), plugin, project.length + user.length)}
           </>
         )}
       </div>

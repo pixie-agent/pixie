@@ -1,5 +1,6 @@
 import type { AgentEngineId } from "../types";
-import { AGENT_ENGINES } from "../types";
+import { useTranslation } from "../hooks/useTranslation";
+import { engineLabel } from "../lib/i18nFormat";
 
 const CURSOR_ICON = new URL("../assets/engine-icons/cursor.svg", import.meta.url).href;
 const CLAUDE_ICON = new URL("../assets/engine-icons/claude.svg", import.meta.url).href;
@@ -46,7 +47,8 @@ export default function EngineBadge({
   tone?: "color" | "onAccent";
   className?: string;
 }) {
-  const label = AGENT_ENGINES.find((e) => e.id === engine)?.label ?? engine;
+  const { t } = useTranslation();
+  const label = engineLabel(engine, t);
   const abbr = engineAbbr(engine);
   const colors =
     tone === "onAccent"

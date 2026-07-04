@@ -11,6 +11,7 @@ import { parseGitDiff } from "../lib/diffParser";
 import { tokenizeSource, segmentColor, type TokenSegment } from "../lib/highlight";
 import { languageOfPath } from "../lib/languages";
 import { wordDiffParts, type WordPart } from "../lib/wordDiff";
+import { useTranslation } from "../hooks/useTranslation";
 
 interface DiffViewerProps {
   /** Raw `git diff` unified output. */
@@ -212,6 +213,7 @@ function DiffFileCard({
   viewMode: DiffViewMode;
   onRevealPath?: (relativePath: string) => void;
 }) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const meta = STATUS_META[file.status];
 
@@ -233,13 +235,13 @@ function DiffFileCard({
   const renderBody = (): ReactElement => {
     if (file.binary) {
       return (
-        <div className="px-3 py-2 text-[11px] text-[var(--text-secondary)] italic">Binary file changed</div>
+        <div className="px-3 py-2 text-[11px] text-[var(--text-secondary)] italic">{t("diffViewer.binaryChanged")}</div>
       );
     }
     if (file.hunks.length === 0) {
       return (
         <div className="px-3 py-2 text-[11px] text-[var(--text-secondary)] italic">
-          {file.status === "renamed" ? "Renamed — no content changes" : "No textual changes"}
+          {file.status === "renamed" ? t("diffViewer.renamedNoChanges") : t("diffViewer.noTextualChanges")}
         </div>
       );
     }
@@ -294,7 +296,7 @@ function DiffFileCard({
         </table>
         {totalLines > cap && (
           <div className="px-3 py-1.5 text-[10px] text-[var(--text-secondary)] italic">
-            Showing first {cap} of {totalLines} changed lines.
+            {t("diffViewer.showingLines", { cap, total: totalLines })}
           </div>
         )}
       </div>
@@ -310,7 +312,7 @@ function DiffFileCard({
         <span
           className="text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded shrink-0"
           style={{ color: meta.color, backgroundColor: `${meta.color}22` }}
-          title={file.status}
+          title={t(`diffViewer.fileStatus.${file.status}`)}
         >
           {meta.label}
         </span>
@@ -327,7 +329,8 @@ function DiffFileCard({
           <span
             role="button"
             tabIndex={0}
-            title="在文件管理器中显示"
+            title={t("rightPanel.revealInFileManager")}
+            aria-label={t("rightPanel.revealInFileManager")}
             className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
             onClick={(e) => {
               e.stopPropagation();
@@ -370,11 +373,12 @@ function DiffFileCard({
 const DiffFileCardMemo = memo(DiffFileCard);
 
 function DiffViewerImpl({ diff, viewMode, onRevealPath }: DiffViewerProps) {
+  const { t } = useTranslation();
   const parsed = useMemo(() => parseGitDiff(diff), [diff]);
 
   if (parsed.empty) {
     return (
-      <div className="px-3 py-6 text-center text-xs text-[var(--text-secondary)]">No changes</div>
+      <div className="px-3 py-6 text-center text-xs text-[var(--text-secondary)]">{t("diffViewer.noChanges")}</div>
     );
   }
 

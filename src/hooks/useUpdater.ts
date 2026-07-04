@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import i18n from "../i18n";
 
 export type UpdateStatus =
   | "idle"
@@ -131,7 +132,7 @@ export function useUpdater(): UseUpdaterResult {
         (r) => r.prerelease && !r.draft && r.tag_name.startsWith("app-v"),
       );
       if (!beta) {
-        setError("No beta version is available yet. Check back soon.");
+        setError(i18n.t("updater.noBeta"));
         setStatus("error");
         return;
       }

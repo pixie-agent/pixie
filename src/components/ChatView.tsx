@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, useCallback } from "react";
+import { useTranslation } from "../hooks/useTranslation";
 import MessageBubble from "./MessageBubble";
 import type { Conversation, PreviewRequest } from "../types";
 
@@ -27,30 +28,32 @@ function TypingIndicator() {
 }
 
 function WelcomeScreen() {
+  const { t } = useTranslation();
+  const suggestions = [
+    t('chat.suggestions.excel'),
+    t('chat.suggestions.report'),
+    t('chat.suggestions.login'),
+    t('chat.suggestions.news'),
+    t('chat.suggestions.translate'),
+    t('chat.suggestions.scrape'),
+    t('chat.suggestions.polish'),
+    t('chat.suggestions.schema'),
+  ];
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-6">
       <img
         src={iconUrl}
-        alt="Pixie"
+        alt={t('app.name')}
         className="w-16 h-16 rounded-2xl mb-6"
       />
       <h2 className="text-xl font-semibold text-[var(--text-primary)] mb-2">
-        Pixie
+        {t('app.name')}
       </h2>
       <p className="text-sm text-[var(--text-secondary)] max-w-sm leading-relaxed">
-        Type a message below to start. Use the AI agent for programming, documents, data analysis, news, writing, and more.
+        {t('chat.welcomeDescription')}
       </p>
       <div className="flex flex-wrap justify-center gap-2 mt-8 max-w-md">
-        {[
-          "Analyze this Excel sales data",
-          "Write a weekly project report",
-          "Implement a login feature",
-          "Summarize today's tech news",
-          "Translate this document to English",
-          "Scrape web data with Python",
-          "Polish this copy",
-          "Design a database schema",
-        ].map((suggestion) => (
+        {suggestions.map((suggestion) => (
           <button
             key={suggestion}
             className="px-3 py-1.5 rounded-full text-xs border border-[var(--border-color)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] transition-colors"
@@ -65,6 +68,7 @@ function WelcomeScreen() {
 }
 
 export default function ChatView({ conversation, isGenerating, onOpenPreview, onRespondPermission }: ChatViewProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   // Previous message count — used to detect when the user sends a new turn.
   const prevCountRef = useRef(0);
@@ -143,10 +147,11 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
         <button
           className="jump-to-bottom"
           onClick={jumpToBottom}
-          title="Scroll to latest"
+          title={t('chat.scrollToLatest')}
+          aria-label={t('chat.scrollToLatest')}
           type="button"
         >
-          ↓ Latest
+          {t('keys.arrowDown')} {t('chat.latest')}
         </button>
       )}
     </div>

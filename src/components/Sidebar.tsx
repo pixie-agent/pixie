@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useRef, memo } from "react";
+import { useTranslation } from "../hooks/useTranslation";
+import { relativeTime as formatRelativeTime } from "../lib/i18nFormat";
 import type { ConversationEntry } from "../hooks/useChat";
 import type { WorkspaceState, AgentEngineId, EngineModelConfigs, LoopTask } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
@@ -32,18 +34,6 @@ interface SidebarProps {
   defaultWorkspacePath: string;
   /** Active loop tasks — used to group loop-iteration conversations in the sidebar. */
   loopTasks: LoopTask[];
-}
-
-function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(ts).toLocaleDateString();
 }
 
 function workspaceName(workspaces: WorkspaceState[], id: string): string {
@@ -84,6 +74,7 @@ const ConversationRow = memo(function ConversationRow({
   onDelete: () => void;
   onRename: (newTitle: string) => void;
 }) {
+  const { t, currentLanguage } = useTranslation();
   const { conversation: conv } = entry;
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -120,7 +111,7 @@ const ConversationRow = memo(function ConversationRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           {isGenerating && (
-            <span className="shrink-0 w-2 h-2 rounded-full bg-green-400 animate-pulse" title="Generating..." />
+            <span className="shrink-0 w-2 h-2 rounded-full bg-green-400 animate-pulse" title={t('sidebar.generating')} />
           )}
           {editing ? (
             <input
@@ -154,7 +145,7 @@ const ConversationRow = memo(function ConversationRow({
           ) : null}
           <EngineBadge engine={conv.engine} />
           <span className="opacity-60">·</span>
-          <span>{relativeTime(conv.updatedAt)}</span>
+          <span>{formatRelativeTime(conv.updatedAt, t, currentLanguage)}</span>
         </p>
       </div>
       <button
@@ -172,7 +163,8 @@ const ConversationRow = memo(function ConversationRow({
             ? "bg-red-500/30 text-red-400"
             : "opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-red-400"
         }`}
-        title={confirmDelete ? "Click again to confirm" : "Delete conversation"}
+        title={confirmDelete ? t('common.confirmAgain') : t('sidebar.deleteConversation')}
+        aria-label={confirmDelete ? t('common.confirmAgain') : t('sidebar.deleteConversation')}
       >
         <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
           <path d="M4.5 2h5a.5.5 0 010 1h-5a.5.5 0 010-1zM3 4h8l-.7 8.4a1 1 0 01-1 .9H4.7a1 1 0 01-1-.9L3 4zm2.5 2v5M7 6v5M8.5 6v5" stroke="currentColor" strokeWidth="1" fill="none" strokeLinecap="round" />
@@ -236,6 +228,7 @@ function LoopGroup({
   onSelect: (id: string, workspaceId: string) => void;
   onDelete: (id: string, workspaceId: string) => void;
 }) {
+  const { t, currentLanguage } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const isRunning = group.status === "running";
 
@@ -285,20 +278,21 @@ function LoopGroup({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     {isGenerating && (
-                      <span className="shrink-0 w-2 h-2 rounded-full bg-green-400 animate-pulse" title="Generating..." />
+                      <span className="shrink-0 w-2 h-2 rounded-full bg-green-400 animate-pulse" title={t('sidebar.generating')} />
                     )}
                     <p className="text-sm truncate leading-tight">{conv.title}</p>
                   </div>
                   <p className="text-[10px] mt-0.5 opacity-60 truncate flex items-center gap-1.5">
                     <EngineBadge engine={conv.engine} />
                     <span className="opacity-60">·</span>
-                    <span>{relativeTime(conv.updatedAt)}</span>
+                    <span>{formatRelativeTime(conv.updatedAt, t, currentLanguage)}</span>
                   </p>
                 </div>
                 <button
                   onClick={(e) => { e.stopPropagation(); onDelete(conv.id, entry.workspaceId); }}
                   className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-red-400 transition-all"
-                  title="Delete conversation"
+                  title={t('sidebar.deleteConversation')}
+                  aria-label={t('sidebar.deleteConversation')}
                 >
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
                     <path d="M4.5 2h5a.5.5 0 010 1h-5a.5.5 0 010-1zM3 4h8l-.7 8.4a1 1 0 01-1 .9H4.7a1 1 0 01-1-.9L3 4zm2.5 2v5M7 6v5M8.5 6v5" stroke="currentColor" strokeWidth="1" fill="none" strokeLinecap="round" />
@@ -380,6 +374,7 @@ export default function Sidebar({
   defaultWorkspacePath,
   loopTasks,
 }: SidebarProps) {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [wsPendingRemove, setWsPendingRemove] = useState<string | null>(null);
   const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
@@ -555,8 +550,8 @@ export default function Sidebar({
               >
                 <span className="truncate">
                   {workspaceFilter
-                    ? workspaces.find((w) => w.id === workspaceFilter)?.name ?? "All workspaces"
-                    : "All workspaces"}
+                    ? workspaces.find((w) => w.id === workspaceFilter)?.name ?? t('sidebar.allWorkspaces')
+                    : t('sidebar.allWorkspaces')}
                 </span>
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={`shrink-0 ml-2 text-[var(--text-secondary)] transition-transform duration-200 ${wsDropdownOpen ? "rotate-180" : ""}`}>
                   <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -570,7 +565,7 @@ export default function Sidebar({
                         workspaceFilter === null ? "text-[var(--accent)] font-medium" : "text-[var(--text-primary)]"
                       }`}
                     >
-                      All workspaces
+                      {t('sidebar.allWorkspaces')}
                     </button>
                     {visibleWorkspaces.map((ws) => (
                       <div
@@ -602,7 +597,8 @@ export default function Sidebar({
                               ? "bg-red-500/30 text-red-400"
                               : "hover:bg-red-500/20 text-[var(--text-secondary)] hover:text-red-400"
                           }`}
-                          title={wsPendingRemove === ws.id ? "Click again to confirm" : "Remove workspace"}
+                          title={wsPendingRemove === ws.id ? t('common.confirmAgain') : t('sidebar.removeWorkspace')}
+                          aria-label={wsPendingRemove === ws.id ? t('common.confirmAgain') : t('sidebar.removeWorkspace')}
                         >
                           {wsPendingRemove === ws.id ? (
                             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -623,7 +619,7 @@ export default function Sidebar({
                       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                         <path d="M6 3v6M3 6h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
-                      Add workspace…
+                      {t('sidebar.addWorkspace')}
                     </button>
                   </div>
               )}
@@ -638,7 +634,7 @@ export default function Sidebar({
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                 <path d="M6 3v6M3 6h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
-              Add workspace…
+              {t('sidebar.addWorkspace')}
             </button>
           </div>
         )}
@@ -649,7 +645,7 @@ export default function Sidebar({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search agents…"
+            placeholder={t('sidebar.searchAgents')}
             className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors"
           />
         </div>
@@ -659,10 +655,10 @@ export default function Sidebar({
           {filtered.length === 0 && (
             <p className="text-xs text-[var(--text-secondary)] text-center mt-8 px-2">
               {search
-                ? "No matching agents"
+                ? t('sidebar.noMatchingAgents')
                 : workspaces.length === 0
-                  ? "Add a workspace to start"
-                  : "No agents yet — create one below"}
+                  ? t('sidebar.addWorkspaceToStart')
+                  : t('sidebar.noAgentsYet')}
             </p>
           )}
 
@@ -681,7 +677,7 @@ export default function Sidebar({
             <>
               {activeEntries.length > 0 && (
                 <div className="mb-2">
-                  <SectionHeader label="Active" count={activeEntries.length} />
+                  <SectionHeader label={t('sidebar.active')} count={activeEntries.length} />
                   <EntryList
                     entries={activeEntries}
                     workspaces={workspaces}
@@ -699,7 +695,7 @@ export default function Sidebar({
               {loopGroups.length > 0 && (
                 <div className="mb-2">
                   <SectionHeader
-                    label="Loops"
+                    label={t('sidebar.loopsSection')}
                     count={loopGroups.reduce((s, g) => s + g.entries.length, 0)}
                     collapsible
                     expanded={loopsExpanded}
@@ -714,7 +710,7 @@ export default function Sidebar({
               {historyEntries.length > 0 && (
                 <div>
                   <SectionHeader
-                    label="History"
+                    label={t('sidebar.history')}
                     count={historyEntries.length}
                     collapsible
                     expanded={showHistoryExpanded}
@@ -752,17 +748,17 @@ export default function Sidebar({
               onClick={() => onNew({ workspaceId: newAgentTargetWs ?? undefined, engine: effectiveDefaultEngine })}
               className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               disabled={!newAgentTargetWs}
-              title={newAgentTargetWs ? "New agent (defaults)" : "Add a workspace first"}
+              title={newAgentTargetWs ? t('sidebar.newAgentDefaults') : t('header.addWorkspaceFirst')}
             >
               <EngineBadge engine={effectiveDefaultEngine} tone="onAccent" />
-              New Agent
+              {t('sidebar.newAgent')}
             </button>
             <button
               type="button"
               onClick={() => setNewAgentModalOpen(true)}
               className="shrink-0 flex items-center justify-center px-2 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-90 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
               disabled={!newAgentTargetWs}
-              title="Advanced options"
+              title={t('sidebar.advancedOptions')}
             >
               {/* Sliders icon */}
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -787,7 +783,7 @@ export default function Sidebar({
               <path d="M7 2v2M7 10v2M2 7h2M10 7h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
               <path d="M4.5 4.5l1 1M8.5 8.5l1 1M4.5 9.5l1-1M8.5 5.5l1-1" stroke="currentColor" strokeWidth="0.8" strokeLinecap="round" />
             </svg>
-            Loops
+            {t('sidebar.loops')}
           </button>
           <button
             onClick={onOpenTasks}
@@ -797,7 +793,7 @@ export default function Sidebar({
               <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2" />
               <path d="M7 4v3l2 1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            Scheduled Tasks
+            {t('sidebar.tasks')}
           </button>
           <button
             onClick={onOpenSkills}
@@ -815,7 +811,7 @@ export default function Sidebar({
             >
               <path d="M12 3l1.9 4.8L18.7 9.7l-4.8 1.9L12 16.4l-1.9-4.8L5.3 9.7l4.8-1.9L12 3z" />
             </svg>
-            Skills
+            {t('sidebar.skills')}
           </button>
           <button
             onClick={onOpenSettings}
@@ -825,7 +821,7 @@ export default function Sidebar({
               <path d="M7 9a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" strokeWidth="1.2" fill="none" />
               <path d="M12.2 7c0-.3 0-.6-.1-.8l1.4-1.1-1.3-2.4-1.7.5c-.4-.3-.9-.6-1.4-.8L8.6.6h-2.8l-.4 1.8c-.5.2-1 .4-1.4.8l-1.7-.5-1.3 2.4 1.4 1.1c-.1.3-.1.6-.1.8s0 .6.1.8l-1.4 1.1 1.3 2.4 1.7-.5c.4.3.9.6 1.4.8l.4 1.8h2.8l.4-1.8c.5-.2 1-.4 1.4-.8l1.7.5 1.3-2.4-1.4-1.1c.1-.3.1-.6.1-.8z" stroke="currentColor" strokeWidth="1" fill="none" />
             </svg>
-            Settings
+            {t('sidebar.settings')}
           </button>
         </div>
       </aside>

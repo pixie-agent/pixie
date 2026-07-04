@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
+import i18n from "../i18n";
 
 interface TerminalProps {
   id: string;
@@ -89,7 +90,7 @@ export default function Terminal({ id, cwd, onExit }: TerminalProps) {
 
     // Spawn PTY
     invoke("pty_spawn", { id, cwd, rows: term.rows, cols: term.cols }).catch((e) => {
-      term.write(`\r\nFailed to spawn PTY: ${e}\r\n`);
+      term.write(`\r\n${i18n.t("terminal.spawnFailed", { error: e })}\r\n`);
     });
 
     // Listen for PTY output

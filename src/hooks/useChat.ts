@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, startTransition } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import i18n from "../i18n";
 import type {
   Conversation,
   Message,
@@ -73,7 +74,7 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
   for (const msg of messages) {
     if (msg.role === "system") continue;
 
-    const heading = msg.role === "user" ? "## User" : "## Assistant";
+    const heading = msg.role === "user" ? `## ${i18n.t("chat.user")}` : `## ${i18n.t("chat.assistant")}`;
     const subParts: string[] = [];
 
     // Text content.
@@ -93,9 +94,9 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
     if (msg.tools?.length) {
       const toolLines = msg.tools.map((t) => {
         let line = `> **🔧 ${t.name}**`;
-        if (t.rawInput) line += `\n> Input: \`${truncateStr(t.rawInput, 200)}\``;
-        else if (t.input) line += `\n> Input: \`${truncateStr(JSON.stringify(t.input), 200)}\``;
-        if (t.result) line += `\n> Result: ${truncateStr(t.result, 300)}`;
+        if (t.rawInput) line += `\n> ${i18n.t("chat.kbToolInput")}: \`${truncateStr(t.rawInput, 200)}\``;
+        else if (t.input) line += `\n> ${i18n.t("chat.kbToolInput")}: \`${truncateStr(JSON.stringify(t.input), 200)}\``;
+        if (t.result) line += `\n> ${i18n.t("chat.kbToolResult")}: ${truncateStr(t.result, 300)}`;
         return line;
       });
       subParts.push(toolLines.join("\n\n"));
@@ -103,7 +104,7 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
 
     // Thinking content.
     if (msg.thinking?.trim()) {
-      subParts.push(`<details>\n<summary>Thinking</summary>\n\n${msg.thinking.trim()}\n\n</details>`);
+      subParts.push(`<details>\n<summary>${i18n.t("chat.thinking")}</summary>\n\n${msg.thinking.trim()}\n\n</details>`);
     }
 
     if (subParts.length === 0) continue;
@@ -115,7 +116,7 @@ function buildTranscript(messages: Message[], finalAssistantText?: string): stri
     const lastPart = parts[parts.length - 1];
     const trimmed = finalAssistantText.trim();
     if (!lastPart || !lastPart.endsWith(trimmed)) {
-      parts.push(`## Assistant\n\n${trimmed}`);
+      parts.push(`## ${i18n.t("chat.assistant")}\n\n${trimmed}`);
     }
   }
 
@@ -606,7 +607,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
             wsId: task.workspace,
             conv: {
               id: it.id,
-              title: `Loop: ${task.name} #${it.iteration}`,
+              title: i18n.t("loops.conversationTitle", { name: task.name, iteration: it.iteration }),
               createdAt: created,
               updatedAt: updated,
               engine: task.engine,
@@ -703,10 +704,14 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     invoke<EngineStatus[]>("check_engines_available")
       .then((statuses) => setEngineStatuses(statuses))
       .catch(() =>
-        setEngineStatuses([
-          { id: "claude", display_name: "Claude Code", available: false, error: "Failed to check engines" },
-          { id: "cursor", display_name: "Cursor Agent", available: false, error: "Failed to check engines" },
-        ])
+        setEngineStatuses(
+          AGENT_ENGINES.map((e) => ({
+            id: e.id,
+            display_name: i18n.t(`engines.${e.id}`, { defaultValue: e.label }),
+            available: false,
+            error: i18n.t("engineSetup.messages.failedCheckEngines"),
+          })),
+        )
       );
   }, []);
 
@@ -874,7 +879,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         const now = Date.now();
         const conv: Conversation = {
           id: p.conversation_id,
-          title: `Loop: ${p.task_name} #${p.iteration}`,
+          title: i18n.t("loops.conversationTitle", { name: p.task_name, iteration: p.iteration }),
           createdAt: now,
           updatedAt: now,
           engine: p.engine as AgentEngineId,
@@ -955,7 +960,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     if (!wsId) return "";
     const id = generateId();
     const conv: Conversation = {
-      id, title: "New Agent", messages: [],
+      id, title: i18n.t("sidebar.newAgent"), messages: [],
       createdAt: Date.now(), updatedAt: Date.now(),
       engine: engine ?? defaultEngine,
       model,
@@ -1213,7 +1218,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           role: "assistant",
           content:
             run.result ||
-            (run.status === "error" ? "(task failed)" : "(no output)"),
+            (run.status === "error" ? i18n.t("common.failed") : i18n.t("common.noOutput")),
           timestamp: finishedMs,
           status: run.status === "error" ? "error" : "done",
         },
@@ -1243,7 +1248,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         engine: "builtin",
         messages: [
           { id: generateId(), role: "user", content: opts.prompt, timestamp: now, status: "done" },
-          { id: generateId(), role: "assistant", content: "Running…", timestamp: now, status: "streaming" },
+          { id: generateId(), role: "assistant", content: i18n.t("chat.taskRunning"), timestamp: now, status: "streaming" },
         ],
       };
       setAllConversations((prev) => {
@@ -1319,7 +1324,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       setEngineStatuses((prev) =>
         (prev ?? []).map((s) =>
           s.id === engineId
-            ? { ...s, auth_state: "no_response", probe_error: "检测未返回，请点重新检测重试" }
+            ? { ...s, auth_state: "no_response", probe_error: i18n.t("engineSetup.messages.probeNoResponse") }
             : s,
         ),
       );
