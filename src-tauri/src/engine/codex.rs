@@ -159,24 +159,21 @@ pub async fn spawn_single(
 }
 
 pub async fn spawn_continue(
-    _session_id: &str,
+    session_id: &str,
     message: &str,
     cwd: Option<&str>,
     model: Option<&str>,
 ) -> Result<Child> {
-    // Codex uses `resume` subcommand for continuing
-    spawn_with_args(
-        vec![
-            "exec".into(),
-            "resume".into(),
-            "--json".into(),
-            "--dangerously-bypass-approvals-and-sandbox".into(),
-        ],
-        message,
-        cwd,
-        model,
-    )
-    .await
+    // Codex uses `resume <session_id>` for continuing
+    let mut args = vec![
+        "exec".into(),
+        "resume".into(),
+        session_id.to_string(),
+        "--json".into(),
+        "--dangerously-bypass-approvals-and-sandbox".into(),
+    ];
+    
+    spawn_with_args(args, message, cwd, model).await
 }
 
 /// Spawn a headless Codex process for scheduled tasks.
@@ -271,6 +268,13 @@ impl CodexStreamEvent {
         }
     }
 
+    fn session_id(&self) -> Option<String> {
+        match self {
+            CodexStreamEvent::ThreadStarted { thread_id } => thread_id.clone(),
+            _ => None,
+        }
+    }
+
     fn is_final(&self) -> bool {
         matches!(self, CodexStreamEvent::TurnCompleted { .. })
     }
@@ -344,6 +348,13 @@ pub fn parse_line(line: &str) -> Vec<NormalizedEvent> {
     };
 
     let mut out = Vec::new();
+
+    // Handle session establishment from thread.started events
+    if let Some(session_id) = evt.session_id() {
+        out.push(NormalizedEvent::SessionEstablished {
+            session_id,
+        });
+    }
 
     // Handle text from item.completed events
     if let Some(text) = evt.streaming_text() {
