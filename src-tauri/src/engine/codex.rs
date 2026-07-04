@@ -201,114 +201,58 @@ pub async fn spawn_headless(
 
 // ---------------------------------------------------------------------------
 // Codex stream-json parsing
+//
+// Codex uses a different format than Claude:
+// - {"type":"turn.started"}
+// - {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+// - {"type":"turn.completed","usage":{...}}
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum CodexStreamEvent {
-    #[serde(rename = "message_start")]
-    MessageStart {},
+    #[serde(rename = "turn.started")]
+    TurnStarted,
 
-    #[serde(rename = "content_block_delta")]
-    ContentBlockDelta { index: Option<usize>, delta: Delta },
-
-    #[serde(rename = "content_block_start")]
-    ContentBlockStart {
-        index: Option<usize>,
-        content_block: ContentBlock,
+    #[serde(rename = "turn.completed")]
+    TurnCompleted {
+        #[serde(default)]
+        usage: Option<CodexUsage>,
     },
 
-    #[serde(rename = "message_stop")]
-    MessageStop {},
+    #[serde(rename = "item.completed")]
+    ItemCompleted {
+        item: CodexItem,
+    },
 
     #[serde(rename = "error")]
     Error { error: ErrorData },
 
-    #[serde(rename = "result")]
-    Result {
-        result: String,
+    #[serde(rename = "thread.started")]
+    ThreadStarted {
         #[serde(default)]
-        total_cost_usd: Option<f64>,
-        #[serde(default)]
-        duration_ms: Option<u64>,
-        #[serde(default)]
-        num_turns: Option<u64>,
-        #[serde(default)]
-        model: Option<String>,
-        #[serde(default)]
-        stop_reason: Option<String>,
-        #[serde(default, rename = "modelUsage")]
-        model_usage: Option<serde_json::Value>,
-    },
-
-    #[serde(rename = "system")]
-    System {
-        #[serde(default)]
-        subtype: Option<String>,
-        #[serde(default)]
-        model: Option<String>,
-        #[serde(default)]
-        session_id: Option<String>,
-        #[serde(default)]
-        estimated_tokens: Option<u64>,
-    },
-
-    #[serde(rename = "assistant")]
-    Assistant {
-        #[serde(default)]
-        message: Option<serde_json::Value>,
-    },
-
-    #[serde(rename = "user")]
-    User {
-        #[serde(default)]
-        message: Option<serde_json::Value>,
-    },
-
-    #[serde(rename = "tool_use")]
-    ToolUse {
-        #[serde(default)]
-        id: Option<String>,
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        input: Option<serde_json::Value>,
-    },
-
-    #[serde(rename = "tool_result")]
-    ToolResult {
-        #[serde(default)]
-        tool_use_id: Option<String>,
-        #[serde(default)]
-        content: Option<String>,
-    },
-
-    #[serde(rename = "permission_request")]
-    PermissionRequest {
-        #[serde(default)]
-        id: Option<String>,
-        #[serde(default)]
-        tool_name: Option<String>,
-        #[serde(default)]
-        input: Option<serde_json::Value>,
+        thread_id: Option<String>,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Delta {
-    #[serde(default, rename = "type")]
-    delta_type: Option<String>,
-    text: Option<String>,
-    #[serde(default)]
-    stop_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ContentBlock {
+struct CodexItem {
+    id: Option<String>,
     #[serde(rename = "type")]
-    content_type: String,
-    #[serde(default)]
+    item_type: String,
     text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CodexUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    reasoning_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,190 +263,51 @@ struct ErrorData {
     code: Option<String>,
 }
 
-fn event_type_label(evt: &CodexStreamEvent) -> &'static str {
-    match evt {
-        CodexStreamEvent::ContentBlockDelta { .. } => "delta",
-        CodexStreamEvent::ContentBlockStart { .. } => "block_start",
-        CodexStreamEvent::Result { .. } => "result",
-        CodexStreamEvent::MessageStart {} => "message_start",
-        CodexStreamEvent::MessageStop {} => "message_stop",
-        CodexStreamEvent::System { .. } => "system",
-        CodexStreamEvent::Error { .. } => "error",
-        CodexStreamEvent::Assistant { .. } => "assistant",
-        CodexStreamEvent::User { .. } => "user",
-        CodexStreamEvent::ToolUse { .. } => "tool_use",
-        CodexStreamEvent::ToolResult { .. } => "tool_result",
-        CodexStreamEvent::PermissionRequest { .. } => "permission_request",
-    }
-}
-
 impl CodexStreamEvent {
     fn streaming_text(&self) -> Option<String> {
         match self {
-            CodexStreamEvent::ContentBlockDelta { delta, .. } => delta.text.clone(),
-            CodexStreamEvent::ContentBlockStart { content_block, .. } => {
-                content_block.text.clone()
-            }
-            CodexStreamEvent::Assistant { message } => message.as_ref().and_then(|msg| {
-                msg.get("content")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| {
-                        arr.iter().find_map(|block| {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                block
-                                    .get("text")
-                                    .and_then(|t| t.as_str())
-                                    .map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            }),
+            CodexStreamEvent::ItemCompleted { item } => item.text.clone(),
             _ => None,
         }
     }
 
-    fn streaming_thinking(&self) -> Option<String> {
-        match self {
-            CodexStreamEvent::Assistant { message } => message.as_ref().and_then(|msg| {
-                msg.get("content")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| {
-                        arr.iter().find_map(|block| {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
-                                block
-                                    .get("thinking")
-                                    .and_then(|t| t.as_str())
-                                    .map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            }),
-            _ => None,
-        }
+    fn is_final(&self) -> bool {
+        matches!(self, CodexStreamEvent::TurnCompleted { .. })
     }
 
-    fn tool_events(&self) -> Vec<super::ToolEvent> {
-        let mut out = Vec::new();
-
-        let starts_from_content = |content: Option<&serde_json::Value>,
-                                   out: &mut Vec<super::ToolEvent>| {
-            if let Some(arr) = content.and_then(|c| c.as_array()) {
-                for block in arr {
-                    if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
-                        continue;
-                    }
-                    let id = block
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = block.get("name").and_then(|v| v.as_str()).map(String::from);
-                    let input = block.get("input").map(|v| v.to_string());
-                    out.push(super::ToolEvent {
-                        id,
-                        kind: super::ToolEventKind::Start { name, input },
-                    });
-                }
-            }
-        };
-
-        let results_from_content = |content: Option<&serde_json::Value>,
-                                    out: &mut Vec<super::ToolEvent>| {
-            if let Some(arr) = content.and_then(|c| c.as_array()) {
-                for block in arr {
-                    if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
-                        continue;
-                    }
-                    let id = block
-                        .get("tool_use_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let content = shared::extract_result_text(block.get("content"));
-                    let is_error = block
-                        .get("is_error")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    out.push(super::ToolEvent {
-                        id,
-                        kind: super::ToolEventKind::Result { content, is_error },
-                    });
-                }
-            }
-        };
-
-        match self {
-            CodexStreamEvent::Assistant { message } => {
-                starts_from_content(message.as_ref().and_then(|m| m.get("content")), &mut out);
-            }
-            CodexStreamEvent::User { message } => {
-                results_from_content(message.as_ref().and_then(|m| m.get("content")), &mut out);
-            }
-            CodexStreamEvent::ToolUse { id, name, input } => {
-                out.push(super::ToolEvent {
-                    id: id.clone().unwrap_or_default(),
-                    kind: super::ToolEventKind::Start {
-                        name: name.clone(),
-                        input: input.as_ref().map(|v| v.to_string()),
-                    },
-                });
-            }
-            CodexStreamEvent::ToolResult {
-                tool_use_id,
-                content,
-            } => {
-                out.push(super::ToolEvent {
-                    id: tool_use_id.clone().unwrap_or_default(),
-                    kind: super::ToolEventKind::Result {
-                        content: content.clone(),
-                        is_error: false,
-                    },
-                });
-            }
-            _ => {}
-        }
-
-        out
+    fn is_error(&self) -> bool {
+        matches!(self, CodexStreamEvent::Error { .. })
     }
 
-    fn thinking_tokens(&self) -> Option<u64> {
+    fn final_text(&self) -> Option<String> {
         match self {
-            CodexStreamEvent::System {
-                subtype,
-                estimated_tokens,
-                ..
-            } => {
-                if subtype.as_deref() == Some("thinking_tokens") {
-                    *estimated_tokens
-                } else {
-                    None
-                }
-            }
+            CodexStreamEvent::TurnCompleted { .. } => None, // Text comes from ItemCompleted
+            CodexStreamEvent::Error { error } => error
+                .message
+                .clone()
+                .or_else(|| Some("Unknown error".to_string())),
             _ => None,
         }
     }
 
     fn usage(&self) -> Option<UsageInfo> {
         match self {
-            CodexStreamEvent::Assistant { message } => {
-                let usage = message.as_ref().and_then(|m| m.get("usage"))?;
-                let input = shared::u64_field(usage, "input_tokens");
-                let output = shared::u64_field(usage, "output_tokens");
-                let cache_read = shared::u64_field(usage, "cache_read_input_tokens");
-                let cache_creation = shared::u64_field(usage, "cache_creation_input_tokens");
-                if input == 0 && output == 0 && cache_read == 0 && cache_creation == 0 {
+            CodexStreamEvent::TurnCompleted { usage } => {
+                let u = usage.as_ref()?;
+                let input = u.input_tokens.unwrap_or(0);
+                let output = u.output_tokens.unwrap_or(0);
+                let cache_read = u.cached_input_tokens.unwrap_or(0);
+                
+                if input == 0 && output == 0 && cache_read == 0 {
                     return None;
                 }
+                
                 Some(UsageInfo {
-                    kind: "turn",
+                    kind: "final",
                     input_tokens: input,
                     output_tokens: output,
                     cache_read_tokens: cache_read,
-                    cache_creation_tokens: cache_creation,
+                    cache_creation_tokens: 0,
                     cost_usd: None,
                     duration_ms: None,
                     num_turns: None,
@@ -510,59 +315,6 @@ impl CodexStreamEvent {
                     stop_reason: None,
                 })
             }
-            CodexStreamEvent::Result { .. } => self.final_usage(),
-            _ => None,
-        }
-    }
-
-    fn final_usage(&self) -> Option<UsageInfo> {
-        let CodexStreamEvent::Result {
-            total_cost_usd,
-            duration_ms,
-            num_turns,
-            model,
-            stop_reason,
-            model_usage,
-            ..
-        } = self
-        else {
-            return None;
-        };
-
-        let mut input = 0u64;
-        let mut output = 0u64;
-        let mut cache_read = 0u64;
-        let mut cache_creation = 0u64;
-        if let Some(models) = model_usage.as_ref().and_then(|m| m.as_object()) {
-            for (_name, m) in models {
-                input += shared::u64_field(m, "inputTokens");
-                output += shared::u64_field(m, "outputTokens");
-                cache_read += shared::u64_field(m, "cacheReadInputTokens");
-                cache_creation += shared::u64_field(m, "cacheCreationInputTokens");
-            }
-        }
-
-        Some(UsageInfo {
-            kind: "final",
-            input_tokens: input,
-            output_tokens: output,
-            cache_read_tokens: cache_read,
-            cache_creation_tokens: cache_creation,
-            cost_usd: *total_cost_usd,
-            duration_ms: *duration_ms,
-            num_turns: *num_turns,
-            model: model.clone(),
-            stop_reason: stop_reason.clone(),
-        })
-    }
-
-    fn final_text(&self) -> Option<String> {
-        match self {
-            CodexStreamEvent::Result { result, .. } => Some(result.clone()),
-            CodexStreamEvent::Error { error } => error
-                .message
-                .clone()
-                .or_else(|| Some("Unknown error".to_string())),
             _ => None,
         }
     }
@@ -573,84 +325,54 @@ fn parse_stream_line(line: &str) -> Option<CodexStreamEvent> {
     if line.is_empty() {
         return None;
     }
+    
+    // Try to parse as a Codex event
     if let Ok(evt) = serde_json::from_str::<CodexStreamEvent>(line) {
         return Some(evt);
     }
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-        if let Some(result) = val.get("result").and_then(|r| r.as_str()) {
-            return Some(CodexStreamEvent::Result {
-                result: result.to_string(),
-                total_cost_usd: val.get("total_cost_usd").and_then(|v| v.as_f64()),
-                duration_ms: val.get("duration_ms").and_then(|v| v.as_u64()),
-                num_turns: val.get("num_turns").and_then(|v| v.as_u64()),
-                model: val.get("model").and_then(|v| v.as_str()).map(String::from),
-                stop_reason: val
-                    .get("stop_reason")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                model_usage: val.get("modelUsage").cloned(),
-            });
-        }
-        if val.get("type").is_some() {
-            if let Ok(evt) = serde_json::from_value::<CodexStreamEvent>(val) {
-                return Some(evt);
-            }
-        }
-    }
+    
     None
 }
 
 pub fn parse_line(line: &str) -> Vec<NormalizedEvent> {
+    if shared::is_ignorable_stream_line(line) {
+        return vec![];
+    }
+    
     let Some(evt) = parse_stream_line(line) else {
         return vec![];
     };
 
     let mut out = Vec::new();
-    let label = event_type_label(&evt);
 
+    // Handle text from item.completed events
     if let Some(text) = evt.streaming_text() {
+        // Check if this is an agent_message (final response)
+        let is_agent_message = matches!(&evt, CodexStreamEvent::ItemCompleted { item } if item.item_type == "agent_message");
+        
         out.push(NormalizedEvent::TextDelta {
             text,
-            event_type: label,
+            event_type: if is_agent_message { "final" } else { "delta" },
         });
+        
+        // If it's an agent message, also emit a Final event
+        if is_agent_message {
+            out.push(NormalizedEvent::Final {
+                text: evt.streaming_text().unwrap_or_default(),
+            });
+        }
     }
 
-    if let Some(thinking) = evt.streaming_thinking() {
-        out.push(NormalizedEvent::ThinkingText { content: thinking });
-    }
-
-    for te in evt.tool_events() {
-        out.push(NormalizedEvent::Tool(te));
-    }
-
-    if let Some(tokens) = evt.thinking_tokens() {
-        out.push(NormalizedEvent::ThinkingTokens { tokens });
-    }
-
+    // Handle usage from turn.completed events
     if let Some(u) = evt.usage() {
         out.push(NormalizedEvent::Usage(u));
     }
 
-    if let Some(text) = evt.final_text() {
-        if matches!(evt, CodexStreamEvent::Result { .. }) {
-            out.push(NormalizedEvent::Final { text });
-        } else if matches!(evt, CodexStreamEvent::Error { .. }) {
+    // Handle errors
+    if evt.is_error() {
+        if let Some(text) = evt.final_text() {
             out.push(NormalizedEvent::Error { message: text });
         }
-    }
-
-    // Permission request: the agent wants to run a tool and needs user approval.
-    if let CodexStreamEvent::PermissionRequest {
-        id,
-        tool_name,
-        input,
-    } = &evt
-    {
-        out.push(NormalizedEvent::PermissionRequest {
-            id: id.clone().unwrap_or_default(),
-            tool_name: tool_name.clone().unwrap_or_default(),
-            input: input.clone().unwrap_or(serde_json::Value::Null),
-        });
     }
 
     out
