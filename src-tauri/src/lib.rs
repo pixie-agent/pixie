@@ -208,6 +208,9 @@ pub struct ScheduledTask {
     pub prompt: String,
     pub schedule: ScheduleSpec,
     pub enabled: bool,
+    /// Engine to use for this task. Defaults to "builtin".
+    #[serde(default = "default_task_engine")]
+    pub engine: String,
     /// ISO-8601 (UTC) of the run we are currently waiting for. None when disabled.
     #[serde(default)]
     pub next_run: Option<String>,
@@ -337,6 +340,10 @@ pub struct LoopTask {
 
 fn default_loop_status() -> LoopTaskStatus {
     LoopTaskStatus::Idle
+}
+
+fn default_task_engine() -> String {
+    "builtin".to_string()
 }
 
 /// Record of a single iteration within a loop cycle.
@@ -2865,7 +2872,7 @@ async fn run_task_headless(app: AppHandle, task: ScheduledTask, conversation_id:
     }
 
     let child = match spawn_headless(
-        "claude",
+        &task.engine,
         &conversation_id,
         &task.prompt,
         Some(&task.workspace),

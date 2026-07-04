@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { ScheduledTask, ScheduleSpec, TaskRunRecord, WorkspaceState } from "../types";
+import type { ScheduledTask, ScheduleSpec, TaskRunRecord, WorkspaceState, AgentEngineId, AGENT_ENGINES } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
 
 interface ScheduledTasksPanelProps {
@@ -65,6 +65,7 @@ interface Draft {
   minutes: number;
   hours: number;
   enabled: boolean;
+  engine: AgentEngineId;
 }
 
 function emptyDraft(defaultWorkspace: string): Draft {
@@ -79,6 +80,7 @@ function emptyDraft(defaultWorkspace: string): Draft {
     minutes: 30,
     hours: 1,
     enabled: true,
+    engine: "builtin",
   };
 }
 
@@ -94,6 +96,7 @@ function taskToDraft(t: ScheduledTask): Draft {
     minutes: t.schedule.type === "every_n_minutes" ? t.schedule.minutes : 30,
     hours: t.schedule.type === "every_n_hours" ? t.schedule.hours : 1,
     enabled: t.enabled,
+    engine: t.engine,
   };
 }
 
@@ -164,6 +167,7 @@ export default function ScheduledTasksPanel({
           prompt: draft.prompt.trim(),
           schedule: spec,
           enabled: draft.enabled,
+          engine: draft.engine,
           next_run: null,
           last_run: null,
         });
@@ -174,6 +178,7 @@ export default function ScheduledTasksPanel({
           prompt: draft.prompt.trim(),
           schedule: spec,
           enabled: draft.enabled,
+          engine: draft.engine,
         });
       }
       setDraft(null);
@@ -277,6 +282,21 @@ export default function ScheduledTasksPanel({
                   onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
                   placeholder="The instruction the AI runs on schedule"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1">
+                  Engine
+                </label>
+                <select
+                  className={inputClass}
+                  value={draft.engine}
+                  onChange={(e) => setDraft({ ...draft, engine: e.target.value as AgentEngineId })}
+                >
+                  {AGENT_ENGINES.map((e) => (
+                    <option key={e.id} value={e.id}>{e.label}</option>
+                  ))}
+                </select>
               </div>
 
               <div>

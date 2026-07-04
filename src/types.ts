@@ -341,6 +341,8 @@ export interface ScheduledTask {
   prompt: string;
   schedule: ScheduleSpec;
   enabled: boolean;
+  /** Engine to use for this task. Defaults to 'builtin'. */
+  engine: AgentEngineId;
   /** ISO-8601 (UTC) of the next pending fire, or null when disabled. */
   next_run: string | null;
   /** ISO-8601 (UTC) of the last fire. */
