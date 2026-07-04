@@ -184,6 +184,17 @@ function buildExitConditions(d: Draft): LoopExitCondition[] {
     });
 }
 
+function hasMaxIterationsGuardrail(conditions: LoopExitCondition[]): boolean {
+  return conditions.some((c) => c.type === "max_iterations");
+}
+
+function ensurePreviousResultPlaceholder(template: string): string {
+  if (template.includes("{{previous_result}}")) return template;
+  const trimmed = template.trimEnd();
+  const suffix = "Previous result:\n{{previous_result}}";
+  return trimmed ? `${trimmed}\n\n${suffix}` : suffix;
+}
+
 function buildSchedule(d: Draft): ScheduleSpec | null {
   if (!d.hasSchedule) return null;
   switch (d.scheduleType) {
@@ -202,28 +213,31 @@ function buildSchedule(d: Draft): ScheduleSpec | null {
 function taskToDraft(t: LoopTask, defaultWorkspace: string): Draft {
   const hasSchedule = !!t.schedule;
   const scheduleType = t.schedule?.type ?? "daily_time";
+  const exitConditions: ExitConditionDraft[] = t.exit_conditions.length > 0
+    ? t.exit_conditions.map((ec) => ({
+        type: ec.type,
+        // `max` holds the numeric threshold for both max_iterations and
+        // output_unchanged (streak); pattern is only for regex conditions.
+        max:
+          ec.type === "max_iterations"
+            ? ec.max
+            : ec.type === "output_unchanged"
+              ? ec.streak
+              : 1,
+        pattern: ec.type === "no_error_pattern" || ec.type === "success_pattern" ? ec.pattern : "",
+      }))
+    : [{ type: "output_unchanged", max: 1, pattern: "" }];
+  if (!exitConditions.some((ec) => ec.type === "max_iterations")) {
+    exitConditions.push({ type: "max_iterations", max: 50, pattern: "" });
+  }
   return {
     id: t.id,
     name: t.name,
     workspace: t.workspace || defaultWorkspace,
     engine: t.engine,
     initial_prompt: t.initial_prompt,
-    result_template: t.result_template,
-    exitConditions:
-      t.exit_conditions.length > 0
-        ? t.exit_conditions.map((ec) => ({
-            type: ec.type,
-            // `max` holds the numeric threshold for both max_iterations and
-            // output_unchanged (streak); pattern is only for regex conditions.
-            max:
-              ec.type === "max_iterations"
-                ? ec.max
-                : ec.type === "output_unchanged"
-                  ? ec.streak
-                  : 1,
-            pattern: ec.type === "no_error_pattern" || ec.type === "success_pattern" ? ec.pattern : "",
-          }))
-        : [{ type: "output_unchanged", max: 1, pattern: "" }],
+    result_template: ensurePreviousResultPlaceholder(t.result_template),
+    exitConditions,
     hasSchedule,
     scheduleType,
     hour: t.schedule && (t.schedule.type === "daily_time" || t.schedule.type === "weekdays_time") ? t.schedule.hour : 9,
@@ -315,8 +329,14 @@ export default function LoopTasksPanel({
     if (!draft.workspace) return setError("Pick a workspace");
     if (!draft.initial_prompt.trim()) return setError("Initial prompt is required");
     if (!draft.result_template.trim()) return setError("Result template is required");
+    if (!draft.result_template.includes("{{previous_result}}")) {
+      return setError("Result template must include {{previous_result}}");
+    }
     const exitConditions = buildExitConditions(draft);
     if (exitConditions.length === 0) return setError("At least one exit condition is required");
+    if (!hasMaxIterationsGuardrail(exitConditions)) {
+      return setError("Add a max iterations condition as a safety guardrail");
+    }
     const schedule = buildSchedule(draft);
     try {
       if (draft.id) {
@@ -666,7 +686,7 @@ export default function LoopTasksPanel({
                 onClick={saveDraft}
                 className="flex-1 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
               >
-                Create
+                {draft.id ? "Save" : "Create"}
               </button>
               <button
                 onClick={() => { setDraft(null); setError(null); }}
@@ -720,6 +740,11 @@ export default function LoopTasksPanel({
                     <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(t.status)}`}>
                       {statusLabel(t.status)}
                     </span>
+                    {!t.enabled && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                        Disabled
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--text-secondary)]">
                     <span>{workspaceName(t.workspace)}</span>
@@ -765,6 +790,11 @@ export default function LoopTasksPanel({
                 <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(selectedTask.status)}`}>
                   {statusLabel(selectedTask.status)}
                 </span>
+                {!selectedTask.enabled && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                    Disabled
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => setSelectedTaskId(null)}
@@ -801,7 +831,8 @@ export default function LoopTasksPanel({
                   selectedTask.status === "error") && (
                   <button
                     onClick={startSelected}
-                    disabled={!!busyId}
+                    disabled={!!busyId || !selectedTask.enabled}
+                    title={!selectedTask.enabled ? "Enable this loop before starting it" : undefined}
                     className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-[11px] font-medium transition-colors"
                   >
                     {selectedTask.iteration > 0 ? "Restart" : "Start"}
@@ -831,7 +862,8 @@ export default function LoopTasksPanel({
                   <>
                     <button
                       onClick={() => runAction(selectedTask.id, onResume)}
-                      disabled={!!busyId}
+                      disabled={!!busyId || !selectedTask.enabled}
+                      title={!selectedTask.enabled ? "Enable this loop before resuming it" : undefined}
                       className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-[11px] font-medium transition-colors"
                     >
                       Resume
@@ -840,7 +872,8 @@ export default function LoopTasksPanel({
                       onClick={() =>
                         setResumeNoteId(resumeNoteId === selectedTask.id ? null : selectedTask.id)
                       }
-                      disabled={!!busyId}
+                      disabled={!!busyId || !selectedTask.enabled}
+                      title={!selectedTask.enabled ? "Enable this loop before resuming it" : undefined}
                       className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 disabled:opacity-40 text-[11px] text-[var(--text-primary)] transition-colors"
                     >
                       Resume with note…
@@ -874,26 +907,24 @@ export default function LoopTasksPanel({
                     Edit
                   </button>
                 )}
-                {/* Enable toggle — gates the auto-schedule (only meaningful when scheduled). */}
-                {selectedTask.schedule && (
-                  <label className="flex items-center gap-1.5 ml-auto text-[11px] text-[var(--text-secondary)] cursor-pointer">
-                    <span>{selectedTask.enabled ? "Auto on" : "Auto off"}</span>
-                    <button
-                      onClick={() => runAction(selectedTask.id, (id) => onToggle(id, !selectedTask.enabled))}
-                      disabled={!!busyId}
-                      title={selectedTask.enabled ? "Disable schedule" : "Enable schedule"}
-                      className={`w-9 h-5 rounded-full transition-colors relative shrink-0 ${
-                        selectedTask.enabled ? "bg-[var(--accent)]" : "bg-[var(--bg-tertiary)]"
+                {/* Enable toggle — gates both manual starts and automatic schedules. */}
+                <label className="flex items-center gap-1.5 ml-auto text-[11px] text-[var(--text-secondary)] cursor-pointer">
+                  <span>{selectedTask.enabled ? "Enabled" : "Disabled"}</span>
+                  <button
+                    onClick={() => runAction(selectedTask.id, (id) => onToggle(id, !selectedTask.enabled))}
+                    disabled={!!busyId}
+                    title={selectedTask.enabled ? "Disable loop" : "Enable loop"}
+                    className={`w-9 h-5 rounded-full transition-colors relative shrink-0 ${
+                      selectedTask.enabled ? "bg-[var(--accent)]" : "bg-[var(--bg-tertiary)]"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                        selectedTask.enabled ? "left-4" : "left-0.5"
                       }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
-                          selectedTask.enabled ? "left-4" : "left-0.5"
-                        }`}
-                      />
-                    </button>
-                  </label>
-                )}
+                    />
+                  </button>
+                </label>
               </div>
 
               {/* Resume-with-note inline input (human-in-the-loop). */}
@@ -915,7 +946,8 @@ export default function LoopTasksPanel({
                     </button>
                     <button
                       onClick={() => submitResumeWithNote(selectedTask.id)}
-                      disabled={!resumeNoteText.trim() || !!busyId}
+                      disabled={!resumeNoteText.trim() || !!busyId || !selectedTask.enabled}
+                      title={!selectedTask.enabled ? "Enable this loop before resuming it" : undefined}
                       className="px-3 py-1 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-[11px] font-medium transition-colors"
                     >
                       Resume

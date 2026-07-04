@@ -335,13 +335,23 @@ pub struct LoopTask {
     /// ISO-8601 (UTC) of the last scheduled fire.
     #[serde(default)]
     pub last_run: Option<String>,
+    #[serde(default = "default_loop_enabled")]
     pub enabled: bool,
     /// ISO-8601 (UTC) creation timestamp.
+    #[serde(default = "default_created_at")]
     pub created_at: String,
 }
 
 fn default_loop_status() -> LoopTaskStatus {
     LoopTaskStatus::Idle
+}
+
+fn default_loop_enabled() -> bool {
+    true
+}
+
+fn default_created_at() -> String {
+    Utc::now().to_rfc3339()
 }
 
 fn default_task_engine() -> String {
@@ -3471,6 +3481,12 @@ fn validate_exit_conditions(conditions: &[LoopExitCondition]) -> Result<(), Stri
     if conditions.is_empty() {
         return Err("At least one exit condition is required".into());
     }
+    let has_iteration_cap = conditions
+        .iter()
+        .any(|c| matches!(c, LoopExitCondition::MaxIterations { .. }));
+    if !has_iteration_cap {
+        return Err("Loop tasks must include a max_iterations guardrail".into());
+    }
     for c in conditions {
         match c {
             LoopExitCondition::MaxIterations { max } => {
@@ -3495,6 +3511,49 @@ fn validate_exit_conditions(conditions: &[LoopExitCondition]) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+fn validate_loop_task(task: &LoopTask) -> Result<(), String> {
+    if task.name.trim().is_empty() {
+        return Err("Loop name is required".into());
+    }
+    if task.workspace.trim().is_empty() {
+        return Err("Loop workspace is required".into());
+    }
+    if task.initial_prompt.trim().is_empty() {
+        return Err("Initial prompt is required".into());
+    }
+    if task.result_template.trim().is_empty() {
+        return Err("Result template is required".into());
+    }
+    if !task.result_template.contains("{{previous_result}}") {
+        return Err("Result template must include {{previous_result}}".into());
+    }
+    validate_exit_conditions(&task.exit_conditions)?;
+    if let Some(schedule) = task.schedule.as_ref() {
+        validate_schedule(schedule)?;
+    }
+    Ok(())
+}
+
+/// Frontend edits replace the user-authored loop definition but must not reset
+/// runtime state. Runtime fields are owned by the loop executor.
+fn merge_loop_task_update(existing: &LoopTask, mut incoming: LoopTask) -> LoopTask {
+    incoming.id = existing.id.clone();
+    incoming.created_at = existing.created_at.clone();
+    incoming.iteration = existing.iteration;
+    incoming.status = existing.status.clone();
+    incoming.last_result = existing.last_result.clone();
+    incoming.unchanged_streak = existing.unchanged_streak;
+    incoming.last_run = existing.last_run.clone();
+    incoming.next_run = match (incoming.enabled, incoming.schedule.as_ref()) {
+        (true, Some(schedule)) if !matches!(existing.status, LoopTaskStatus::Running) => {
+            compute_next_run(schedule, Utc::now())
+        }
+        (true, Some(_)) => existing.next_run.clone(),
+        _ => None,
+    };
+    incoming
 }
 
 /// Collapse all runs of whitespace to single spaces and trim — used to compare
@@ -3549,6 +3608,13 @@ fn check_exit_conditions(
 
 fn should_schedule_next_loop_cycle(status: &LoopTaskStatus, enabled: bool) -> bool {
     enabled && matches!(status, LoopTaskStatus::Completed)
+}
+
+fn ensure_loop_task_can_run(task: &LoopTask) -> Result<(), String> {
+    if !task.enabled {
+        return Err("Loop task is disabled".into());
+    }
+    Ok(())
 }
 
 /// Try to read PROGRESS.md from the workspace directory (State primitive).
@@ -3609,7 +3675,7 @@ async fn list_loop_tasks(app: AppHandle) -> Result<Vec<LoopTask>, String> {
 
 #[tauri::command]
 async fn create_loop_task(app: AppHandle, mut task: LoopTask) -> Result<LoopTask, String> {
-    validate_exit_conditions(&task.exit_conditions)?;
+    validate_loop_task(&task)?;
     if task.id.is_empty() {
         task.id = uuid::Uuid::new_v4().to_string();
     }
@@ -3620,6 +3686,7 @@ async fn create_loop_task(app: AppHandle, mut task: LoopTask) -> Result<LoopTask
     task.status = LoopTaskStatus::Idle;
     task.last_result = None;
     task.unchanged_streak = 0;
+    task.next_run = None;
     // If scheduled + enabled, compute first next_run.
     if task.enabled {
         if let Some(sched) = task.schedule.as_ref() {
@@ -3634,12 +3701,23 @@ async fn create_loop_task(app: AppHandle, mut task: LoopTask) -> Result<LoopTask
 
 #[tauri::command]
 async fn update_loop_task(app: AppHandle, task: LoopTask) -> Result<(), String> {
-    validate_exit_conditions(&task.exit_conditions)?;
+    validate_loop_task(&task)?;
     let mut tasks = load_loop_tasks(&app);
     let idx = tasks.iter().position(|t| t.id == task.id);
     if let Some(idx) = idx {
-        tasks[idx] = task;
+        let should_cancel = matches!(tasks[idx].status, LoopTaskStatus::Running) && !task.enabled;
+        tasks[idx] = merge_loop_task_update(&tasks[idx], task);
+        if should_cancel {
+            tasks[idx].status = LoopTaskStatus::Aborted;
+        }
         persist_loop_tasks(&app, &tasks)?;
+        if should_cancel {
+            let _ = app.emit(
+                "loop-cycle-complete",
+                serde_json::json!({ "task_id": tasks[idx].id.clone(), "status": "aborted" }),
+            );
+            cancel_active_loop_iteration(&app, &tasks[idx].id).await;
+        }
     } else {
         return Err("Loop task not found".into());
     }
@@ -3668,8 +3746,13 @@ async fn delete_loop_task(app: AppHandle, task_id: String) -> Result<(), String>
 async fn toggle_loop_task(app: AppHandle, task_id: String, enabled: bool) -> Result<(), String> {
     let mut tasks = load_loop_tasks(&app);
     let task = tasks.iter_mut().find(|t| t.id == task_id);
+    let should_cancel;
     if let Some(task) = task {
+        should_cancel = !enabled && matches!(task.status, LoopTaskStatus::Running);
         task.enabled = enabled;
+        if should_cancel {
+            task.status = LoopTaskStatus::Aborted;
+        }
         task.next_run = match (enabled, task.schedule.as_ref()) {
             (true, Some(sched)) => compute_next_run(sched, Utc::now()),
             _ => None,
@@ -3677,6 +3760,13 @@ async fn toggle_loop_task(app: AppHandle, task_id: String, enabled: bool) -> Res
         persist_loop_tasks(&app, &tasks)?;
     } else {
         return Err("Loop task not found".into());
+    }
+    if should_cancel {
+        let _ = app.emit(
+            "loop-cycle-complete",
+            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted" }),
+        );
+        cancel_active_loop_iteration(&app, &task_id).await;
     }
     Ok(())
 }
@@ -4113,29 +4203,42 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
     // Set initial status to Running and send a notification.
     {
         let mut tasks = load_loop_tasks(&app);
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.status = LoopTaskStatus::Running;
-            // Capture name/workspace before persisting (they won't change).
-            let task_name = task.name.clone();
-            let dir_label = basename(&task.workspace);
-            log::info!(
-                "[loop] '{}' cycle started: workspace={}, engine={:?}, {} exit condition(s)",
-                task_name,
-                task.workspace,
-                task.engine,
-                task.exit_conditions.len()
-            );
-            let _ = persist_loop_tasks(&app, &tasks);
-
-            use tauri_plugin_notification::NotificationExt;
-            let title = format!("🔄 {}", task_name);
-            let _ = app
-                .notification()
-                .builder()
-                .title(&title)
-                .body(format!("Loop starting in {}…", dir_label))
-                .show();
+        let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            log::error!("[loop] task {} disappeared before cycle start", task_id);
+            return;
+        };
+        if !task.enabled
+            || matches!(
+                task.status,
+                LoopTaskStatus::Paused
+                    | LoopTaskStatus::Aborted
+                    | LoopTaskStatus::Completed
+                    | LoopTaskStatus::Error
+            )
+        {
+            return;
         }
+        task.status = LoopTaskStatus::Running;
+        // Capture name/workspace before persisting (they won't change).
+        let task_name = task.name.clone();
+        let dir_label = basename(&task.workspace);
+        log::info!(
+            "[loop] '{}' cycle started: workspace={}, engine={:?}, {} exit condition(s)",
+            task_name,
+            task.workspace,
+            task.engine,
+            task.exit_conditions.len()
+        );
+        let _ = persist_loop_tasks(&app, &tasks);
+
+        use tauri_plugin_notification::NotificationExt;
+        let title = format!("🔄 {}", task_name);
+        let _ = app
+            .notification()
+            .builder()
+            .title(&title)
+            .body(format!("Loop starting in {}…", dir_label))
+            .show();
     }
 
     let _ = app.emit(
@@ -4181,13 +4284,17 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
         let outcome = run_loop_iteration(&app, &fresh_task, conversation_id.clone()).await;
 
         // Update the task's iteration count, last_result, and convergence streak.
+        let mut outcome_applied = false;
         {
             let mut tasks = load_loop_tasks(&app);
             if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
-                t.iteration += 1;
-                t.last_result = Some(outcome.result.clone());
-                t.unchanged_streak = outcome.unchanged_streak;
-                let _ = persist_loop_tasks(&app, &tasks);
+                if matches!(t.status, LoopTaskStatus::Running | LoopTaskStatus::Idle) && t.enabled {
+                    t.iteration += 1;
+                    t.last_result = Some(outcome.result.clone());
+                    t.unchanged_streak = outcome.unchanged_streak;
+                    outcome_applied = true;
+                    let _ = persist_loop_tasks(&app, &tasks);
+                }
             }
         }
 
@@ -4212,9 +4319,7 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
             {
                 let mut tasks = load_loop_tasks(&app);
                 if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
-                    if matches!(t.status, LoopTaskStatus::Running | LoopTaskStatus::Idle)
-                        && t.enabled
-                    {
+                    if outcome_applied {
                         t.status = LoopTaskStatus::Error;
                         should_emit_error = true;
                         let _ = persist_loop_tasks(&app, &tasks);
@@ -4227,6 +4332,10 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
                     serde_json::json!({ "task_id": task_id.clone(), "status": "error" }),
                 );
             }
+            break;
+        }
+
+        if !outcome_applied {
             break;
         }
 
@@ -4317,6 +4426,7 @@ async fn start_loop_task(app: AppHandle, task_id: String) -> Result<String, Stri
     if matches!(task.status, LoopTaskStatus::Running) {
         return Err("Loop task is already running".into());
     }
+    ensure_loop_task_can_run(&task)?;
 
     let guard = try_register_running_loop(&task_id)?;
 
@@ -4351,6 +4461,7 @@ async fn pause_loop_task(app: AppHandle, task_id: String) -> Result<(), String> 
     } else {
         return Err("Loop task not found".into());
     }
+    cancel_active_loop_iteration(&app, &task_id).await;
     Ok(())
 }
 
@@ -4364,6 +4475,7 @@ async fn resume_loop_task(app: AppHandle, task_id: String) -> Result<(), String>
     if !matches!(task.status, LoopTaskStatus::Paused) {
         return Err("Loop task is not paused".into());
     }
+    ensure_loop_task_can_run(&task)?;
 
     let guard = try_register_running_loop(&task_id)?;
 
@@ -4420,6 +4532,7 @@ async fn resume_loop_task_with_prompt(
     if !matches!(task.status, LoopTaskStatus::Paused) {
         return Err("Loop task is not paused".into());
     }
+    ensure_loop_task_can_run(&task)?;
 
     // Inject the user's prompt by appending it to last_result.
     // The next iteration will use result_template with this enriched context.
@@ -4481,6 +4594,7 @@ async fn check_and_run_due_loops(app: &AppHandle) {
     let now = Utc::now();
     let mut tasks = load_loop_tasks(app);
     let mut changed = false;
+    let mut starts: Vec<(String, RunningLoopGuard)> = Vec::new();
 
     for task in tasks.iter_mut() {
         if !task.enabled {
@@ -4536,21 +4650,24 @@ async fn check_and_run_due_loops(app: &AppHandle) {
         task.last_result = None;
         task.unchanged_streak = 0;
         task.status = LoopTaskStatus::Idle;
-        task.last_run = Some(now.to_rfc3339());
-        task.next_run = compute_next_run(&sched, now);
+        task.next_run = None;
         changed = true;
 
-        let task_id = task.id.clone();
-        let app_for_run = app.clone();
-        tauri::async_runtime::spawn(async move {
-            run_loop_cycle(app_for_run, task_id, guard).await;
-        });
+        starts.push((task.id.clone(), guard));
     }
 
     if changed {
         if let Err(e) = persist_loop_tasks(app, &tasks) {
             log::error!("[loop scheduler] persist failed: {}", e);
+            return;
         }
+    }
+
+    for (task_id, guard) in starts {
+        let app_for_run = app.clone();
+        tauri::async_runtime::spawn(async move {
+            run_loop_cycle(app_for_run, task_id, guard).await;
+        });
     }
 }
 
@@ -5030,6 +5147,139 @@ mod tests {
             exit_met: false,
             progress_snapshot: None,
         }
+    }
+
+    fn loop_task(id: &str) -> LoopTask {
+        LoopTask {
+            id: id.to_string(),
+            name: "Test loop".to_string(),
+            workspace: std::env::temp_dir().to_string_lossy().to_string(),
+            engine: AgentEngineId::Builtin,
+            initial_prompt: "Run the first pass".to_string(),
+            result_template: "Continue from:\n{{previous_result}}".to_string(),
+            exit_conditions: vec![LoopExitCondition::MaxIterations { max: 5 }],
+            iteration: 0,
+            status: LoopTaskStatus::Idle,
+            last_result: None,
+            unchanged_streak: 0,
+            schedule: None,
+            next_run: None,
+            last_run: None,
+            enabled: true,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn loop_validation_requires_bounded_iteration_guardrail() {
+        let mut task = loop_task("guardrail");
+        task.exit_conditions = vec![LoopExitCondition::ManualOnly];
+
+        let err = validate_loop_task(&task).expect_err("unbounded loops must be rejected");
+        assert!(
+            err.contains("max_iterations"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn loop_validation_requires_previous_result_placeholder() {
+        let mut task = loop_task("template");
+        task.result_template = "Continue without the previous output".to_string();
+
+        let err = validate_loop_task(&task).expect_err("invalid template must be rejected");
+        assert!(
+            err.contains("previous_result"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn disabled_loop_task_cannot_run() {
+        let mut task = loop_task("disabled");
+        task.enabled = false;
+
+        let err = ensure_loop_task_can_run(&task).expect_err("disabled loops must not run");
+        assert!(
+            err.contains("disabled"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn loop_task_update_preserves_runtime_state() {
+        let mut existing = loop_task("preserve");
+        existing.status = LoopTaskStatus::Running;
+        existing.iteration = 7;
+        existing.last_result = Some("current result".to_string());
+        existing.unchanged_streak = 2;
+        existing.last_run = Some("2026-01-01T00:00:00Z".to_string());
+
+        let mut incoming = loop_task("preserve");
+        incoming.name = "Renamed loop".to_string();
+        incoming.iteration = 0;
+        incoming.status = LoopTaskStatus::Idle;
+        incoming.last_result = None;
+        incoming.unchanged_streak = 0;
+
+        let merged = merge_loop_task_update(&existing, incoming);
+
+        assert_eq!(merged.name, "Renamed loop");
+        assert!(matches!(merged.status, LoopTaskStatus::Running));
+        assert_eq!(merged.iteration, 7);
+        assert_eq!(merged.last_result.as_deref(), Some("current result"));
+        assert_eq!(merged.unchanged_streak, 2);
+        assert_eq!(merged.last_run.as_deref(), Some("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn loop_task_update_clears_next_run_when_schedule_removed() {
+        let mut existing = loop_task("unschedule");
+        existing.schedule = Some(ScheduleSpec::EveryNHours { hours: 1 });
+        existing.next_run = Some("2026-01-01T01:00:00Z".to_string());
+
+        let mut incoming = existing.clone();
+        incoming.schedule = None;
+
+        let merged = merge_loop_task_update(&existing, incoming);
+
+        assert!(merged.schedule.is_none());
+        assert!(merged.next_run.is_none());
+    }
+
+    #[test]
+    fn disabled_loop_task_update_clears_next_run_even_with_schedule() {
+        let mut existing = loop_task("disable-scheduled");
+        existing.schedule = Some(ScheduleSpec::EveryNHours { hours: 1 });
+        existing.next_run = Some("2026-01-01T01:00:00Z".to_string());
+
+        let mut incoming = existing.clone();
+        incoming.enabled = false;
+
+        let merged = merge_loop_task_update(&existing, incoming);
+
+        assert!(!merged.enabled);
+        assert!(merged.schedule.is_some());
+        assert!(merged.next_run.is_none());
+    }
+
+    #[test]
+    fn disabling_running_loop_update_marks_aborted() {
+        let mut existing = loop_task("disable-running");
+        existing.status = LoopTaskStatus::Running;
+
+        let mut incoming = existing.clone();
+        incoming.enabled = false;
+
+        let should_cancel = matches!(existing.status, LoopTaskStatus::Running) && !incoming.enabled;
+        let mut merged = merge_loop_task_update(&existing, incoming);
+        if should_cancel {
+            merged.status = LoopTaskStatus::Aborted;
+        }
+
+        assert!(should_cancel);
+        assert!(!merged.enabled);
+        assert!(matches!(merged.status, LoopTaskStatus::Aborted));
     }
 
     #[test]

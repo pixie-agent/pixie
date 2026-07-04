@@ -113,6 +113,7 @@ export function useLoopTasks() {
           iteration: 0,
           status: "idle" as const,
           last_result: null,
+          unchanged_streak: 0,
           next_run: null,
           last_run: null,
           created_at: "",

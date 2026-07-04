@@ -54,7 +54,12 @@ function SplashScreen() {
         alt="Pixie"
         className="w-16 h-16 rounded-2xl mb-6"
       />
-      <h1 className="text-xl font-semibold text-[var(--text-primary)] mb-3">Pixie</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-xl font-semibold text-[var(--text-primary)]">Pixie</h1>
+        <span className="px-2 py-1 text-xs font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded">
+          BETA
+        </span>
+      </div>
       <div className="flex items-center gap-2">
         <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
         <span className="text-sm text-[var(--text-secondary)]">Initializing...</span>
@@ -858,10 +863,15 @@ ${entries}
                       className="text-sm font-semibold text-[var(--text-primary)] bg-[var(--bg-primary)] border border-[var(--accent)] rounded px-1 py-0 outline-none w-full"
                     />
                   ) : (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-2">
                       <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
                         {activeConversation?.title ?? "Pixie"}
                       </h1>
+                      {!activeConversation && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded shrink-0">
+                          BETA
+                        </span>
+                      )}
                       {activeConversation && (
                         <button
                           onClick={() => {

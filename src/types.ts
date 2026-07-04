@@ -396,6 +396,8 @@ export interface LoopTask {
   status: LoopTaskStatus;
   /** Raw output of the most recent iteration. */
   last_result: string | null;
+  /** Consecutive unchanged outputs for output_unchanged convergence tracking. */
+  unchanged_streak: number;
   /** Optional schedule for automatic triggering. */
   schedule?: ScheduleSpec | null;
   next_run: string | null;
@@ -483,4 +485,3 @@ export interface SearchIndexStats {
   doc_count: number;
   term_count: number;
 }
-
