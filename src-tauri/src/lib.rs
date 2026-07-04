@@ -251,6 +251,8 @@ pub enum AgentEngineId {
     Claude,
     Cursor,
     Codebuddy,
+    Builtin,
+    Codex,
 }
 
 /// An exit condition for a loop task. When any condition is met, the loop
@@ -3436,6 +3438,8 @@ async fn run_loop_iteration(
         AgentEngineId::Claude => "claude",
         AgentEngineId::Cursor => "cursor",
         AgentEngineId::Codebuddy => "codebuddy",
+        AgentEngineId::Builtin => "builtin",
+        AgentEngineId::Codex => "codex",
     };
 
     log::info!(
