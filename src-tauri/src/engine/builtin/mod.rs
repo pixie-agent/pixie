@@ -20,9 +20,8 @@ use pixie_pi::{AgentEvent, AgentSession, Message, Model, ThinkingLevel, UserMess
 
 use super::{EngineStatus, NormalizedEvent, ToolEvent, ToolEventKind, UsageInfo};
 
-/// Default model for the builtin engine — this is just a placeholder ID.
-/// The actual model is determined by ANTHROPIC_MODEL config at runtime.
-pub const DEFAULT_MODEL: &str = "builtin";
+/// Fallback Anthropic model for the builtin engine when no model is configured.
+pub const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
 
 // ---------------------------------------------------------------------------
 // BuiltinSession — wraps a pixie_pi::AgentSession
@@ -93,10 +92,23 @@ impl BuiltinSession {
         message: &str,
         // TODO: forward image blocks to pixie_pi::UserMessage once its API supports them.
         _images: &[String],
+        emit: impl FnMut(NormalizedEvent),
+    ) -> Result<(String, bool)> {
+        self.run_turn_with_cancel_token(message, _images, CancellationToken::new(), emit)
+            .await
+    }
+
+    /// Run a turn using a caller-owned cancellation token. Background loops use
+    /// this so stop/discard can cancel an in-process builtin turn immediately.
+    pub async fn run_turn_with_cancel_token(
+        &mut self,
+        message: &str,
+        // TODO: forward image blocks to pixie_pi::UserMessage once its API supports them.
+        _images: &[String],
+        cancel_token: CancellationToken,
         mut emit: impl FnMut(NormalizedEvent),
     ) -> Result<(String, bool)> {
-        // Fresh cancel token per turn (the previous one was cancelled or done).
-        self.cancel_token = CancellationToken::new();
+        self.cancel_token = cancel_token;
 
         emit(NormalizedEvent::SessionEstablished {
             session_id: self.session_id.clone(),
@@ -186,9 +198,10 @@ pub async fn check_available() -> EngineStatus {
 /// "default" model option. The actual model ID is configured via
 /// ANTHROPIC_MODEL environment variable or config file.
 pub async fn list_models() -> Vec<(String, String)> {
-    vec![
-        ("builtin".to_string(), "Default (configured via ANTHROPIC_MODEL)".to_string()),
-    ]
+    vec![(
+        "builtin".to_string(),
+        "Default (configured via ANTHROPIC_MODEL)".to_string(),
+    )]
 }
 
 pub fn engine_display_name() -> &'static str {
@@ -340,7 +353,7 @@ fn resolve_builtin_model(model: Option<&str>, base_url: Option<&str>) -> Model {
         max_tokens: 64_000,
         context_window: 200_000,
         base_url,
-        reasoning: true,  // Enable reasoning for better performance
+        reasoning: true, // Enable reasoning for better performance
         force_adaptive_thinking: false,
         supports_temperature: false,
         input_cost_per_mtok: 3.0,
@@ -391,7 +404,6 @@ pub fn get_base_url() -> Option<String> {
 }
 
 /// Model priority: builtin config → claude config → ANTHROPIC_MODEL env → default.
-/// Note: DEFAULT_MODEL is a fallback placeholder; we use a real model ID here.
 pub fn get_model() -> String {
     use super::shared::get_model_config_value;
     get_model_config_value("builtin", "ANTHROPIC_MODEL")
@@ -401,5 +413,15 @@ pub fn get_model() -> String {
                 .ok()
                 .filter(|v| !v.is_empty())
         })
-        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_model_is_a_real_model_id_not_ui_placeholder() {
+        assert_ne!(DEFAULT_MODEL, "builtin");
+    }
 }

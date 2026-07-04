@@ -1,10 +1,10 @@
+pub mod builtin;
 pub mod claude;
 pub mod codebuddy;
 pub mod codex;
 pub mod cursor;
 pub mod persistent;
 pub(crate) mod shared;
-pub mod builtin;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -647,6 +647,7 @@ pub async fn spawn_headless(
 ) -> Result<Child> {
     match engine_id {
         "claude" => claude::spawn_headless(session_id, message, cwd).await,
+        "codex" => codex::spawn_headless(session_id, message, cwd).await,
         // CodeBuddy/Cursor fall back to their regular spawn_single for now.
         // Builtin engine doesn't spawn child processes (handled separately)
         other => spawn_single(other, session_id, message, cwd, None).await,
