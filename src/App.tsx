@@ -93,6 +93,12 @@ const ENGINE_SETUP_INFO: Record<
     loginHint: "在设置页面配置 ANTHROPIC_API_KEY 即可使用",
     docs: "https://docs.anthropic.com/en/api",
   },
+  codex: {
+    install: "npm install -g @openai/codex",
+    login: "codex login",
+    loginHint: "会打开浏览器完成 OpenAI 登录",
+    docs: "https://platform.openai.com/docs/cli",
+  },
 };
 
 function CommandRow({ command, label }: { command: string; label: string }) {
