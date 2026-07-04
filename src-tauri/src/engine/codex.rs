@@ -164,16 +164,40 @@ pub async fn spawn_continue(
     cwd: Option<&str>,
     model: Option<&str>,
 ) -> Result<Child> {
-    // Codex uses `resume <session_id>` for continuing
-    let mut args = vec![
+    let binary = find_codex_binary()?;
+    let env = collect_env().await;
+
+    let mut cmd = shared::engine_command(&binary);
+    // codex exec resume <session_id> <message>
+    cmd.args([
         "exec".into(),
         "resume".into(),
         session_id.to_string(),
         "--json".into(),
         "--dangerously-bypass-approvals-and-sandbox".into(),
-    ];
-    
-    spawn_with_args(args, message, cwd, model).await
+    ])
+        .arg(message)
+        // Don't set stdin(null) - codex will use the message argument
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    // Add model override if provided
+    if let Some(model) = model.filter(|s| !s.is_empty()) {
+        cmd.arg("-m").arg(model);
+    }
+
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+
+    // Detach from the controlling terminal
+    shared::detach_from_controlling_terminal(&mut cmd);
+
+    cmd.spawn().context("failed to spawn codex process")
 }
 
 /// Spawn a headless Codex process for scheduled tasks.
