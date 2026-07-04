@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { ScheduledTask, ScheduleSpec, TaskRunRecord, WorkspaceState, AgentEngineId, AGENT_ENGINES } from "../types";
+import type { ScheduledTask, ScheduleSpec, TaskRunRecord, WorkspaceState, AgentEngineId } from "../types";
+import { AGENT_ENGINES } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
 
 interface ScheduledTasksPanelProps {
@@ -12,6 +13,7 @@ interface ScheduledTasksPanelProps {
     prompt: string;
     schedule: ScheduleSpec;
     enabled: boolean;
+    engine: AgentEngineId;
   }) => Promise<ScheduledTask | void>;
   onUpdate: (task: ScheduledTask) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
