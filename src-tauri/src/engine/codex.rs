@@ -138,6 +138,14 @@ async fn spawn_with_args(
 }
 
 /// Spawn an interactive Codex process.
+///
+/// NOTE: we deliberately do NOT pass `--ephemeral` here. `--ephemeral` skips
+/// persisting the session rollout to `~/.codex/sessions/`, which would make the
+/// `thread_id` we capture from `thread.started` unresumable — `codex exec resume
+/// <thread_id>` then fails with "no rollout found for thread id". Persisting the
+/// session is what lets `spawn_continue` resume this conversation on the next
+/// turn. (`spawn_probe` and `spawn_headless` legitimately use `--ephemeral`
+/// since those are one-shot runs that never need resuming.)
 pub async fn spawn_single(
     _session_id: &str,
     message: &str,
@@ -148,7 +156,6 @@ pub async fn spawn_single(
         vec![
             "exec".into(),
             "--json".into(),
-            "--ephemeral".into(),
             "--dangerously-bypass-approvals-and-sandbox".into(),
         ],
         message,
@@ -177,7 +184,11 @@ pub async fn spawn_continue(
         "--dangerously-bypass-approvals-and-sandbox".into(),
     ])
         .arg(message)
-        // Don't set stdin(null) - codex will use the message argument
+        // The prompt is the trailing positional arg. stdin MUST be null: codex
+        // appends any piped stdin as a `<stdin>` block (and prints "Reading
+        // additional input from stdin..."), which would block or pollute the
+        // prompt when launched from the Tauri app.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
