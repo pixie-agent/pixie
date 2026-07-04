@@ -274,11 +274,9 @@ export default function LoopTasksPanel({
       ? activeWorkspacePath
       : workspaces[0]?.path) ?? "";
 
-  // While a loop is running, lock the detail panel onto it so the user watches
-  // live progress; otherwise honor the task the user clicked. Derived during
-  // render (no setState-in-effect).
-  const runningTaskId = tasks.find((t) => t.status === "running")?.id ?? null;
-  const effectiveSelectedId = runningTaskId ?? selectedTaskId;
+  // Allow users to freely switch between tasks, even when one is running.
+  // The running task is highlighted but doesn't lock the panel.
+  const effectiveSelectedId = selectedTaskId;
 
   // Load iterations for whatever is currently shown (the only real side effect).
   useEffect(() => {
