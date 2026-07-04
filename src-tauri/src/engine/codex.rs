@@ -350,15 +350,16 @@ pub fn parse_line(line: &str) -> Vec<NormalizedEvent> {
         // Check if this is an agent_message (final response)
         let is_agent_message = matches!(&evt, CodexStreamEvent::ItemCompleted { item } if item.item_type == "agent_message");
         
-        out.push(NormalizedEvent::TextDelta {
-            text,
-            event_type: if is_agent_message { "final" } else { "delta" },
-        });
-        
-        // If it's an agent message, also emit a Final event
         if is_agent_message {
+            // For agent_message, emit only a Final event (not streaming)
             out.push(NormalizedEvent::Final {
-                text: evt.streaming_text().unwrap_or_default(),
+                text,
+            });
+        } else {
+            // For other item types, emit as TextDelta
+            out.push(NormalizedEvent::TextDelta {
+                text,
+                event_type: "delta",
             });
         }
     }
