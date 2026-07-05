@@ -60,9 +60,6 @@ function SplashScreen() {
       />
       <div className="flex items-center gap-3">
         <h1 className="text-xl font-semibold text-[var(--text-primary)]">{t('app.name')}</h1>
-        <span className="px-2 py-1 text-xs font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded">
-          {t('app.beta')}
-        </span>
       </div>
       <div className="flex items-center gap-2">
         <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
@@ -454,6 +451,7 @@ function AppShell() {
   // concurrent duplicate pings; resolved engines (auth_state != unknown) are
   // skipped, so there is no re-probe loop.
   const probingSetupRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!engineStatuses) return;
     for (const s of engineStatuses) {
@@ -874,9 +872,6 @@ ${entries}
                       <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
                         {activeConversation?.title ?? t('app.name')}
                       </h1>
-                      <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded shrink-0">
-                        {t('app.beta')}
-                      </span>
                       {activeConversation && (
                         <button
                           onClick={() => {

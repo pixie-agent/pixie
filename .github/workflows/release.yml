@@ -67,7 +67,7 @@ jobs:
         with:
           tagName: app-v__VERSION__
           releaseName: "Pixie v__VERSION__"
-          releaseDraft: true
+          releaseDraft: ${{ secrets.CREATE_DRAFT_RELEASES != 'false' }}
           prerelease: ${{ env.PRERELEASE }}
           args: --target ${{ matrix.target }}
 
@@ -127,7 +127,7 @@ jobs:
         with:
           tagName: app-v__VERSION__
           releaseName: "Pixie v__VERSION__"
-          releaseDraft: true
+          releaseDraft: ${{ secrets.CREATE_DRAFT_RELEASES != 'false' }}
           prerelease: ${{ env.PRERELEASE }}
           updaterJsonPreferNsis: true
           # Windows MSI rejects prerelease versions (e.g. 0.8.0-beta.1 — MSI
