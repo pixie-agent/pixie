@@ -205,7 +205,12 @@
     "streaming": "生成中...",
     "taskRunning": "运行中…",
     "kbToolInput": "输入",
-    "kbToolResult": "结果"
+    "kbToolResult": "结果",
+    "errors": {
+      "agentOOM": "智能体进程因内存不足被终止。对话历史已保留，请重新发送消息以继续。",
+      "agentNetwork": "智能体与模型服务的连接已断开。请检查网络后重新发送消息以继续。",
+      "agentCrashed": "智能体意外停止。对话历史已保留，请重新发送消息以继续。"
+    }
   },
   "inputBar": {
     "removeAttachment": "移除",

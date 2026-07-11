@@ -7,6 +7,7 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { FileEntry, PreviewTarget, DiffViewMode } from "../types";
 import { getExtension, PREVIEW_EXTENSIONS, IMAGE_EXTENSIONS, basename } from "../preview";
 import { languageFromExt } from "../lib/languages";
+import { segmentColor, tokenizeSource, type TokenSegment } from "../lib/highlight";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
 import DiffViewer from "./DiffViewer";
@@ -30,53 +31,21 @@ const DEFAULT_WIDTH = 320;
 const DEFAULT_CHANGES_HEIGHT = 260;
 const MIN_CHANGES_HEIGHT = 120;
 const MIN_HISTORY_HEIGHT = 120;
+const TAB_MOUNT_DELAY_MS = 45;
+const PREVIEW_RENDER_DELAY_MS = 45;
+const RICH_PREVIEW_CHAR_LIMIT = 20_000;
+const HIGHLIGHT_BATCH_LINES = 160;
 
-// Hoisted to module scope for stable identity across renders — a prerequisite
-// for the memo()d highlighters below to skip re-tokenizing large content when
-// the panel re-renders for an unrelated reason (e.g. dragging the resize
-// handle, which flips `width` state ~60×/s, or re-selecting a git commit).
-const PREVIEW_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: 0, fontSize: "0.75rem", flex: 1 };
 const MD_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: "0.5rem", fontSize: "0.75rem" };
 const REMARK_PLUGINS = [remarkGfm];
 const shellEscape = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-
-interface CodeBlockProps {
-  code: string;
-  language: string;
-  showLineNumbers?: boolean;
-  wrapLines?: boolean;
-  customStyle?: CSSProperties;
-}
-
-// Prism tokenizes the entire string on every render — expensive for a large
-// file or diff. Memoize so re-renders that leave code/language unchanged
-// (resize drag, commit selection, tab re-entry) skip re-tokenizing.
-const CodeBlock = memo(function CodeBlock({
-  code,
-  language,
-  showLineNumbers,
-  wrapLines,
-  customStyle,
-}: CodeBlockProps) {
-  return (
-    <SyntaxHighlighter
-      style={oneDark}
-      language={language}
-      showLineNumbers={showLineNumbers}
-      wrapLines={wrapLines}
-      customStyle={customStyle}
-    >
-      {code}
-    </SyntaxHighlighter>
-  );
-});
 
 // Memoize the whole markdown render so resize-drag (which re-renders the
 // panel) doesn't re-parse markdown and re-tokenize every fenced code block.
 // Only re-runs when the file content actually changes.
 const MarkdownView = memo(function MarkdownView({ content }: { content: string }) {
   return (
-    <div className="p-4 prose prose-sm prose-invert max-w-none">
+    <div className="w-full min-h-full p-4 prose prose-sm prose-invert max-w-none">
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         components={{
@@ -101,6 +70,118 @@ const MarkdownView = memo(function MarkdownView({ content }: { content: string }
   );
 });
 
+const PlainTextPreview = memo(function PlainTextPreview({ content }: { content: string }) {
+  return (
+    <textarea
+      readOnly
+      spellCheck={false}
+      value={content}
+      className="flex-1 min-h-0 w-full h-full resize-none border-0 outline-none bg-transparent p-3 text-xs font-mono text-[var(--text-primary)] leading-relaxed whitespace-pre"
+    />
+  );
+});
+
+function ChunkedCodePreview({
+  content,
+  language,
+  onCancel,
+}: {
+  content: string;
+  language: string;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const [lines, setLines] = useState<TokenSegment[][]>([]);
+  const [progress, setProgress] = useState(0);
+  const [working, setWorking] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    timer = window.setTimeout(() => {
+      if (cancelled) return;
+      setLines([]);
+      setProgress(0);
+      setWorking(true);
+      const rawLines = content.split("\n");
+      const total = Math.max(1, rawLines.length);
+      const acc: TokenSegment[][] = [];
+      let index = 0;
+
+      const runBatch = () => {
+        if (cancelled) return;
+        const end = Math.min(total, index + HIGHLIGHT_BATCH_LINES);
+        for (let i = index; i < end; i += 1) {
+          const raw = rawLines[i] ?? "";
+          const highlighted = tokenizeSource(raw || " ", language);
+          const segments = highlighted?.[0];
+          acc.push(segments && segments.length > 0 ? segments : [{ text: raw }]);
+        }
+        index = end;
+        setLines(acc.slice());
+        setProgress(Math.round((index / total) * 100));
+        if (index < total) {
+          timer = window.setTimeout(runBatch, 0);
+        } else {
+          setWorking(false);
+        }
+      };
+
+      runBatch();
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [content, language]);
+
+  return (
+    <div className="w-full h-full flex flex-col min-h-0">
+      {working && (
+        <div className="shrink-0 px-3 py-2 border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+              <div
+                className="h-full bg-[var(--accent)] transition-[width]"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-[var(--text-secondary)] tabular-nums w-9 text-right">
+              {progress}%
+            </span>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              {t("common.cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+      {lines.length === 0 ? (
+        <PlainTextPreview content={content} />
+      ) : (
+        <pre className="flex-1 min-h-0 overflow-auto p-3 text-xs font-mono leading-relaxed text-[var(--text-primary)]">
+          {lines.map((line, lineIndex) => (
+            <span key={lineIndex} className="block min-h-[1.5em] whitespace-pre">
+              {line.length === 0
+                ? " "
+                : line.map((seg, segIndex) => (
+                    <span key={segIndex} style={{ color: segmentColor(seg) }}>
+                      {seg.text}
+                    </span>
+                  ))}
+            </span>
+          ))}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 // Unified/split toggle shared by the Changes and commit-diff viewers.
 function DiffModeToggle({ mode, onChange }: { mode: DiffViewMode; onChange: (m: DiffViewMode) => void }) {
   const { t } = useTranslation();
@@ -121,9 +202,31 @@ function DiffModeToggle({ mode, onChange }: { mode: DiffViewMode; onChange: (m: 
   );
 }
 
+function PanelLoading({ onCancel }: { onCancel?: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 py-12">
+      <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+      <span className="text-xs text-[var(--text-secondary)]">{t("common.loading")}</span>
+      {onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+        >
+          {t("common.cancel")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("files");
+  const [contentTab, setContentTab] = useState<Tab>("files");
+  const [tabLoading, setTabLoading] = useState(false);
+  const tabLoadTokenRef = useRef(0);
   const [currentPath, setCurrentPath] = useState(workspacePath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -136,6 +239,9 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [previewFile, setPreviewFile] = useState<FileEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewRenderReady, setPreviewRenderReady] = useState(false);
+  const previewLoadTokenRef = useRef(0);
+  const previewRenderTokenRef = useRef(0);
 
   // Git state
   const [gitStatus, setGitStatus] = useState("");
@@ -148,6 +254,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>("unified");
   const [changesCollapsed, setChangesCollapsed] = useState(false);
   const [changesHeight, setChangesHeight] = useState(DEFAULT_CHANGES_HEIGHT);
+  const gitLoadTokenRef = useRef(0);
   const gitSplitRef = useRef<HTMLDivElement | null>(null);
   const isResizingChanges = useRef(false);
   const didInitChangesHeight = useRef(false);
@@ -184,12 +291,51 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     [makeTerminalId, t],
   );
 
-  // Lazily seed a terminal the first time the terminal tab is opened in a
-  // workspace; it (and any later-added siblings) then stays alive for the
-  // whole session.
-  if (tab === "terminal" && workspacePath && !terminalsByWs[workspacePath]) {
-    ensureWorkspaceTerminals(workspacePath);
-  }
+  const activateTab = useCallback((next: Tab) => {
+    tabLoadTokenRef.current += 1;
+    const token = tabLoadTokenRef.current;
+    if (next !== "preview") {
+      previewLoadTokenRef.current += 1;
+      previewRenderTokenRef.current += 1;
+      setPreviewLoading(false);
+      setPreviewRenderReady(false);
+    }
+    if (next !== "git") {
+      gitLoadTokenRef.current += 1;
+      setGitLoading(false);
+    }
+    setTab(next);
+    setTabLoading(true);
+    window.setTimeout(() => {
+      if (tabLoadTokenRef.current !== token) return;
+      setContentTab(next);
+      setTabLoading(false);
+    }, TAB_MOUNT_DELAY_MS);
+  }, []);
+
+  const cancelTabLoad = useCallback(() => {
+    tabLoadTokenRef.current += 1;
+    if (contentTab !== "preview") {
+      previewLoadTokenRef.current += 1;
+      previewRenderTokenRef.current += 1;
+      setPreviewLoading(false);
+      setPreviewRenderReady(false);
+    }
+    if (contentTab !== "git") {
+      gitLoadTokenRef.current += 1;
+      setGitLoading(false);
+    }
+    setTab(contentTab);
+    setTabLoading(false);
+  }, [contentTab]);
+
+  // Lazily seed a terminal the first time the terminal tab content is mounted in
+  // a workspace; later tab switches keep the PTY component mounted but hidden.
+  useEffect(() => {
+    if (contentTab !== "terminal" || !workspacePath || terminalsByWs[workspacePath]) return;
+    const timer = window.setTimeout(() => ensureWorkspaceTerminals(workspacePath), 0);
+    return () => window.clearTimeout(timer);
+  }, [contentTab, ensureWorkspaceTerminals, terminalsByWs, workspacePath]);
 
   const createTerminal = useCallback(
     (ws: string) => {
@@ -308,12 +454,14 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   // git tab is active. Exposed as `loadGit` so the Changes header can refresh on
   // demand — the working tree changes as the user works.
   const loadGit = useCallback(async () => {
+    const token = ++gitLoadTokenRef.current;
     setGitLoading(true);
     const [status, log, workingDiff] = await Promise.all([
       invoke<string>("git_status", { path: workspacePath }).catch(() => t("rightPanel.notGitRepo")),
       invoke<string>("git_log", { path: workspacePath, count: 30 }).catch(() => ""),
       invoke<string>("git_diff", { path: workspacePath, commit: "HEAD" }).catch(() => ""),
     ]);
+    if (gitLoadTokenRef.current !== token) return;
     setGitStatus(status);
     setGitLog(log);
     setGitWorkingDiff(workingDiff);
@@ -321,10 +469,10 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   }, [workspacePath, t]);
 
   useEffect(() => {
-    if (tab !== "git") return;
+    if (contentTab !== "git") return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- legitimate: fetch git data when the tab becomes active
     loadGit();
-  }, [tab, loadGit]);
+  }, [contentTab, loadGit]);
 
   // Untracked files aren't covered by `git diff HEAD`; surface them separately.
   const untracked = useMemo(
@@ -339,27 +487,69 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
 
   const openPreview = useCallback(async (entry: FileEntry) => {
     const ext = getExtension(entry.name);
+    const token = ++previewLoadTokenRef.current;
+    previewRenderTokenRef.current += 1;
     setPreviewFile(entry);
+    setPreviewRenderReady(false);
+    activateTab("preview");
     if (IMAGE_EXTENSIONS.has(ext)) {
       setPreviewContent(null);
-      setTab("preview");
+      setPreviewRenderReady(true);
       return;
     }
     if (!PREVIEW_EXTENSIONS.has(ext) && ext !== "") {
       setPreviewContent(null);
-      setTab("preview");
+      setPreviewRenderReady(true);
       return;
     }
     setPreviewLoading(true);
     setPreviewContent(null);
     try {
       const content = await invoke<string>("read_file_content", { path: entry.path });
+      if (previewLoadTokenRef.current !== token) return;
       setPreviewContent(content);
-      setTab("preview");
+      const renderToken = ++previewRenderTokenRef.current;
+      window.setTimeout(() => {
+        if (previewLoadTokenRef.current !== token) return;
+        if (previewRenderTokenRef.current !== renderToken) return;
+        setPreviewRenderReady(true);
+      }, PREVIEW_RENDER_DELAY_MS);
     } catch (e) {
+      if (previewLoadTokenRef.current !== token) return;
       setPreviewContent(t("rightPanel.failedReadFile", { error: String(e) }));
-    } finally { setPreviewLoading(false); }
-  }, [t]);
+      setPreviewRenderReady(true);
+    } finally {
+      if (previewLoadTokenRef.current === token) setPreviewLoading(false);
+    }
+  }, [activateTab, t]);
+
+  const cancelPreviewLoad = useCallback(() => {
+    previewLoadTokenRef.current += 1;
+    previewRenderTokenRef.current += 1;
+    setPreviewLoading(false);
+    setPreviewRenderReady(false);
+    setPreviewFile(null);
+    setPreviewContent(null);
+  }, []);
+
+  useEffect(() => {
+    if (contentTab !== "preview" || tabLoading) return;
+    if (!previewFile || previewLoading || previewRenderReady) return;
+
+    const ext = getExtension(previewFile.name);
+    const hasRenderablePreview =
+      IMAGE_EXTENSIONS.has(ext) ||
+      (!PREVIEW_EXTENSIONS.has(ext) && ext !== "") ||
+      previewContent !== null;
+    if (!hasRenderablePreview) return;
+
+    const renderToken = ++previewRenderTokenRef.current;
+    const timer = window.setTimeout(() => {
+      if (previewRenderTokenRef.current !== renderToken) return;
+      setPreviewRenderReady(true);
+    }, PREVIEW_RENDER_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [contentTab, previewContent, previewFile, previewLoading, previewRenderReady, tabLoading]);
 
   // React to an externally-requested file preview target (a file path clicked
   // in a chat message). URLs never reach here — they are handed off to the
@@ -458,7 +648,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   // Initialize/clamp the split the first time the Git tab is shown so the
   // default doesn't leave an oversized empty area on tall windows.
   useEffect(() => {
-    if (tab !== "git") return;
+    if (contentTab !== "git") return;
     const el = gitSplitRef.current;
     if (!el) return;
     requestAnimationFrame(() => {
@@ -475,7 +665,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         return next;
       });
     });
-  }, [tab]);
+  }, [contentTab]);
 
   const navigateTo = (path: string) => {
     setHistory((prev) => [...prev, currentPath]);
@@ -494,6 +684,12 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
 
   const segments = currentPath.split("/").filter(Boolean);
   const ext = previewFile ? getExtension(previewFile.name) : "";
+  const previewText = previewContent ?? "";
+  const canUseRichPreview = previewText.length <= RICH_PREVIEW_CHAR_LIMIT;
+  const previewNeedsTextContent =
+    !!previewFile && !IMAGE_EXTENSIONS.has(ext) && (PREVIEW_EXTENSIONS.has(ext) || ext === "");
+  const previewWasCanceledBeforeContent =
+    previewNeedsTextContent && !previewLoading && !previewRenderReady && previewContent === null;
 
   return (
     <div className="flex h-full" style={{ width, minWidth: MIN_WIDTH, maxWidth: "90vw" }}>
@@ -514,7 +710,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
               ] as [Tab, string, string][]).map(([tabId, icon, name]) => (
                 <button
                   key={tabId}
-                  onClick={() => setTab(tabId)}
+                  onClick={() => activateTab(tabId)}
                   title={name}
                   className={`flex items-center justify-center w-8 h-8 rounded-lg text-base transition-colors ${
                     tab === tabId
@@ -534,8 +730,10 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
             it without disturbing the files/preview/git layouts. */}
         <div className="flex-1 flex flex-col relative min-h-0">
 
+        {tabLoading && <PanelLoading onCancel={cancelTabLoad} />}
+
         {/* === FILES TAB === */}
-        {tab === "files" && (
+        {!tabLoading && contentTab === "files" && (
           <>
             <div className="px-3 py-1.5 border-b border-[var(--border-color)] flex items-center gap-0.5 overflow-x-auto text-[11px] shrink-0">
               <button onClick={goBack} disabled={history.length === 0}
@@ -616,16 +814,16 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         )}
 
         {/* === PREVIEW TAB === */}
-        {tab === "preview" && (
+        {!tabLoading && contentTab === "preview" && (
           <div className="flex-1 flex flex-col min-h-0">
-            {!previewFile ? (
+            {!previewFile || previewWasCanceledBeforeContent ? (
               <p className="text-xs text-[var(--text-secondary)] text-center py-12 px-4">
                 {t('rightPanel.selectFileHint')}
               </p>
             ) : (
               <>
                 <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] shrink-0">
-                  <button onClick={() => setTab("files")}
+                  <button onClick={() => activateTab("files")}
                     className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                       <path d="M9 3L5 7l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -634,33 +832,33 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                   <span className="text-xs text-[var(--text-primary)] truncate">{previewFile.name}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>
                 </div>
-                <div className="flex-1 overflow-auto">
-                  {previewLoading ? (
-                    <div className="flex items-center justify-center py-12">
-                      <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-                    </div>
+                <div className="flex-1 min-h-0 w-full h-full overflow-auto">
+                  {previewLoading || !previewRenderReady ? (
+                    <PanelLoading onCancel={cancelPreviewLoad} />
                   ) : IMAGE_EXTENSIONS.has(ext) ? (
-                    <div className="p-4 flex items-center justify-center">
+                    <div className="w-full h-full p-4 flex items-center justify-center">
                       <img src={convertFileSrc(previewFile.path)} alt={previewFile.name}
                         className="max-w-full max-h-full object-contain rounded" />
                     </div>
-                  ) : ext === "md" || ext === "markdown" ? (
-                    <MarkdownView content={previewContent ?? ""} />
-                  ) : CODE_EXTENSIONS.has(ext) ? (
-                    <CodeBlock
-                      code={previewContent ?? ""}
-                      language={languageFromExt(ext)}
-                      showLineNumbers
-                      wrapLines
-                      customStyle={PREVIEW_CODE_STYLE}
+                  ) : (ext === "html" || ext === "htm") && previewText.trim() ? (
+                    <iframe
+                      srcDoc={previewText}
+                      className="w-full h-full min-h-full border-0 bg-white"
+                      sandbox="allow-scripts"
                     />
-                  ) : ext === "html" || ext === "htm" ? (
-                    <iframe srcDoc={previewContent ?? ""}
-                      className="w-full h-full border-0 bg-white" sandbox="allow-scripts" />
+                  ) : CODE_EXTENSIONS.has(ext) ? (
+                    <ChunkedCodePreview
+                      key={`${previewFile.path}:${previewText.length}`}
+                      content={previewText}
+                      language={languageFromExt(ext)}
+                      onCancel={cancelPreviewLoad}
+                    />
+                  ) : !canUseRichPreview ? (
+                    <PlainTextPreview content={previewText} />
+                  ) : ext === "md" || ext === "markdown" ? (
+                    <MarkdownView content={previewText} />
                   ) : (
-                    <pre className="p-3 text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all leading-relaxed select-text">
-                      {previewContent}
-                    </pre>
+                    <PlainTextPreview content={previewText} />
                   )}
                 </div>
               </>
@@ -669,7 +867,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         )}
 
         {/* === GIT TAB === */}
-        {tab === "git" && (
+        {!tabLoading && contentTab === "git" && (
           <div className="flex-1 flex flex-col min-h-0">
             {gitLoading ? (
               <div className="flex items-center justify-center py-12">
@@ -818,7 +1016,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
             between multiple terminals; at least one per workspace is always
             kept, and if the last one's shell exits it auto-respawns. */}
         {Object.entries(terminalsByWs).map(([ws, instances]) => {
-          const isThisWs = tab === "terminal" && ws === workspacePath;
+          const isThisWs = !tabLoading && contentTab === "terminal" && ws === workspacePath;
           const activeId = activeTermId[ws] ?? instances[0]?.id;
           return (
             <div

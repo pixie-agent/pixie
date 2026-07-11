@@ -157,6 +157,47 @@ function OpenableCode({
   );
 }
 
+const EXTERNAL_LINK_RE = /^(https?:\/\/|mailto:|tel:|obsidian:\/\/)/i;
+const WINDOWS_ABSOLUTE_PATH_RE = /^[a-zA-Z]:[\\/]/;
+const LINE_SUFFIX_RE = /:\d+(?::\d+)?$/;
+
+function decodeHrefPath(value: string): string {
+  try {
+    return decodeURI(value);
+  } catch {
+    return value;
+  }
+}
+
+function fileUrlToPath(value: string): string | null {
+  if (!/^file:\/\//i.test(value)) return null;
+  try {
+    const url = new URL(value);
+    const decoded = decodeURIComponent(url.pathname);
+    if (/^\/[a-zA-Z]:\//.test(decoded)) return decoded.slice(1);
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+function previewablePathFromHref(href: string): string | null {
+  const raw = href.trim();
+  if (!raw || raw.startsWith("#")) return null;
+
+  const base = fileUrlToPath(raw) ?? decodeHrefPath(raw);
+  const withoutFragment = base.split("#", 1)[0].split("?", 1)[0];
+  const candidates = [base, withoutFragment, withoutFragment.replace(LINE_SUFFIX_RE, "")];
+  for (const candidate of candidates) {
+    const hasUnsafeScheme =
+      /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(candidate) && !WINDOWS_ABSOLUTE_PATH_RE.test(candidate);
+    if (candidate && !hasUnsafeScheme && isPreviewableFile(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Tool activity rendering (live progress of what Claude is doing)
 // ---------------------------------------------------------------------------
@@ -771,12 +812,35 @@ function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, conver
   const markdownComponents = useMemo(
     () => ({
       a({ href, children, ...props }: ComponentPropsWithoutRef<"a"> & { href?: string }) {
-        if (typeof href === "string" && /^https?:\/\//i.test(href)) {
+        if (typeof href !== "string") {
+          return <span {...props}>{children}</span>;
+        }
+
+        const filePath = previewablePathFromHref(href);
+        if (filePath) {
           return (
             <a
               href={href}
               onClick={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
+                onOpenPreview({ kind: "file", path: filePath });
+              }}
+              className="text-[var(--accent)] hover:underline"
+              {...props}
+            >
+              {children}
+            </a>
+          );
+        }
+
+        if (EXTERNAL_LINK_RE.test(href)) {
+          return (
+            <a
+              href={href}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 onOpenPreview({ kind: "url", url: href });
               }}
               className="text-[var(--accent)] hover:underline"
@@ -786,7 +850,20 @@ function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, conver
             </a>
           );
         }
-        return <a href={href} {...props}>{children}</a>;
+
+        return (
+          <a
+            href={href}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            className="text-[var(--accent)]"
+            {...props}
+          >
+            {children}
+          </a>
+        );
       },
       code({
         className,

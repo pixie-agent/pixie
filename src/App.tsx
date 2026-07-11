@@ -37,14 +37,37 @@ import { AGENT_ENGINES } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
 import { bootstrap, getConfig, getHistory, updateConfig } from "./lib/storage";
 
+type MainView = "chat" | "tasks" | "loops" | "skills" | "settings";
+
+const ABSOLUTE_PATH_RE = /^(\/|\\\\|[a-zA-Z]:[\\/])/;
+const MAIN_VIEW_MOUNT_DELAY_MS = 45;
+
+function resolvePreviewFilePath(path: string, workspacePath: string | null | undefined): string {
+  if (!workspacePath || ABSOLUTE_PATH_RE.test(path)) return path;
+  const base = workspacePath.replace(/[\\/]+$/, "");
+  const rel = path.replace(/^\.?[\\/]+/, "");
+  return `${base}/${rel}`;
+}
+
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("./assets/icon.svg", import.meta.url).href;
 
 /** Lightweight loading indicator shown while lazy-loaded panels mount. */
-function LoadingPanel() {
+function LoadingPanel({ onCancel }: { onCancel?: () => void }) {
+  const { t } = useTranslation();
   return (
-    <div className="flex items-center justify-center flex-1 h-full">
+    <div className="flex flex-col items-center justify-center gap-3 flex-1 h-full">
       <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+      <span className="text-xs text-[var(--text-secondary)]">{t("common.loading")}</span>
+      {onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+        >
+          {t("common.cancel")}
+        </button>
+      )}
     </div>
   );
 }
@@ -372,7 +395,10 @@ function AppShell() {
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   // Which full-page view the main column shows. The sidebar buttons switch
   // this; New Agent / selecting a conversation returns to "chat".
-  const [mainView, setMainView] = useState<"chat" | "tasks" | "loops" | "skills" | "settings">("chat");
+  const [mainView, setMainView] = useState<MainView>("chat");
+  const [displayMainView, setDisplayMainView] = useState<MainView>("chat");
+  const [mainViewLoading, setMainViewLoading] = useState(false);
+  const mainViewLoadTokenRef = useRef(0);
   const [theme, setTheme] = useState<"dark" | "light">(() => getConfig().theme);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
@@ -434,6 +460,33 @@ function AppShell() {
     addScheduledRun,
     addRunningTask,
   } = useChat(engineModelConfigs);
+
+  useEffect(() => {
+    if (mainView === displayMainView) {
+      return;
+    }
+    mainViewLoadTokenRef.current += 1;
+    const token = mainViewLoadTokenRef.current;
+    const loadingTimer = window.setTimeout(() => {
+      if (mainViewLoadTokenRef.current !== token) return;
+      setMainViewLoading(true);
+    }, 0);
+    const mountTimer = window.setTimeout(() => {
+      if (mainViewLoadTokenRef.current !== token) return;
+      setDisplayMainView(mainView);
+      setMainViewLoading(false);
+    }, MAIN_VIEW_MOUNT_DELAY_MS);
+    return () => {
+      window.clearTimeout(loadingTimer);
+      window.clearTimeout(mountTimer);
+    };
+  }, [displayMainView, mainView]);
+
+  const cancelMainViewLoad = useCallback(() => {
+    mainViewLoadTokenRef.current += 1;
+    setMainView(displayMainView);
+    setMainViewLoading(false);
+  }, [displayMainView]);
 
   // On first launch: if no engine is ready (none installed, or none logged in),
   // pop the engine-setup modal automatically. Evaluated exactly once via the
@@ -727,10 +780,8 @@ function AppShell() {
       const vaultPath = getConfig().vaultPath ?? null;
       await invoke("open_vault_in_obsidian", { vaultPath });
     } catch { /* ignore */ }
-  }, []);
+  }, [t]);
 
-  // Open a file path or URL in the right-side preview panel (clicked in a chat
-  // message). The nonce lets the same target be re-opened.
   // Open a file path or URL from a chat message. URLs are delegated to the
   // system default browser (Pixie no longer embeds a browser); file paths open
   // in the right-side preview panel. The nonce lets the same file be re-opened.
@@ -740,9 +791,13 @@ function AppShell() {
       return;
     }
     const nonce = Date.now();
-    setPreviewTarget({ kind: "file", path: t.path, nonce });
+    setPreviewTarget({
+      kind: "file",
+      path: resolvePreviewFilePath(t.path, activeWorkspace?.path),
+      nonce,
+    });
     setFileExplorerOpen(true);
-  }, []);
+  }, [activeWorkspace?.path]);
 
   /** Format KB search results as a collapsible context block. */
   function formatKbContext(results: KbSearchResult[]): string {
@@ -819,7 +874,9 @@ ${entries}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
-        {mainView === "chat" && (
+        {mainViewLoading && <LoadingPanel onCancel={cancelMainViewLoad} />}
+
+        {!mainViewLoading && displayMainView === "chat" && (
           <>
             {/* Header — drag empty areas to move window */}
             <header
@@ -1002,7 +1059,7 @@ ${entries}
           </>
         )}
 
-        {mainView === "tasks" && (
+        {!mainViewLoading && displayMainView === "tasks" && (
           <Suspense fallback={<LoadingPanel />}>
           <ScheduledTasksPanel
             workspaces={workspaces}
@@ -1034,7 +1091,7 @@ ${entries}
           </Suspense>
         )}
 
-        {mainView === "loops" && (
+        {!mainViewLoading && displayMainView === "loops" && (
           <Suspense fallback={<LoadingPanel />}>
           <LoopTasksPanel
             workspaces={workspaces}
@@ -1057,7 +1114,7 @@ ${entries}
           </Suspense>
         )}
 
-        {mainView === "skills" && (
+        {!mainViewLoading && displayMainView === "skills" && (
           <Suspense fallback={<LoadingPanel />}>
           <MarketplacePanel
             onClose={() => setMainView("chat")}
@@ -1066,7 +1123,7 @@ ${entries}
           </Suspense>
         )}
 
-        {mainView === "settings" && (
+        {!mainViewLoading && displayMainView === "settings" && (
           <Suspense fallback={<LoadingPanel />}>
           <Settings
             engineStatuses={engineStatuses}

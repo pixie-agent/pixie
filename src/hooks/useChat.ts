@@ -10,6 +10,7 @@ import type {
   ResponseChunk,
   ResponseDone,
   ResponseError,
+  ResponseRetry,
   ResponseTool,
   ResponseUsage,
   ResponseThinking,
@@ -789,7 +790,33 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       const u3 = await listen<ResponseError>("agent-error", (event) => {
         const err = event.payload;
         flushStreamBatches(err.conversation_id);
-        setError(err.error);
+        // Translate low-level backend diagnostics into actionable user-facing
+        // messages. By the time we reach this handler, the backend's automatic
+        // --resume retry has already been exhausted (MAX_TURN_RETRIES), so we
+        // KNOW this is a real terminal failure — we never want to leak the raw
+        // technical diagnostic string to the user. The branches below pick the
+        // most helpful localized message; the final branch is an unconditional
+        // catch-all (it never returns `raw`) so we are guaranteed to show a
+        // friendly message regardless of how the backend phrases the failure.
+        const friendly = (raw: string): string => {
+          const s = raw.toLowerCase();
+          // OOM / forced kill (signal 9 is the classic OOM-killer signature).
+          if (s.includes("oom") || s.includes("signal 9") || s.includes("killed by signal"))
+            return i18n.t('chat.errors.agentOOM') || raw;
+          // Network drop / hang: the process stayed alive but stopped producing
+          // output (network partition to the model API, OS suspend/resume, or
+          // an internal deadlock that surfaced as a stall).
+          if (s.includes("network") || s.includes("timeout") || s.includes("stalled") || s.includes("hung"))
+            return i18n.t('chat.errors.agentNetwork') || raw;
+          // Unconditional catch-all — no condition. By the time we reach this
+          // point the specific OOM/network/stall cases above have already been
+          // handled, so ANY remaining backend failure is a generic crash. This
+          // is defensive: it guarantees we NEVER surface the raw technical
+          // diagnostic string to the user, even if the backend wording changes.
+          return i18n.t('chat.errors.agentCrashed') || raw;
+        };
+        const message = friendly(err.error);
+        setError(message);
         setAllConversations((prev) =>
           patchConversation(prev, err.conversation_id, (conv) => {
             const msgs = [...conv.messages];
@@ -805,6 +832,36 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           next.delete(err.conversation_id);
           return next;
         });
+      });
+
+      // The backend is transparently retrying a persistent turn that crashed
+      // mid-stream. Discard the partial content/tools/thinking already
+      // accumulated for this turn so the retried (fresh) response streams
+      // cleanly — otherwise the crashed attempt's leftover text would be
+      // prepended to the new response, producing garbled/duplicated output.
+      const u3b = await listen<ResponseRetry>("agent-retry", (event) => {
+        const { conversation_id } = event.payload;
+        // Drop any coalesced-but-not-yet-applied deltas from the failed attempt.
+        streamBatchesRef.current.delete(conversation_id);
+        // Reset the assistant message back to a clean streaming state.
+        setAllConversations((prev) =>
+          patchConversation(prev, conversation_id, (conv) => {
+            const msgs = [...conv.messages];
+            const last = msgs[msgs.length - 1];
+            if (last && last.role === "assistant") {
+              msgs[msgs.length - 1] = {
+                ...last,
+                content: "",
+                tools: [],
+                thinking: undefined,
+                thinkingTokens: undefined,
+                usage: undefined,
+                status: "streaming",
+              };
+            }
+            return { ...conv, messages: msgs };
+          }, convIndexRef),
+        );
       });
 
       const u4 = await listen<ResponseTool>("agent-tool", (event) => {
@@ -900,8 +957,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         setGeneratingIds((prev) => new Set(prev).add(p.conversation_id));
       });
 
-      if (!mounted) { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); return; }
-      unlistenRefs.current = [u1, u2, u3, u4, u5, u6, u7, u8, u9];
+      if (!mounted) { u1(); u2(); u3(); u3b(); u4(); u5(); u6(); u7(); u8(); u9(); return; }
+      unlistenRefs.current = [u1, u2, u3, u3b, u4, u5, u6, u7, u8, u9];
     }
 
     setup();

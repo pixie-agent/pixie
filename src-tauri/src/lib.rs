@@ -6,7 +6,8 @@ mod summarizer;
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
 use engine::builtin::{init_builtin_sessions, BuiltinSession, BuiltinSessionMap};
 use engine::persistent::{
-    self as ps, read_persistent_turn, PersistentSession, SessionMap, IDLE_TIMEOUT, MAX_SESSIONS,
+    self as ps, read_persistent_turn, PersistentSession, SessionMap, TurnOutcome, IDLE_TIMEOUT,
+    MAX_SESSIONS, MAX_TURN_RETRIES,
 };
 use engine::{
     bind_conversation_engine, check_all_engines, conversation_engine_id,
@@ -107,6 +108,19 @@ pub struct ResponseChunk {
 pub struct ResponseDone {
     pub conversation_id: String,
     pub full_text: String,
+}
+
+/// Notification that a persistent turn crashed mid-stream and the backend is
+/// transparently retrying it with `--resume` before surfacing any error. The
+/// frontend must DISCARD the partial content/tools/thinking it already
+/// accumulated for the current assistant message: the retried turn produces a
+/// fresh response, and without a reset the partial text from the failed attempt
+/// would be left prefixed to the new response (garbled, duplicated output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseRetry {
+    pub conversation_id: String,
+    /// Which retry attempt this is (1-based).
+    pub attempt: u32,
 }
 
 /// Live tool-use activity (a tool starting or its result arriving) for real-time progress.
@@ -854,7 +868,6 @@ async fn send_message(
             let conv_id_after = conv_id.clone();
             let engine_for_stream = engine_id_owned.clone();
             let mut last_thinking: u64 = 0;
-            let mut stream_had_error = false;
 
             // Clear any "stopped" marker left over from a PRIOR turn for this
             // conversation — only a stop issued during this read window counts
@@ -866,82 +879,205 @@ async fn send_message(
                 stopped.lock().await.remove(&conv_id);
             }
 
-            let result = read_persistent_turn(&engine_for_stream, stdout, |events| {
-                for evt in events {
-                    if matches!(evt, NormalizedEvent::Error { .. }) {
-                        stream_had_error = true;
-                    }
-                    if let Some(sid) = evt.session_id() {
-                        let engines = engines_after.clone();
-                        let conv = conv_id.clone();
-                        let eng = engine_id_owned.clone();
-                        tokio::spawn(async move {
-                            remember_session_id(&engines, &conv, &eng, &sid).await;
-                        });
+            // -----------------------------------------------------------------
+            // Turn read loop with automatic crash recovery.
+            //
+            // Long-running CLI turns can die mid-stream (OOM, network drop to
+            // the model API, OS suspend/resume, CLI bug). Instead of surfacing
+            // the opaque "persistent session stdout closed unexpectedly" error
+            // to the user, we transparently respawn the session with --resume
+            // and re-issue the message, up to MAX_TURN_RETRIES times. The
+            // resumed session replays the conversation history so the agent
+            // continues from where it left off.
+            // -----------------------------------------------------------------
+            let stopped_set = state_stopped_ref(&app_handle);
+            let stopped_for_read = stopped_set.clone();
+            let conv_id_for_stop_check = conv_id.clone();
+
+            let mut attempt = 0usize;
+            let mut current_stdout = stdout;
+            let outcome: TurnOutcome = loop {
+                // The stop check closure must be synchronous (it's polled
+                // inside read_persistent_turn before each read). We rely on
+                // try_lock; if contended we conservatively report not-stopped
+                // so the read keeps going — the marker is drained on the next
+                // iteration once the lock frees, or by the crash path below.
+                let stopped_clone = stopped_for_read.clone();
+                let conv_for_closure = conv_id_for_stop_check.clone();
+                let mut last_thinking_ref = last_thinking;
+                let engines_inner = engines_after.clone();
+                let conv_inner = conv_id.clone();
+                let eng_inner = engine_id_owned.clone();
+                let app_inner = app_handle.clone();
+
+                let result = read_persistent_turn(
+                    &engine_for_stream,
+                    current_stdout.clone(),
+                    |events: &[NormalizedEvent]| {
+                        for evt in events {
+                            if let Some(sid) = evt.session_id() {
+                                let engines = engines_inner.clone();
+                                let conv = conv_inner.clone();
+                                let eng = eng_inner.clone();
+                                tokio::spawn(async move {
+                                    remember_session_id(&engines, &conv, &eng, &sid).await;
+                                });
+                            }
+                        }
+                        emit_agent_events(&app_inner, &conv_inner, events, &mut last_thinking_ref);
+                    },
+                    move || {
+                        stopped_clone
+                            .try_lock()
+                            .map(|g| g.contains(&conv_for_closure))
+                            .unwrap_or(false)
+                    },
+                )
+                .await;
+
+                // Fold per-attempt bookkeeping back into outer state.
+                last_thinking = last_thinking_ref;
+
+                match result {
+                    TurnOutcome::Done(text) => break TurnOutcome::Done(text),
+                    TurnOutcome::Errored(text) => break TurnOutcome::Errored(text),
+                    TurnOutcome::Stopped { partial } => break TurnOutcome::Stopped { partial },
+                    TurnOutcome::Crashed { reason, .. } => {
+                        // Diagnose the dead child for a better log/error message,
+                        // and tear down the dead session so the respawn below
+                        // inserts cleanly.
+                        let diagnosis = {
+                            let sm = state_sessions_ref(&app_handle);
+                            let mut sm = sm.lock().await;
+                            match sm.get_mut(&conv_id_after) {
+                                Some(s) => {
+                                    let d = s.diagnose_exit().await;
+                                    s.kill().await;
+                                    sm.remove(&conv_id_after);
+                                    d
+                                }
+                                None => "session already removed".to_string(),
+                            }
+                        };
+                        // Drop the stale PID so a concurrent stop doesn't target it.
+                        kill_registry.lock().await.remove(&conv_id_after);
+
+                        // Was this crash actually triggered by a user stop? The
+                        // stop path kills the process, which manifests as EOF
+                        // here. Drain the marker and finalize silently.
+                        let was_stopped = stopped_set.lock().await.remove(&conv_id_after);
+                        if was_stopped {
+                            log::info!(
+                                "[send_message] persistent turn stopped by user for conv {}",
+                                conv_id_after
+                            );
+                            break TurnOutcome::Stopped {
+                                partial: String::new(),
+                            };
+                        }
+
+                        if attempt >= MAX_TURN_RETRIES {
+                            log::error!(
+                                "[send_message] persistent turn crashed after {} retries: {} ({})",
+                                attempt,
+                                reason,
+                                diagnosis
+                            );
+                            break TurnOutcome::Crashed {
+                                partial: String::new(),
+                                reason: format!(
+                                    "Agent stopped unexpectedly: {diagnosis}. {reason}."
+                                ),
+                            };
+                        }
+
+                        attempt += 1;
+                        log::warn!(
+                            "[send_message] persistent turn crashed (attempt {}): {} ({}); reconnecting with --resume...",
+                            attempt, reason, diagnosis
+                        );
+
+                        // Tell the frontend to DISCARD the partial content it
+                        // already streamed for this turn. The retried session
+                        // produces a FRESH response (a `--resume` + re-sent
+                        // message does not replay the crashed turn's partial
+                        // text — it answers the message anew), so without a
+                        // reset the old partial text/tools/thinking would be
+                        // left prepended to the new response and the user would
+                        // see garbled, duplicated output.
+                        let _ = app_handle.emit(
+                            "agent-retry",
+                            ResponseRetry {
+                                conversation_id: conv_id_after.clone(),
+                                attempt: attempt as u32,
+                            },
+                        );
+
+                        // Respawn with --resume and re-send the SAME message.
+                        // The resumed session restores prior conversation context
+                        // and answers the message with a fresh response.
+                        let resume_sid =
+                            resolve_session_id(&conversation_engines, &conv_id, &engine_id_owned)
+                                .await;
+                        match PersistentSession::spawn(
+                            &engine_id_owned,
+                            &resume_sid,
+                            true, // resume
+                            workspace_owned.as_deref(),
+                            model_owned.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(mut s) => {
+                                if let Err(e) = s.send_message(&message_owned, &images_owned).await
+                                {
+                                    log::error!(
+                                        "[send_message] failed to re-send message after reconnect: {}",
+                                        e
+                                    );
+                                    break TurnOutcome::Crashed {
+                                        partial: String::new(),
+                                        reason: format!(
+                                            "Agent crashed ({diagnosis}) and the automatic reconnect failed to resend the message: {e}."
+                                        ),
+                                    };
+                                }
+                                if let Some(pid) = s.pid() {
+                                    kill_registry.lock().await.insert(conv_id.clone(), pid);
+                                }
+                                current_stdout = s.stdout();
+                                {
+                                    let sm = state_sessions_ref(&app_handle);
+                                    sm.lock().await.insert(conv_id.clone(), s);
+                                }
+                                // Loop and read again from the fresh session.
+                                continue;
+                            }
+                            Err(e) => {
+                                log::error!("[send_message] reconnect spawn failed: {}", e);
+                                break TurnOutcome::Crashed {
+                                    partial: String::new(),
+                                    reason: format!(
+                                        "Agent crashed ({diagnosis}) and the automatic reconnect failed: {e}."
+                                    ),
+                                };
+                            }
+                        }
                     }
                 }
-                emit_agent_events(&app_handle, &conv_id, events, &mut last_thinking);
-            })
-            .await;
+            };
 
             // Remove PID from kill registry (the session process stays alive
             // but we don't want stop_generation to kill it now that the turn
             // is complete).
             kill_registry.lock().await.remove(&conv_id_after);
 
-            // Was this turn intentionally stopped? stop_generation (or a
-            // mid-stream model change) sets the marker and has already killed +
-            // removed the session. A stopped turn must finalize SILENTLY: the
-            // frontend already marked the message done in stopGeneration, and
-            // emitting agent-error here would surface "persistent session stdout
-            // closed unexpectedly" (the EOF we read after the kill) while our
-            // error-cleanup could clobber a session a follow-up message just
-            // respawned — which is exactly why a stop used to make the next
-            // "start" fail with that error.
-            let was_stopped = state_stopped_ref(&app_handle)
-                .lock()
-                .await
-                .remove(&conv_id_after);
-            if was_stopped {
-                log::info!(
-                    "[send_message] persistent turn stopped by user for conv {}",
-                    conv_id_after
-                );
-                return;
-            }
-
-            // The stream failed unexpectedly (a real crash, not a stop): the
-            // session is likely dead. Remove it so the next message respawns —
-            // but only if the entry is actually dead. A LIVE entry here is a
-            // *different* session (the user already sent a follow-up that
-            // respawned), which we must never kill by accident.
-            if result.is_err() || stream_had_error {
-                let sessions_map = state_sessions_ref(&app_handle);
-                let mut sessions = sessions_map.lock().await;
-                let mut dead = false;
-                if let Some(s) = sessions.get_mut(&conv_id_after) {
-                    dead = !s.is_alive();
-                }
-                if dead {
-                    if let Some(mut s) = sessions.remove(&conv_id_after) {
-                        s.kill().await;
-                    }
-                }
-            }
-
-            if stream_had_error {
-                log::info!(
-                    "[send_message] persistent stream ended with error for conv {}",
-                    conv_id_after
-                );
-                return;
-            }
-
-            match result {
-                Ok(full_text) => {
+            match outcome {
+                TurnOutcome::Done(full_text) => {
                     log::info!(
-                        "[send_message] persistent done, total_len={}",
-                        full_text.len()
+                        "[send_message] persistent done, total_len={}, retries={}",
+                        full_text.len(),
+                        attempt
                     );
                     let _ = app_handle.emit(
                         "agent-done",
@@ -951,13 +1087,49 @@ async fn send_message(
                         },
                     );
                 }
-                Err(e) => {
-                    log::error!("[send_message] persistent stream error: {}", e);
+                TurnOutcome::Errored(_) => {
+                    // The CLI emitted an explicit error event during streaming;
+                    // `emit_agent_events` already forwarded it to the frontend
+                    // as `agent-error` (which set the message status to "error"
+                    // and cleared the generating flag). We must NOT emit
+                    // `agent-done` here — that would flip the message back to
+                    // "done" and mask the error. The session may still be alive
+                    // (the CLI ended the turn cleanly with an error), so we
+                    // leave it in the map for reuse on the next message.
+                    log::info!(
+                        "[send_message] persistent turn ended with an error event for conv {}",
+                        conv_id_after
+                    );
+                }
+                TurnOutcome::Stopped { .. } => {
+                    // Finalize silently — the frontend already marked the
+                    // message done when the user hit stop.
+                    log::info!(
+                        "[send_message] persistent turn finalized as stopped for conv {}",
+                        conv_id_after
+                    );
+                }
+                TurnOutcome::Crashed { reason, .. } => {
+                    // Clean up any dead session entry left behind. A LIVE entry
+                    // here is a *different* session (the user already sent a
+                    // follow-up that respawned) which we must never kill.
+                    {
+                        let sessions_map = state_sessions_ref(&app_handle);
+                        let mut sessions = sessions_map.lock().await;
+                        if let Some(s) = sessions.get_mut(&conv_id_after) {
+                            if !s.is_alive() {
+                                if let Some(mut s) = sessions.remove(&conv_id_after) {
+                                    s.kill().await;
+                                }
+                            }
+                        }
+                    }
+                    log::error!("[send_message] persistent stream failed: {}", reason);
                     let _ = app_handle.emit(
                         "agent-error",
                         ResponseError {
                             conversation_id: conv_id_after,
-                            error: e.to_string(),
+                            error: reason,
                         },
                     );
                 }
@@ -4453,7 +4625,10 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
 
         if outcome.status != "ok" {
             let mut should_emit_error = false;
-            let error_reason = format!("Iteration failed: {}", outcome.result.chars().take(200).collect::<String>());
+            let error_reason = format!(
+                "Iteration failed: {}",
+                outcome.result.chars().take(200).collect::<String>()
+            );
             {
                 let mut tasks = load_loop_tasks(&app);
                 if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
@@ -4483,7 +4658,12 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
             use tauri_plugin_notification::NotificationExt;
             let title = format!("🔄 {}", fresh_task.name);
             let preview: String = outcome.result.chars().take(160).collect();
-            let exit_reason = format_exit_condition_met(&fresh_task.exit_conditions, fresh_task.iteration + 1, &outcome.result, outcome.unchanged_streak);
+            let exit_reason = format_exit_condition_met(
+                &fresh_task.exit_conditions,
+                fresh_task.iteration + 1,
+                &outcome.result,
+                outcome.unchanged_streak,
+            );
             {
                 let mut tasks = load_loop_tasks(&app);
                 if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
@@ -5312,6 +5492,8 @@ mod tests {
             last_run: None,
             enabled: true,
             created_at: "2026-01-01T00:00:00Z".to_string(),
+            completion_reason: None,
+            changes_summary: None,
         }
     }
 

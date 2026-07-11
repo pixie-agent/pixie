@@ -12,7 +12,8 @@ export async function openExternal(url: string): Promise<void> {
     !scheme.startsWith("http://") &&
     !scheme.startsWith("https://") &&
     !scheme.startsWith("mailto:") &&
-    !scheme.startsWith("tel:")
+    !scheme.startsWith("tel:") &&
+    !scheme.startsWith("obsidian://")
   ) {
     console.warn("openExternal: refusing non-URL target", url);
     return;

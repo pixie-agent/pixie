@@ -39,6 +39,10 @@ export function segmentColor(seg: TokenSegment): string | undefined {
 // Flatten a hast node tree into leaf segments, each tagged with the nearest
 // Prism token type so colors survive across nested tokens.
 function collect(node: HastNode, inherited: string | undefined, out: TokenSegment[]): void {
+  if (node.type === "root") {
+    for (const child of node.children ?? []) collect(child, inherited, out);
+    return;
+  }
   if (node.type === "text") {
     if (node.value) out.push({ text: node.value, cls: inherited });
     return;

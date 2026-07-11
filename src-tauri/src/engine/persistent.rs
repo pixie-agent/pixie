@@ -20,6 +20,62 @@ use super::shared::{self, detach_from_controlling_terminal};
 use super::{parse_line, NormalizedEvent};
 
 // ---------------------------------------------------------------------------
+// Tunables for long-running turn resilience
+// ---------------------------------------------------------------------------
+
+/// How long a single `read_line` may block before we consider the stream
+/// stalled. A healthy CLI emits heartbeat/progress lines frequently, so a
+/// silence longer than this strongly implies the process is wedged (OOM,
+/// network partition, OS suspend/resume, etc.). On timeout we re-check whether
+/// the child is still alive and otherwise let the caller decide to retry.
+pub const READ_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Hard ceiling on how many times a single turn will be transparently retried
+/// after an unexpected EOF/read error before surfacing the failure to the user.
+pub const MAX_TURN_RETRIES: usize = 2;
+
+/// How many consecutive heartbeat timeouts (each `READ_HEARTBEAT_TIMEOUT` long)
+/// we tolerate before declaring an alive-but-silent process wedged and treating
+/// it as a crash. This bounds the worst case: a process that hangs without
+/// exiting or emitting anything is recovered via `--resume` instead of looping
+/// forever. With the defaults (180s × 3) a genuinely-thinking agent gets ~9
+/// minutes of silence per attempt before we give up on that attempt — far
+/// beyond any normal tool/think duration — while a truly stuck process is
+/// still recovered in bounded time.
+pub const MAX_HEARTBEAT_TIMEOUTS: usize = 3;
+
+/// A structured outcome of one read attempt, used so the caller can distinguish
+/// a clean final result from a recoverable mid-turn crash (and decide whether
+/// to retry with `--resume`).
+///
+/// The `partial` fields preserve whatever text was streamed before a
+/// stop/crash; callers that want to surface partial results (rather than
+/// discarding them on retry) can use them. The persistent path currently
+/// retries and so discards `partial`, hence the `allow(dead_code)`.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum TurnOutcome {
+    /// The turn completed normally (a `result`/final event was received).
+    Done(String),
+    /// The CLI emitted an explicit error event and then ended the turn. This is
+    /// a *terminal* outcome (the model/CLI gave up — e.g. rate limit, content
+    /// filter, upstream API error) — it must NOT be retried (re-sending the
+    /// same message would just hit the same error again) and it must NOT emit
+    /// `agent-done`, because the error event was already forwarded to the
+    /// frontend via `on_events` (which emitted `agent-error` and marked the
+    /// message as errored). The streamed partial text is preserved for callers
+    /// that want to surface it.
+    Errored(String),
+    /// The user (or a model swap) deliberately stopped this turn. The streamed
+    /// partial output is preserved in `partial`.
+    Stopped { partial: String },
+    /// The CLI process died unexpectedly mid-turn. `partial` holds whatever was
+    /// streamed before the crash; `reason` is a human-readable diagnosis
+    /// (exit code / EOF / read error) suitable for logs and retries.
+    Crashed { partial: String, reason: String },
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -244,6 +300,51 @@ impl PersistentSession {
         }
     }
 
+    /// Produce a human-readable diagnosis of *why* the child is no longer
+    /// producing output. Reaps the child if it has exited so we can read its
+    /// exit status. Safe to call repeatedly (returns the same status once
+    /// reaped).
+    pub async fn diagnose_exit(&mut self) -> String {
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    "process exited cleanly (stdout closed before final event)".to_string()
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(sig) = status.signal() {
+                            return format!(
+                                "process killed by signal {sig} (likely OOM, manual kill, or crash)"
+                            );
+                        }
+                    }
+                    format!(
+                        "process exited with status {} (crashed)",
+                        status.code().unwrap_or(-1)
+                    )
+                }
+            }
+            Ok(None) => {
+                // Still alive but stdout is closed/wedged — the process is stuck
+                // without producing output. Most common causes: network
+                // partition to the model API, OS suspend/resume, or an
+                // internal deadlock in the CLI.
+                "process still alive but stdout stalled (no output for an extended period)"
+                    .to_string()
+            }
+            Err(e) => format!("failed to query process status: {e}"),
+        }
+    }
+
+    /// Best-effort health probe used before reusing a cached session: confirms
+    /// the child is running. A session that is alive but mid-turn (stdout lock
+    /// held) is treated as healthy — we simply must not reuse it concurrently.
+    #[allow(dead_code)]
+    pub async fn is_healthy(&mut self) -> bool {
+        self.is_alive()
+    }
+
     /// Get the PID of the child process.
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
@@ -378,27 +479,99 @@ async fn build_persistent_command(
 /// Read from a persistent session's stdout until a `result` event is received
 /// (which signals the end of one turn). The reader is shared via Arc<Mutex<>>,
 /// so multiple turns can be read sequentially.
-pub async fn read_persistent_turn<F>(
+///
+/// `is_stopped` is polled before every read so a user-initiated stop (or a
+/// mid-stream model swap) is detected promptly even when the CLI hasn't yet
+/// closed its stdout. When stopped, the partial text streamed so far is
+/// preserved in [`TurnOutcome::Stopped`].
+///
+/// Instead of `bail!`-ing on EOF/read errors (the old behavior surfaced the
+/// opaque "persistent session stdout closed unexpectedly" to users), this now
+/// returns [`TurnOutcome::Crashed`] with a diagnosis, letting the caller retry
+/// the turn transparently with `--resume`.
+pub async fn read_persistent_turn<F, S>(
     engine_id: &str,
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
     mut on_events: F,
-) -> Result<String>
+    is_stopped: S,
+) -> TurnOutcome
 where
     F: FnMut(&[NormalizedEvent]),
+    S: Fn() -> bool,
 {
     let mut guard = stdout.lock().await;
     let mut final_text = String::new();
+    let mut consecutive_heartbeat_timeouts = 0usize;
+    let mut ended_with_error = false;
 
     loop {
+        // Check the stop flag first — a stop may have been requested while we
+        // were between lines. This makes a stop responsive even when the CLI
+        // is mid-tool and not emitting new lines for a while.
+        if is_stopped() {
+            return TurnOutcome::Stopped {
+                partial: std::mem::take(&mut final_text),
+            };
+        }
+
         let mut line = String::new();
-        match guard.read_line(&mut line).await {
-            Ok(0) => {
-                // EOF — the process has closed stdout (likely died).
-                anyhow::bail!("persistent session stdout closed unexpectedly");
+        // Bound the blocking read so a wedged CLI (no output, no exit — e.g.
+        // network partition to the model API, OS suspend) is detected instead
+        // of hanging the turn forever. On timeout we re-check `is_stopped` and
+        // loop; if the child has actually died, the next read returns EOF.
+        let read_result =
+            tokio::time::timeout(READ_HEARTBEAT_TIMEOUT, guard.read_line(&mut line)).await;
+        match read_result {
+            Err(_) => {
+                // Timed out waiting for a line. This is not itself fatal — the
+                // CLI may just be thinking for a long time — so we normally loop:
+                // the next iteration re-checks `is_stopped`, and if the child
+                // has died the subsequent read returns EOF. But a process that
+                // stays alive yet emits nothing for many heartbeats is wedged
+                // (network partition, OS suspend, internal deadlock); after a
+                // bounded number of consecutive timeouts we treat it as a crash
+                // so the caller can recover via `--resume`.
+                consecutive_heartbeat_timeouts += 1;
+                if consecutive_heartbeat_timeouts >= MAX_HEARTBEAT_TIMEOUTS {
+                    log::error!(
+                        "[persistent] stdout stalled for {} consecutive heartbeats (~{:?} total, engine={}); treating as crash",
+                        consecutive_heartbeat_timeouts,
+                        READ_HEARTBEAT_TIMEOUT * consecutive_heartbeat_timeouts as u32,
+                        engine_id
+                    );
+                    return TurnOutcome::Crashed {
+                        partial: std::mem::take(&mut final_text),
+                        reason: format!(
+                            "agent produced no output for ~{:?} (process appears hung)",
+                            READ_HEARTBEAT_TIMEOUT * consecutive_heartbeat_timeouts as u32
+                        ),
+                    };
+                }
+                log::warn!(
+                    "[persistent] no stdout output for {:?} (engine={}); heartbeat timeout {}/{} — will keep waiting unless stopped",
+                    READ_HEARTBEAT_TIMEOUT,
+                    engine_id,
+                    consecutive_heartbeat_timeouts,
+                    MAX_HEARTBEAT_TIMEOUTS
+                );
+                continue;
             }
-            Ok(_) => {}
-            Err(e) => {
-                anyhow::bail!("error reading persistent session stdout: {e}");
+            Ok(Ok(0)) => {
+                // EOF — the process has closed stdout (likely died).
+                return TurnOutcome::Crashed {
+                    partial: std::mem::take(&mut final_text),
+                    reason: "session stdout closed unexpectedly (EOF)".to_string(),
+                };
+            }
+            Ok(Ok(_)) => {
+                // We got a line — the stream is alive. Reset the stall counter.
+                consecutive_heartbeat_timeouts = 0;
+            }
+            Ok(Err(e)) => {
+                return TurnOutcome::Crashed {
+                    partial: std::mem::take(&mut final_text),
+                    reason: format!("error reading session stdout: {e}"),
+                };
             }
         }
 
@@ -413,18 +586,12 @@ where
         }
 
         let mut is_final = false;
-        for evt in &events {
-            match evt {
-                NormalizedEvent::Final { text } => {
-                    final_text = text.clone();
-                    is_final = true;
-                }
-                NormalizedEvent::Error { message: _ } => {
-                    is_final = true;
-                }
-                _ => {}
-            }
-        }
+        classify_events(
+            &events,
+            &mut final_text,
+            &mut is_final,
+            &mut ended_with_error,
+        );
 
         on_events(&events);
 
@@ -433,5 +600,146 @@ where
         }
     }
 
-    Ok(final_text)
+    if ended_with_error {
+        TurnOutcome::Errored(final_text)
+    } else {
+        TurnOutcome::Done(final_text)
+    }
+}
+
+/// Inspect a batch of normalized events from one streamed line and update the
+/// turn's accumulators:
+/// - `final_text` is overwritten when a `Final` event arrives.
+/// - `is_final` is set when the batch contains a terminal event (`Final` or
+///   `Error`), signaling the read loop to stop.
+/// - `ended_with_error` is set when the terminal event was an `Error` (so the
+///   caller returns `TurnOutcome::Errored` instead of `Done`, and refrains from
+///   emitting `agent-done`).
+///
+/// Extracted from `read_persistent_turn` so the classification rule can be
+/// unit-tested without spawning a real CLI process.
+fn classify_events(
+    events: &[NormalizedEvent],
+    final_text: &mut String,
+    is_final: &mut bool,
+    ended_with_error: &mut bool,
+) {
+    for evt in events {
+        match evt {
+            NormalizedEvent::Final { text } => {
+                *final_text = text.clone();
+                *is_final = true;
+            }
+            NormalizedEvent::Error { message: _ } => {
+                // The CLI reported an error event — the model/CLI gave up on
+                // this turn (rate limit, content filter, upstream API error,
+                // etc.). This is a *terminal* outcome, not a crash: we must not
+                // retry it (re-sending would hit the same error), and we must
+                // not treat it as a clean Done. The error event is forwarded
+                // to the frontend by the caller's `on_events` (emitting
+                // `agent-error`), so the caller must NOT also emit `agent-done`.
+                *ended_with_error = true;
+                *is_final = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_final_event_marks_done_not_errored() {
+        let events = vec![NormalizedEvent::Final {
+            text: "all done".to_string(),
+        }];
+        let mut final_text = String::new();
+        let mut is_final = false;
+        let mut ended_with_error = false;
+        classify_events(
+            &events,
+            &mut final_text,
+            &mut is_final,
+            &mut ended_with_error,
+        );
+        assert!(is_final);
+        assert!(!ended_with_error, "Final must not set ended_with_error");
+        assert_eq!(final_text, "all done");
+    }
+
+    #[test]
+    fn classify_error_event_marks_errored_not_done() {
+        // Regression guard: an explicit CLI Error event must terminate the turn
+        // as Errored (terminal, not retried, no agent-done), NOT as a clean
+        // Done. The old code treated this as Done and then emitted agent-done,
+        // which flipped the frontend message from "error" back to "done" and
+        // masked the failure from the user.
+        let events = vec![NormalizedEvent::Error {
+            message: "rate limited".to_string(),
+        }];
+        let mut final_text = String::new();
+        let mut is_final = false;
+        let mut ended_with_error = false;
+        classify_events(
+            &events,
+            &mut final_text,
+            &mut is_final,
+            &mut ended_with_error,
+        );
+        assert!(is_final, "Error must terminate the turn");
+        assert!(
+            ended_with_error,
+            "Error must set ended_with_error so the caller returns Errored"
+        );
+    }
+
+    #[test]
+    fn classify_non_terminal_events_do_not_end_turn() {
+        let events = vec![NormalizedEvent::TextDelta {
+            text: "streaming...".to_string(),
+            event_type: "delta",
+        }];
+        let mut final_text = String::new();
+        let mut is_final = false;
+        let mut ended_with_error = false;
+        classify_events(
+            &events,
+            &mut final_text,
+            &mut is_final,
+            &mut ended_with_error,
+        );
+        assert!(!is_final);
+        assert!(!ended_with_error);
+        // TextDelta does not overwrite final_text (only Final does).
+        assert_eq!(final_text, "");
+    }
+
+    #[test]
+    fn classify_final_after_error_still_counts_as_errored() {
+        // If a Final event arrives in the same batch as an Error, the error
+        // wins (ended_with_error stays true) so we never mask an error with a
+        // clean Done.
+        let events = vec![
+            NormalizedEvent::Error {
+                message: "oops".to_string(),
+            },
+            NormalizedEvent::Final {
+                text: "partial".to_string(),
+            },
+        ];
+        let mut final_text = String::new();
+        let mut is_final = false;
+        let mut ended_with_error = false;
+        classify_events(
+            &events,
+            &mut final_text,
+            &mut is_final,
+            &mut ended_with_error,
+        );
+        assert!(is_final);
+        assert!(ended_with_error);
+        assert_eq!(final_text, "partial");
+    }
 }

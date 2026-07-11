@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useTranslation } from "../hooks/useTranslation";
 import MessageBubble from "./MessageBubble";
 import type { Conversation, PreviewRequest } from "../types";
@@ -11,6 +11,29 @@ interface ChatViewProps {
   isGenerating: boolean;
   onOpenPreview: (t: PreviewRequest) => void;
   onRespondPermission?: (convId: string, requestId: string, allow: boolean) => void;
+}
+
+const INITIAL_MESSAGE_RENDER_COUNT = 48;
+const MESSAGE_RENDER_CHUNK = 80;
+const MESSAGE_RENDER_CHUNK_DELAY_MS = 16;
+
+function ComponentLoading({ onCancel }: { onCancel?: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-3">
+      <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+      <span className="text-xs text-[var(--text-secondary)]">{t("common.loading")}</span>
+      {onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+        >
+          {t("common.cancel")}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function TypingIndicator() {
@@ -70,9 +93,73 @@ function WelcomeScreen() {
 export default function ChatView({ conversation, isGenerating, onOpenPreview, onRespondPermission }: ChatViewProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
+  const loadTokenRef = useRef(0);
+  const latestConversationRef = useRef<Conversation | null>(conversation);
   // Previous message count — used to detect when the user sends a new turn.
   const prevCountRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
+  const [displayConversation, setDisplayConversation] = useState<Conversation | null>(conversation);
+  const [switching, setSwitching] = useState(false);
+  const [renderLimit, setRenderLimit] = useState(INITIAL_MESSAGE_RENDER_COUNT);
+  const conversationId = conversation?.id ?? null;
+
+  useEffect(() => {
+    latestConversationRef.current = conversation;
+  }, [conversation]);
+
+  useEffect(() => {
+    if (displayConversation?.id === conversationId) return;
+    loadTokenRef.current += 1;
+    const token = loadTokenRef.current;
+
+    const startTimer = window.setTimeout(() => {
+      if (loadTokenRef.current !== token) return;
+      setShowJump(false);
+      setRenderLimit(INITIAL_MESSAGE_RENDER_COUNT);
+      const next = latestConversationRef.current;
+      if (!next) {
+        setDisplayConversation(null);
+        setSwitching(false);
+        return;
+      }
+      setSwitching(true);
+      setDisplayConversation(null);
+    }, 0);
+
+    const mountTimer = window.setTimeout(() => {
+      if (loadTokenRef.current !== token) return;
+      setDisplayConversation(latestConversationRef.current);
+      setSwitching(false);
+    }, 45);
+
+    return () => {
+      window.clearTimeout(startTimer);
+      window.clearTimeout(mountTimer);
+    };
+  }, [conversationId, displayConversation?.id]);
+
+  useEffect(() => {
+    if (!conversation || switching || displayConversation?.id !== conversation.id) return;
+    const timer = window.setTimeout(() => setDisplayConversation(conversation), 0);
+    return () => window.clearTimeout(timer);
+  }, [conversation, displayConversation?.id, switching]);
+
+  useEffect(() => {
+    if (!displayConversation) return;
+    const total = displayConversation.messages.length;
+    if (renderLimit >= total) return;
+    const token = loadTokenRef.current;
+    const timer = window.setTimeout(() => {
+      if (loadTokenRef.current !== token) return;
+      setRenderLimit((n) => Math.min(total, n + MESSAGE_RENDER_CHUNK));
+    }, MESSAGE_RENDER_CHUNK_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [displayConversation, renderLimit]);
+
+  const cancelConversationLoad = useCallback(() => {
+    loadTokenRef.current += 1;
+    setSwitching(false);
+  }, []);
 
   // Show a "jump to latest" button only when the user has manually scrolled up.
   const handleScroll = useCallback(() => {
@@ -85,7 +172,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
   // Scroll to the bottom ONLY when a new message is added (i.e. the user just sent
   // a new turn). The assistant's streaming reply NEVER auto-scrolls, so you can
   // scroll freely and read at your own pace while it generates.
-  const messageCount = conversation?.messages.length ?? 0;
+  const messageCount = displayConversation?.messages.length ?? 0;
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -103,8 +190,22 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
     setShowJump(false);
   }, []);
 
+  const hiddenCount = Math.max(0, (displayConversation?.messages.length ?? 0) - renderLimit);
+  const visibleMessages = useMemo(
+    () => (displayConversation ? displayConversation.messages.slice(hiddenCount) : []),
+    [displayConversation, hiddenCount],
+  );
+
   // No conversation selected
-  if (!conversation) {
+  if (switching) {
+    return (
+      <div className="flex-1 overflow-hidden">
+        <ComponentLoading onCancel={cancelConversationLoad} />
+      </div>
+    );
+  }
+
+  if (!displayConversation) {
     return (
       <div className="flex-1 overflow-hidden">
         <WelcomeScreen />
@@ -113,7 +214,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
   }
 
   // Empty conversation
-  if (conversation.messages.length === 0) {
+  if (displayConversation.messages.length === 0) {
     return (
       <div className="flex-1 overflow-hidden">
         <WelcomeScreen />
@@ -121,7 +222,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
     );
   }
 
-  const lastMessage = conversation.messages[conversation.messages.length - 1];
+  const lastMessage = displayConversation.messages[displayConversation.messages.length - 1];
 
   return (
     <div className="flex-1 overflow-hidden relative">
@@ -131,8 +232,15 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
         className="h-full overflow-y-auto px-4 py-6"
       >
         <div className="max-w-4xl mx-auto w-full">
-          {conversation.messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} conversationId={conversation.id} />
+          {hiddenCount > 0 && (
+            <div className="flex items-center justify-center gap-2 py-3 text-xs text-[var(--text-secondary)]">
+              <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+              {t("common.loading")}
+            </div>
+          )}
+
+          {visibleMessages.map((msg) => (
+            <MessageBubble key={msg.id} message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} conversationId={displayConversation.id} />
           ))}
 
           {/* Show typing indicator when the last message is a user message and we're generating */}

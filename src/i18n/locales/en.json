@@ -205,7 +205,12 @@
     "streaming": "Streaming...",
     "taskRunning": "Running…",
     "kbToolInput": "Input",
-    "kbToolResult": "Result"
+    "kbToolResult": "Result",
+    "errors": {
+      "agentOOM": "The agent process ran out of memory and was terminated. Your conversation history is preserved — please resend your message to continue.",
+      "agentNetwork": "The agent lost its connection to the model service. Please check your network and resend your message to continue.",
+      "agentCrashed": "The agent stopped unexpectedly. Your conversation history is preserved — resend your message to continue."
+    }
   },
   "inputBar": {
     "removeAttachment": "Remove",

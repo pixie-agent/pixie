@@ -123,6 +123,18 @@ export interface ResponseDone {
   full_text: string;
 }
 
+/**
+ * The backend is transparently retrying a persistent turn that crashed
+ * mid-stream (via `--resume`). The frontend must discard the partial
+ * content/tools/thinking already accumulated for the current assistant
+ * message so the retried (fresh) response streams cleanly, without leftover
+ * garbled/duplicated text from the failed attempt.
+ */
+export interface ResponseRetry {
+  conversation_id: string;
+  attempt: number;
+}
+
 export interface ResponseTool {
   conversation_id: string;
   tool_use_id: string;
