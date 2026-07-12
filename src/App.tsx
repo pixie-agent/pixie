@@ -899,7 +899,7 @@ ${entries}
         loopTasks={loopTasks}
       />
 
-      <div className="flex-1 flex flex-col min-w-0" data-page-find-scope="main">
+      <div className="flex-1 flex flex-col min-w-[420px]" data-page-find-scope="main">
         {mainViewLoading && <LoadingPanel onCancel={cancelMainViewLoad} />}
 
         {!mainViewLoading && displayMainView === "chat" && (
