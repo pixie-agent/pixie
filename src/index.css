@@ -5,6 +5,7 @@
 /* -------------------------------------------------------------------------- */
 
 :root {
+  --ui-scale: 1;
   --bg-primary: #1a1a2e;
   --bg-secondary: #16213e;
   --bg-tertiary: #0f3460;
@@ -36,6 +37,38 @@
   color-scheme: light;
 }
 
+[data-theme="cyber-teal"] {
+  --bg-primary: #0b1020;
+  --bg-secondary: #111827;
+  --bg-tertiary: #1f2937;
+  --bg-user-msg: #162033;
+  --bg-assistant-msg: #101827;
+  --text-primary: #e5f3ff;
+  --text-secondary: #8aa0b6;
+  --accent: #14f1d9;
+  --accent-hover: #0ec7b4;
+  --border-color: #263244;
+  --scrollbar-thumb: #334155;
+  --scrollbar-track: transparent;
+  color-scheme: dark;
+}
+
+[data-theme="paper-mint"] {
+  --bg-primary: #f6f8f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #eaf1ef;
+  --bg-user-msg: #e4f3f0;
+  --bg-assistant-msg: #ffffff;
+  --text-primary: #17211f;
+  --text-secondary: #63736f;
+  --accent: #0f9f8f;
+  --accent-hover: #0b8275;
+  --border-color: #d8e2df;
+  --scrollbar-thumb: #b9c8c4;
+  --scrollbar-track: transparent;
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -48,6 +81,10 @@ body,
   padding: 0;
 }
 
+html {
+  font-size: calc(16px * var(--ui-scale));
+}
+
 body {
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -55,6 +92,18 @@ body {
     "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.page-find-match {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.page-find-active {
+  background: var(--accent);
+  color: white;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -232,6 +281,123 @@ body {
   border: none;
   border-top: 1px solid var(--border-color);
   margin: 1em 0;
+}
+
+.preview-markdown {
+  padding: 18px 20px 28px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+
+.preview-markdown h1,
+.preview-markdown h2,
+.preview-markdown h3,
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  color: var(--text-primary);
+  letter-spacing: 0;
+}
+
+.preview-markdown h1 {
+  margin: 0 0 0.8em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 1.6em;
+  line-height: 1.2;
+}
+
+.preview-markdown h2 {
+  margin-top: 1.45em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  font-size: 1.28em;
+}
+
+.preview-markdown h3 {
+  margin-top: 1.25em;
+  font-size: 1.12em;
+}
+
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  margin-top: 1em;
+  font-size: 1em;
+}
+
+.preview-markdown p {
+  margin: 0.65em 0;
+}
+
+.preview-markdown ul,
+.preview-markdown ol {
+  margin: 0.65em 0;
+  padding-left: 1.65em;
+}
+
+.preview-markdown li {
+  margin: 0.28em 0;
+}
+
+.preview-markdown li > p {
+  margin: 0.35em 0;
+}
+
+.preview-markdown blockquote {
+  margin: 0.9em 0;
+  padding: 0.45em 1em;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--bg-tertiary) 38%, transparent);
+  color: var(--text-secondary);
+}
+
+.preview-markdown pre {
+  margin: 0.85em 0;
+  padding: 0.9em 1em;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, #000 28%);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.preview-markdown pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.preview-markdown code:not(pre code) {
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-tertiary) 62%, transparent);
+  color: var(--text-primary);
+}
+
+.preview-markdown table {
+  margin: 1em 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: auto;
+}
+
+.preview-markdown th,
+.preview-markdown td {
+  padding: 0.5em 0.75em;
+  vertical-align: top;
+}
+
+.preview-markdown th {
+  background: color-mix(in srgb, var(--bg-tertiary) 78%, transparent);
+}
+
+.preview-markdown img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
 }
 
 /* -------------------------------------------------------------------------- */

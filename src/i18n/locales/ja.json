@@ -74,6 +74,12 @@
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
+  "pageFind": {
+    "placeholder": "ページ内検索",
+    "count": "{{current}}/{{total}}",
+    "previous": "前の一致",
+    "next": "次の一致"
+  },
   "schedule": {
     "dailyAt": "毎日 {{hour}}:{{minute}}",
     "weekdaysAt": "平日 {{hour}}:{{minute}}",
@@ -252,8 +258,12 @@
     "backfillHistory": "履歴をバックフィル",
     "obsidianNotInstalled": "Obsidian がインストールされていません。https://obsidian.md からダウンロードしてナレッジベースを表示してください。",
     "theme": "テーマ",
-    "dark": "ダーク",
-    "light": "ライト",
+    "dark": "ミッドナイトバイオレット",
+    "light": "ソフトバイオレット",
+    "cyberTeal": "サイバーティール",
+    "paperMint": "ペーパーミント",
+    "interfaceScale": "インターフェイス倍率",
+    "interfaceScaleHint": "Ctrl/Cmd + プラス、マイナス、0 で素早く調整できます。",
     "modelConfig": "モデル設定",
     "modelConfigHint": "エンジンごとの環境変数オーバーライド。空のままにするとシステムデフォルトを使用します。",
     "appliesOnly": "{{name}} セッションにのみ適用されます。",
@@ -277,7 +287,10 @@
       "newLine": "改行",
       "toggleSidebar": "サイドバーを切り替え",
       "toggleSettings": "設定",
-      "toggleSearch": "ナレッジベースを検索"
+      "toggleSearch": "ナレッジベースを検索",
+      "zoomIn": "拡大",
+      "zoomOut": "縮小",
+      "resetZoom": "ズームをリセット"
     },
     "backfill": {
       "scanning": "スキャン中…",
@@ -478,6 +491,8 @@
     "failedReadFile": "ファイルの読み込みに失敗: {{error}}",
     "restartTerminal": "再起動",
     "diffCommit": "差分 {{hash}}",
+    "enterFullscreen": "全画面にする",
+    "exitFullscreen": "全画面を終了",
     "plainTextExt": "text"
   },
   "diffViewer": {

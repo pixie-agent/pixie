@@ -20,6 +20,7 @@ const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel"
 const LoopTasksPanel = lazy(() => import("./components/LoopTasksPanel"));
 const FileExplorer = lazy(() => import("./components/RightPanel"));
 const SearchPalette = lazy(() => import("./components/SearchPalette"));
+const PageFind = lazy(() => import("./components/PageFind"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
 import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
@@ -35,7 +36,7 @@ import type {
 } from "./types";
 import { AGENT_ENGINES } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
-import { bootstrap, getConfig, getHistory, updateConfig } from "./lib/storage";
+import { bootstrap, getConfig, getHistory, updateConfig, UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "./lib/storage";
 
 type MainView = "chat" | "tasks" | "loops" | "skills" | "settings";
 
@@ -399,7 +400,8 @@ function AppShell() {
   const [displayMainView, setDisplayMainView] = useState<MainView>("chat");
   const [mainViewLoading, setMainViewLoading] = useState(false);
   const mainViewLoadTokenRef = useRef(0);
-  const [theme, setTheme] = useState<"dark" | "light">(() => getConfig().theme);
+  const [theme, setTheme] = useState<AppTheme>(() => getConfig().theme);
+  const [uiScale, setUiScale] = useState<UiScale>(() => getConfig().uiScale);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
     () => getConfig().engineModelConfigs,
@@ -586,6 +588,11 @@ function AppShell() {
   }, [theme]);
 
   useEffect(() => {
+    document.documentElement.style.setProperty("--ui-scale", String(uiScale));
+    updateConfig({ uiScale });
+  }, [uiScale]);
+
+  useEffect(() => {
     updateConfig({ systemPrompt });
   }, [systemPrompt]);
 
@@ -635,12 +642,31 @@ function AppShell() {
         e.preventDefault();
         setSearchOpen((prev) => !prev);
       }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setUiScale((current) => {
+          const index = UI_SCALE_OPTIONS.indexOf(current);
+          return UI_SCALE_OPTIONS[Math.min(index + 1, UI_SCALE_OPTIONS.length - 1)];
+        });
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "-") {
+        e.preventDefault();
+        setUiScale((current) => {
+          const index = UI_SCALE_OPTIONS.indexOf(current);
+          return UI_SCALE_OPTIONS[Math.max(index - 1, 0)];
+        });
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "0") {
+        e.preventDefault();
+        setUiScale(1);
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [createConversation, defaultEngine, isGenerating, stopGeneration]);
 
-  const handleThemeChange = useCallback((t: "dark" | "light") => setTheme(t), []);
+  const handleThemeChange = useCallback((t: AppTheme) => setTheme(t), []);
+  const handleUiScaleChange = useCallback((scale: UiScale) => setUiScale(scale), []);
   const handleSystemPromptChange = useCallback((prompt: string) => setSystemPrompt(prompt), []);
   const handleEngineModelConfigChange = useCallback(
     (engine: keyof EngineModelConfigs, patch: Record<string, string | undefined>) => {
@@ -873,7 +899,7 @@ ${entries}
         loopTasks={loopTasks}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-[420px]" data-page-find-scope="main">
         {mainViewLoading && <LoadingPanel onCancel={cancelMainViewLoad} />}
 
         {!mainViewLoading && displayMainView === "chat" && (
@@ -1134,6 +1160,8 @@ ${entries}
             onDefaultEngineChange={setDefaultEngine}
             theme={theme}
             onThemeChange={handleThemeChange}
+            uiScale={uiScale}
+            onUiScaleChange={handleUiScaleChange}
             onClose={() => setMainView("chat")}
             systemPrompt={systemPrompt}
             onSystemPromptChange={handleSystemPromptChange}
@@ -1158,7 +1186,7 @@ ${entries}
           It is NOT keyed by workspace, so the per-workspace terminals mounted
           inside it also persist across workspace switches. */}
       {activeWorkspace?.path && (
-        <div className="h-full" style={{ display: fileExplorerOpen ? "block" : "none" }}>
+        <div className="h-full shrink-0" data-page-find-scope="right-panel" style={{ display: fileExplorerOpen ? "block" : "none" }}>
           <Suspense fallback={<LoadingPanel />}>
           <FileExplorer
             workspacePath={activeWorkspace.path}
@@ -1175,6 +1203,9 @@ ${entries}
           onClose={() => setSearchOpen(false)}
           onOpenPreview={(path) => handleOpenPreview({ kind: "file", path })}
         />
+      </Suspense>
+      <Suspense fallback={null}>
+        <PageFind />
       </Suspense>
     </div>
   );

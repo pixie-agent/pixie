@@ -74,6 +74,12 @@
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
+  "pageFind": {
+    "placeholder": "Find on page",
+    "count": "{{current}}/{{total}}",
+    "previous": "Previous match",
+    "next": "Next match"
+  },
   "schedule": {
     "dailyAt": "Daily at {{hour}}:{{minute}}",
     "weekdaysAt": "Weekdays at {{hour}}:{{minute}}",
@@ -252,8 +258,12 @@
     "backfillHistory": "Backfill History",
     "obsidianNotInstalled": "Obsidian is not installed. Download it from https://obsidian.md to view your knowledge base.",
     "theme": "Theme",
-    "dark": "Dark",
-    "light": "Light",
+    "dark": "Midnight Violet",
+    "light": "Soft Violet",
+    "cyberTeal": "Cyber Teal",
+    "paperMint": "Paper Mint",
+    "interfaceScale": "Interface Scale",
+    "interfaceScaleHint": "Use Ctrl/Cmd + plus, minus, or 0 to adjust quickly.",
     "modelConfig": "Model Configuration",
     "modelConfigHint": "Environment overrides per engine. Leave empty to use system defaults.",
     "appliesOnly": "Applies only to {{name}} sessions.",
@@ -277,7 +287,10 @@
       "newLine": "New line",
       "toggleSidebar": "Toggle sidebar",
       "toggleSettings": "Settings",
-      "toggleSearch": "Search knowledge base"
+      "toggleSearch": "Search knowledge base",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "resetZoom": "Reset zoom"
     },
     "backfill": {
       "scanning": "Scanning…",
@@ -478,6 +491,8 @@
     "failedReadFile": "Failed to read file: {{error}}",
     "restartTerminal": "Restart",
     "diffCommit": "Diff {{hash}}",
+    "enterFullscreen": "Enter fullscreen",
+    "exitFullscreen": "Exit fullscreen",
     "plainTextExt": "text"
   },
   "diffViewer": {

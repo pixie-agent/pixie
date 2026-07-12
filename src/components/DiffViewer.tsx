@@ -1,16 +1,10 @@
+import { DiffModeEnum, DiffView } from "@git-diff-view/react";
+import "@git-diff-view/react/styles/diff-view-pure.css";
 import { memo, useMemo, useState } from "react";
-import type { CSSProperties, ReactElement } from "react";
-import type {
-  DiffFile,
-  DiffFileStatus,
-  DiffLine,
-  DiffLineType,
-  DiffViewMode,
-} from "../types";
+import type { ReactElement } from "react";
+import type { DiffFile, DiffFileStatus, DiffLineType, DiffViewMode } from "../types";
 import { parseGitDiff } from "../lib/diffParser";
-import { tokenizeSource, segmentColor, type TokenSegment } from "../lib/highlight";
 import { languageOfPath } from "../lib/languages";
-import { wordDiffParts, type WordPart } from "../lib/wordDiff";
 import { useTranslation } from "../hooks/useTranslation";
 
 interface DiffViewerProps {
@@ -32,177 +26,60 @@ const STATUS_META: Record<DiffFileStatus, { label: string; color: string }> = {
 };
 
 const SIGN: Record<DiffLineType, string> = { add: "+", delete: "-", context: " " };
-const ROW_BG: Record<DiffLineType, string> = {
-  add: "rgba(46, 160, 67, 0.12)",
-  delete: "rgba(248, 81, 73, 0.12)",
-  context: "transparent",
-};
-const SIGN_COLOR: Record<DiffLineType, string> = {
-  add: "#3fb950",
-  delete: "#f85149",
-  context: "var(--text-secondary)",
-};
-const ADD_WORD_BG = "rgba(46, 160, 67, 0.28)";
-const DEL_WORD_BG = "rgba(248, 81, 73, 0.28)";
 
-const GUTTER_TD: CSSProperties = {
-  width: "3.5ch",
-  paddingRight: "0.5rem",
-  textAlign: "right",
-  userSelect: "none",
-  color: "var(--text-secondary)",
-  opacity: 0.6,
-};
-const CODE_TD: CSSProperties = {
-  whiteSpace: "pre",
-  paddingLeft: "0.5rem",
-  paddingRight: "1rem",
-};
+function currentDiffTheme(): "light" | "dark" {
+  const theme = document.documentElement.getAttribute("data-theme");
+  return theme === "light" || theme === "paper-mint" ? "light" : "dark";
+}
 
-/** Render either colored token spans (known language) or plain text. */
-function CodeCell({
-  text,
-  segments,
-}: {
-  text: string;
-  segments: TokenSegment[] | null;
-}) {
-  if (segments && segments.length > 0) {
-    return (
-      <>
-        {segments.map((seg, i) => (
-          <span key={i} style={{ color: segmentColor(seg) }}>
-            {seg.text}
-          </span>
-        ))}
-      </>
-    );
+function toDiffMode(viewMode: DiffViewMode): DiffModeEnum {
+  return viewMode === "split" ? DiffModeEnum.Split : DiffModeEnum.Unified;
+}
+
+function buildDiffData(file: DiffFile): {
+  diffList: string[];
+  oldContent: string;
+  newContent: string;
+  cap: number;
+  totalLines: number;
+} {
+  const hunks: string[] = [];
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+  let used = 0;
+  let totalLines = 0;
+
+  for (const hunk of file.hunks) {
+    const hunkLineCount = hunk.lines.length;
+    totalLines += hunkLineCount;
+    if (used >= MAX_LINES_PER_FILE) continue;
+    if (used > 0 && used + hunkLineCount > MAX_LINES_PER_FILE) continue;
+
+    const lines = [hunk.header];
+    for (const line of hunk.lines) {
+      lines.push(`${SIGN[line.type]}${line.text}`);
+      used += 1;
+      if (line.noNewline) lines.push("\\ No newline at end of file");
+
+      if (line.oldNumber !== undefined) oldLines[line.oldNumber - 1] = line.text;
+      if (line.newNumber !== undefined) newLines[line.newNumber - 1] = line.text;
+    }
+    hunks.push(lines.join("\n"));
   }
-  return <>{text}</>;
+
+  const oldPath = file.oldPath ?? file.path;
+  const oldMarker = file.status === "added" ? "/dev/null" : `a/${oldPath}`;
+  const newMarker = file.status === "deleted" ? "/dev/null" : `b/${file.path}`;
+  const diffHeader = [`diff --git a/${oldPath} b/${file.path}`, `--- ${oldMarker}`, `+++ ${newMarker}`].join("\n");
+
+  return {
+    diffList: hunks.length > 0 ? [`${diffHeader}\n${hunks.join("\n")}`] : [],
+    oldContent: oldLines.map((line) => line ?? "").join("\n"),
+    newContent: newLines.map((line) => line ?? "").join("\n"),
+    cap: used,
+    totalLines,
+  };
 }
-
-/** Render word-level changes for a paired add/delete line. */
-function WordDiffCell({ parts, side }: { parts: WordPart[]; side: "old" | "new" }) {
-  return (
-    <>
-      {parts.map((p, i) => {
-        const isOld = p.removed;
-        const isNew = p.added;
-        const show = side === "old" ? !isNew : !isOld;
-        if (!show) return null;
-        const highlight = side === "old" ? isOld : isNew;
-        return (
-          <span
-            key={i}
-            style={{
-              backgroundColor: highlight ? (side === "old" ? DEL_WORD_BG : ADD_WORD_BG) : undefined,
-              borderRadius: highlight ? "2px" : undefined,
-            }}
-          >
-            {p.value}
-          </span>
-        );
-      })}
-    </>
-  );
-}
-
-const UnifiedRow = memo(function UnifiedRow({
-  line,
-  segments,
-}: {
-  line: DiffLine;
-  segments: TokenSegment[] | null;
-}) {
-  return (
-    <tr style={{ backgroundColor: ROW_BG[line.type] }}>
-      <td style={GUTTER_TD}>{line.oldNumber ?? ""}</td>
-      <td style={GUTTER_TD}>{line.newNumber ?? ""}</td>
-      <td style={{ width: "1.5ch", textAlign: "center", userSelect: "none", color: SIGN_COLOR[line.type] }}>
-        {SIGN[line.type]}
-      </td>
-      <td style={CODE_TD}>
-        <CodeCell text={line.text} segments={segments} />
-      </td>
-    </tr>
-  );
-});
-
-// A paired old/new line for split view. Either side may be absent.
-interface SplitPair {
-  left?: { line: DiffLine; seg: number };
-  right?: { line: DiffLine; seg: number };
-  // word-diff parts between the old and new text (only when both sides present).
-  words?: WordPart[];
-}
-
-function pairHunkLines(lines: DiffLine[], segStart: number, cap: number): { pairs: SplitPair[]; consumed: number } {
-  const pairs: SplitPair[] = [];
-  let s = segStart;
-  let i = 0;
-  while (i < lines.length) {
-    if (s >= cap) break;
-    const cur = lines[i];
-    if (cur.type === "context") {
-      const idx = s++;
-      pairs.push({ left: { line: cur, seg: idx }, right: { line: cur, seg: idx } });
-      i++;
-      continue;
-    }
-    const dels: { line: DiffLine; seg: number }[] = [];
-    while (i < lines.length && lines[i].type === "delete" && s < cap) {
-      dels.push({ line: lines[i], seg: s++ });
-      i++;
-    }
-    const adds: { line: DiffLine; seg: number }[] = [];
-    while (i < lines.length && lines[i].type === "add" && s < cap) {
-      adds.push({ line: lines[i], seg: s++ });
-      i++;
-    }
-    const n = Math.max(dels.length, adds.length);
-    for (let k = 0; k < n; k++) {
-      const left = dels[k];
-      const right = adds[k];
-      const words = left && right ? wordDiffParts(left.line.text, right.line.text) : undefined;
-      pairs.push({ left, right, words });
-    }
-  }
-  return { pairs, consumed: s - segStart };
-}
-
-const SplitRow = memo(function SplitRow({ pair, segments }: { pair: SplitPair; segments: TokenSegment[][] | null }) {
-  const left = pair.left;
-  const right = pair.right;
-  return (
-    <tr>
-      <td style={GUTTER_TD}>{left?.line.oldNumber ?? ""}</td>
-      <td
-        style={{
-          ...CODE_TD,
-          backgroundColor: left ? ROW_BG[left.line.type] : "var(--bg-tertiary)",
-          borderRight: "1px solid var(--border-color)",
-          opacity: left ? 1 : 0.4,
-        }}
-      >
-        {left &&
-          (pair.words ? (
-            <WordDiffCell parts={pair.words} side="old" />
-          ) : (
-            <CodeCell text={left.line.text} segments={segments?.[left.seg] ?? null} />
-          ))}
-      </td>
-      <td style={GUTTER_TD}>{right?.line.newNumber ?? ""}</td>
-      <td style={{ ...CODE_TD, backgroundColor: right ? ROW_BG[right.line.type] : "var(--bg-tertiary)" }}>
-        {right &&
-          (pair.words ? (
-            <WordDiffCell parts={pair.words} side="new" />
-          ) : (
-            <CodeCell text={right.line.text} segments={segments?.[right.seg] ?? null} />
-          ))}
-      </td>
-    </tr>
-  );
-});
 
 function DiffFileCard({
   file,
@@ -217,18 +94,25 @@ function DiffFileCard({
   const [collapsed, setCollapsed] = useState(false);
   const meta = STATUS_META[file.status];
 
-  // Tokenize the file's full source once (context+add+delete lines in order);
-  // the per-line segments zip back onto those lines, preserving multi-line
-  // tokens. Capped at MAX_LINES_PER_FILE so a generated file never stalls it.
-  const { segments, cap, totalLines } = useMemo(() => {
-    const content: DiffLine[] = file.hunks.flatMap((h) => h.lines);
-    const total = content.length;
-    const limit = Math.min(total, MAX_LINES_PER_FILE);
-    const source = content.slice(0, limit).map((l) => l.text).join("\n");
+  const diffData = useMemo(() => {
+    const oldPath = file.oldPath ?? file.path;
+    const { diffList, oldContent, newContent, cap, totalLines } = buildDiffData(file);
     return {
-      segments: tokenizeSource(source, languageOfPath(file.path)),
-      cap: limit,
-      totalLines: total,
+      cap,
+      totalLines,
+      data: {
+        oldFile: {
+          fileName: oldPath,
+          fileLang: languageOfPath(oldPath),
+          content: oldContent,
+        },
+        newFile: {
+          fileName: file.path,
+          fileLang: languageOfPath(file.path),
+          content: newContent,
+        },
+        hunks: diffList,
+      },
     };
   }, [file]);
 
@@ -246,57 +130,20 @@ function DiffFileCard({
       );
     }
 
-    const rows: ReactElement[] = [];
-    let seg = 0;
-    for (const hunk of file.hunks) {
-      const keyH = `h${rows.length}`;
-      const headerCell = (
-        <tr key={keyH}>
-          <td
-            colSpan={4}
-            style={{ padding: 0 }}
-          >
-            <div
-              style={{
-                padding: "0.15rem 0.5rem",
-                color: "var(--text-secondary)",
-                opacity: 0.7,
-                fontSize: "0.65rem",
-                backgroundColor: "var(--bg-tertiary)",
-              }}
-            >
-              {hunk.header}
-            </div>
-          </td>
-        </tr>
-      );
-
-      if (viewMode === "split") {
-        rows.push(headerCell);
-        const { pairs, consumed } = pairHunkLines(hunk.lines, seg, cap);
-        for (const pair of pairs) {
-          rows.push(<SplitRow key={`l${rows.length}`} pair={pair} segments={segments} />);
-        }
-        seg += consumed;
-      } else {
-        rows.push(headerCell);
-        for (const line of hunk.lines) {
-          if (seg >= cap) break;
-          rows.push(<UnifiedRow key={`l${rows.length}`} line={line} segments={segments?.[seg] ?? null} />);
-          seg++;
-        }
-      }
-      if (seg >= cap) break;
-    }
-
     return (
       <div className="overflow-x-auto">
-        <table className="w-max min-w-full border-collapse font-mono text-[11px]" style={{ lineHeight: 1.5 }}>
-          <tbody>{rows}</tbody>
-        </table>
-        {totalLines > cap && (
+        <DiffView
+          className="pixie-git-diff-view min-w-full"
+          data={diffData.data}
+          diffViewFontSize={11}
+          diffViewHighlight={false}
+          diffViewMode={toDiffMode(viewMode)}
+          diffViewTheme={currentDiffTheme()}
+          diffViewWrap={false}
+        />
+        {diffData.totalLines > diffData.cap && (
           <div className="px-3 py-1.5 text-[10px] text-[var(--text-secondary)] italic">
-            {t("diffViewer.showingLines", { cap, total: totalLines })}
+            {t("diffViewer.showingLines", { cap: diffData.cap, total: diffData.totalLines })}
           </div>
         )}
       </div>

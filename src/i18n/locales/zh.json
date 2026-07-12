@@ -74,6 +74,12 @@
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
+  "pageFind": {
+    "placeholder": "在页面中查找",
+    "count": "{{current}}/{{total}}",
+    "previous": "上一个匹配",
+    "next": "下一个匹配"
+  },
   "schedule": {
     "dailyAt": "每天 {{hour}}:{{minute}}",
     "weekdaysAt": "工作日 {{hour}}:{{minute}}",
@@ -252,8 +258,12 @@
     "backfillHistory": "回填历史记录",
     "obsidianNotInstalled": "未安装 Obsidian。请从 https://obsidian.md 下载以查看知识库。",
     "theme": "主题",
-    "dark": "深色",
-    "light": "浅色",
+    "dark": "午夜紫",
+    "light": "柔光紫",
+    "cyberTeal": "赛博青",
+    "paperMint": "薄荷纸",
+    "interfaceScale": "界面缩放",
+    "interfaceScaleHint": "可用 Ctrl/Cmd + 加号、减号或 0 快速调整。",
     "modelConfig": "模型配置",
     "modelConfigHint": "每个引擎的环境变量覆盖。留空以使用系统默认值。",
     "appliesOnly": "仅适用于 {{name}} 会话。",
@@ -277,7 +287,10 @@
       "newLine": "新起一行",
       "toggleSidebar": "切换侧边栏",
       "toggleSettings": "设置",
-      "toggleSearch": "搜索知识库"
+      "toggleSearch": "搜索知识库",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "resetZoom": "重置缩放"
     },
     "backfill": {
       "scanning": "扫描中…",
@@ -478,6 +491,8 @@
     "failedReadFile": "读取文件失败：{{error}}",
     "restartTerminal": "重新启动",
     "diffCommit": "差异 {{hash}}",
+    "enterFullscreen": "进入全屏",
+    "exitFullscreen": "退出全屏",
     "plainTextExt": "text"
   },
   "diffViewer": {

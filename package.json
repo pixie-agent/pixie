@@ -2,7 +2,7 @@
   "name": "pixie",
   "private": true,
   "repository": "https://github.com/white1or1black/pixie.git",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "packageManager": "pnpm@11.5.2",
   "scripts": {
@@ -13,6 +13,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@git-diff-view/react": "^0.1.6",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-updater": "^2",

@@ -7,10 +7,17 @@ import { AGENT_ENGINES, ENGINE_MODEL_FIELDS } from "../types";
 import { engineLabel, modelFieldLabel, formatModShortcut } from "../lib/i18nFormat";
 import { useUpdater } from "../hooks/useUpdater";
 import { useDragRegion } from "../hooks/useDragRegion";
+import { UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "../lib/storage";
 import LanguageSelector from "./LanguageSelector";
 
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("../assets/icon.svg", import.meta.url).href;
+const THEME_OPTIONS: { id: AppTheme; labelKey: string }[] = [
+  { id: "dark", labelKey: "settings.dark" },
+  { id: "light", labelKey: "settings.light" },
+  { id: "cyber-teal", labelKey: "settings.cyberTeal" },
+  { id: "paper-mint", labelKey: "settings.paperMint" },
+];
 
 interface SettingsProps {
   engineStatuses: EngineStatus[] | null;
@@ -21,8 +28,10 @@ interface SettingsProps {
   readyEngineIds: AgentEngineId[];
   defaultEngine: AgentEngineId;
   onDefaultEngineChange: (engine: AgentEngineId) => void;
-  theme: "dark" | "light";
-  onThemeChange: (theme: "dark" | "light") => void;
+  theme: AppTheme;
+  onThemeChange: (theme: AppTheme) => void;
+  uiScale: UiScale;
+  onUiScaleChange: (scale: UiScale) => void;
   onClose: () => void;
   systemPrompt: string;
   onSystemPromptChange: (prompt: string) => void;
@@ -51,6 +60,8 @@ export default function Settings({
   onDefaultEngineChange,
   theme,
   onThemeChange,
+  uiScale,
+  onUiScaleChange,
   onClose,
   systemPrompt,
   onSystemPromptChange,
@@ -115,49 +126,51 @@ export default function Settings({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 xl:grid-cols-2 gap-x-6 gap-y-5 content-start">
           {/* Agent engines */}
-          <section>
+          <section className="xl:col-span-2">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               {t('settings.agentEngines')}
             </h3>
             <div className="space-y-3">
               {engineStatuses ? (
-                engineStatuses.map((status) => {
-                  const ready = status.available && status.auth_state === "ready";
-                  const label = !status.available
-                    ? t('engineSetup.status.notInstalled')
-                    : ready
-                      ? t('engineSetup.status.ready')
-                      : status.auth_state === "unknown"
-                        ? t('engineSetup.status.probing')
-                        : t('engineSetup.status.notReady');
-                  const dot = !status.available
-                    ? "bg-red-400"
-                    : ready
-                      ? "bg-green-400"
-                      : "bg-amber-400";
-                  return (
-                    <div
-                      key={status.id}
-                      className="flex items-center justify-between bg-[var(--bg-primary)] rounded-xl px-4 py-3 border border-[var(--border-color)]"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot}`} />
-                        <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                          {engineLabel(status.id, t)}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {engineStatuses.map((status) => {
+                    const ready = status.available && status.auth_state === "ready";
+                    const label = !status.available
+                      ? t('engineSetup.status.notInstalled')
+                      : ready
+                        ? t('engineSetup.status.ready')
+                        : status.auth_state === "unknown"
+                          ? t('engineSetup.status.probing')
+                          : t('engineSetup.status.notReady');
+                    const dot = !status.available
+                      ? "bg-red-400"
+                      : ready
+                        ? "bg-green-400"
+                        : "bg-amber-400";
+                    return (
+                      <div
+                        key={status.id}
+                        className="flex items-center justify-between bg-[var(--bg-primary)] rounded-xl px-4 py-3 border border-[var(--border-color)]"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot}`} />
+                          <span className="text-sm font-medium text-[var(--text-primary)] truncate">
+                            {engineLabel(status.id, t)}
+                          </span>
+                        </div>
+                        <span
+                          className={`text-xs shrink-0 ${
+                            ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
+                          }`}
+                        >
+                          {label}
                         </span>
                       </div>
-                      <span
-                        className={`text-xs shrink-0 ${
-                          ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
-                        }`}
-                      >
-                        {label}
-                      </span>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               ) : (
                 <p className="text-sm text-[var(--text-secondary)]">{t('common.loading')}</p>
               )}
@@ -306,28 +319,46 @@ export default function Settings({
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               {t('settings.theme')}
             </h3>
-            <div className="flex gap-2">
-              <button
-                onClick={() => onThemeChange("dark")}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-                  theme === "dark"
-                    ? "bg-[var(--accent)] text-white"
-                    : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
-                }`}
-              >
-                {t('settings.dark')}
-              </button>
-              <button
-                onClick={() => onThemeChange("light")}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-                  theme === "light"
-                    ? "bg-[var(--accent)] text-white"
-                    : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
-                }`}
-              >
-                {t('settings.light')}
-              </button>
+            <div className="grid grid-cols-2 gap-2">
+              {THEME_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  onClick={() => onThemeChange(option.id)}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                    theme === option.id
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
+                  }`}
+                >
+                  {t(option.labelKey)}
+                </button>
+              ))}
             </div>
+          </section>
+
+          {/* Interface scale */}
+          <section>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+              {t('settings.interfaceScale')}
+            </h3>
+            <div className="grid grid-cols-4 gap-2">
+              {UI_SCALE_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  onClick={() => onUiScaleChange(option)}
+                  className={`py-2 px-2 rounded-lg text-sm font-medium transition-colors ${
+                    uiScale === option
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
+                  }`}
+                >
+                  {Math.round(option * 100)}%
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-[var(--text-secondary)] mt-2">
+              {t('settings.interfaceScaleHint')}
+            </p>
           </section>
 
           {/* Language */}
@@ -342,7 +373,7 @@ export default function Settings({
           </section>
 
           {/* Model Configuration (per engine, collapsed by default) */}
-          <section>
+          <section className="xl:col-span-2">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
               {t('settings.modelConfig')}
             </h3>
@@ -584,6 +615,24 @@ export default function Settings({
                 <span>{t('settings.shortcuts.toggleSettings')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
                   {formatModShortcut(t, ',')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.zoomIn')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, '+')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.zoomOut')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, '-')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.resetZoom')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, '0')}
                 </kbd>
               </div>
             </div>
