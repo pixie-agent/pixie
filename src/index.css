@@ -36,6 +36,38 @@
   color-scheme: light;
 }
 
+[data-theme="cyber-teal"] {
+  --bg-primary: #0b1020;
+  --bg-secondary: #111827;
+  --bg-tertiary: #1f2937;
+  --bg-user-msg: #162033;
+  --bg-assistant-msg: #101827;
+  --text-primary: #e5f3ff;
+  --text-secondary: #8aa0b6;
+  --accent: #14f1d9;
+  --accent-hover: #0ec7b4;
+  --border-color: #263244;
+  --scrollbar-thumb: #334155;
+  --scrollbar-track: transparent;
+  color-scheme: dark;
+}
+
+[data-theme="paper-mint"] {
+  --bg-primary: #f6f8f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #eaf1ef;
+  --bg-user-msg: #e4f3f0;
+  --bg-assistant-msg: #ffffff;
+  --text-primary: #17211f;
+  --text-secondary: #63736f;
+  --accent: #0f9f8f;
+  --accent-hover: #0b8275;
+  --border-color: #d8e2df;
+  --scrollbar-thumb: #b9c8c4;
+  --scrollbar-track: transparent;
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
 }

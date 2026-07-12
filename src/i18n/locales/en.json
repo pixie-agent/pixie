@@ -254,6 +254,8 @@
     "theme": "Theme",
     "dark": "Dark",
     "light": "Light",
+    "cyberTeal": "Cyber Teal",
+    "paperMint": "Paper Mint",
     "modelConfig": "Model Configuration",
     "modelConfigHint": "Environment overrides per engine. Leave empty to use system defaults.",
     "appliesOnly": "Applies only to {{name}} sessions.",

@@ -35,7 +35,7 @@ import type {
 } from "./types";
 import { AGENT_ENGINES } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
-import { bootstrap, getConfig, getHistory, updateConfig } from "./lib/storage";
+import { bootstrap, getConfig, getHistory, updateConfig, type AppTheme } from "./lib/storage";
 
 type MainView = "chat" | "tasks" | "loops" | "skills" | "settings";
 
@@ -399,7 +399,7 @@ function AppShell() {
   const [displayMainView, setDisplayMainView] = useState<MainView>("chat");
   const [mainViewLoading, setMainViewLoading] = useState(false);
   const mainViewLoadTokenRef = useRef(0);
-  const [theme, setTheme] = useState<"dark" | "light">(() => getConfig().theme);
+  const [theme, setTheme] = useState<AppTheme>(() => getConfig().theme);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
     () => getConfig().engineModelConfigs,
@@ -640,7 +640,7 @@ function AppShell() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [createConversation, defaultEngine, isGenerating, stopGeneration]);
 
-  const handleThemeChange = useCallback((t: "dark" | "light") => setTheme(t), []);
+  const handleThemeChange = useCallback((t: AppTheme) => setTheme(t), []);
   const handleSystemPromptChange = useCallback((prompt: string) => setSystemPrompt(prompt), []);
   const handleEngineModelConfigChange = useCallback(
     (engine: keyof EngineModelConfigs, patch: Record<string, string | undefined>) => {

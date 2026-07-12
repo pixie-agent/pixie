@@ -7,10 +7,17 @@ import { AGENT_ENGINES, ENGINE_MODEL_FIELDS } from "../types";
 import { engineLabel, modelFieldLabel, formatModShortcut } from "../lib/i18nFormat";
 import { useUpdater } from "../hooks/useUpdater";
 import { useDragRegion } from "../hooks/useDragRegion";
+import type { AppTheme } from "../lib/storage";
 import LanguageSelector from "./LanguageSelector";
 
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("../assets/icon.svg", import.meta.url).href;
+const THEME_OPTIONS: { id: AppTheme; labelKey: string }[] = [
+  { id: "dark", labelKey: "settings.dark" },
+  { id: "light", labelKey: "settings.light" },
+  { id: "cyber-teal", labelKey: "settings.cyberTeal" },
+  { id: "paper-mint", labelKey: "settings.paperMint" },
+];
 
 interface SettingsProps {
   engineStatuses: EngineStatus[] | null;
@@ -21,8 +28,8 @@ interface SettingsProps {
   readyEngineIds: AgentEngineId[];
   defaultEngine: AgentEngineId;
   onDefaultEngineChange: (engine: AgentEngineId) => void;
-  theme: "dark" | "light";
-  onThemeChange: (theme: "dark" | "light") => void;
+  theme: AppTheme;
+  onThemeChange: (theme: AppTheme) => void;
   onClose: () => void;
   systemPrompt: string;
   onSystemPromptChange: (prompt: string) => void;
@@ -306,27 +313,20 @@ export default function Settings({
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               {t('settings.theme')}
             </h3>
-            <div className="flex gap-2">
-              <button
-                onClick={() => onThemeChange("dark")}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-                  theme === "dark"
-                    ? "bg-[var(--accent)] text-white"
-                    : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
-                }`}
-              >
-                {t('settings.dark')}
-              </button>
-              <button
-                onClick={() => onThemeChange("light")}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-                  theme === "light"
-                    ? "bg-[var(--accent)] text-white"
-                    : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
-                }`}
-              >
-                {t('settings.light')}
-              </button>
+            <div className="grid grid-cols-2 gap-2">
+              {THEME_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  onClick={() => onThemeChange(option.id)}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                    theme === option.id
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
+                  }`}
+                >
+                  {t(option.labelKey)}
+                </button>
+              ))}
             </div>
           </section>
 

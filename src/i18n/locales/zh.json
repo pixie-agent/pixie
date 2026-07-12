@@ -254,6 +254,8 @@
     "theme": "主题",
     "dark": "深色",
     "light": "浅色",
+    "cyberTeal": "赛博青",
+    "paperMint": "薄荷纸",
     "modelConfig": "模型配置",
     "modelConfigHint": "每个引擎的环境变量覆盖。留空以使用系统默认值。",
     "appliesOnly": "仅适用于 {{name}} 会话。",

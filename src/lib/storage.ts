@@ -22,8 +22,10 @@ import type {
 } from "../types";
 import { DEFAULT_ENGINE_MODEL_CONFIGS } from "../types";
 
+export type AppTheme = "dark" | "light" | "cyber-teal" | "paper-mint";
+
 export interface AppConfig {
-  theme: "dark" | "light";
+  theme: AppTheme;
   systemPrompt: string;
   defaultEngine: AgentEngineId;
   engineModelConfigs: EngineModelConfigs;
@@ -143,6 +145,10 @@ function isValidEngine(v: unknown): v is AgentEngineId {
   return v === "claude" || v === "cursor" || v === "codebuddy" || v === "builtin" || v === "codex";
 }
 
+function isValidTheme(v: unknown): v is AppTheme {
+  return v === "dark" || v === "light" || v === "cyber-teal" || v === "paper-mint";
+}
+
 /** Coerce a persisted `known_ready_engines` blob into a valid engine-id list. */
 function coerceEngineIds(raw: unknown): AgentEngineId[] {
   return Array.isArray(raw) ? raw.filter(isValidEngine) : [];
@@ -189,7 +195,7 @@ function coerceWorkspaces(raw: unknown): WorkspaceState[] {
 function wireToConfig(w: ConfigWire | null): AppConfig {
   if (!w) return { ...EMPTY_CONFIG };
   return {
-    theme: w.theme === "light" ? "light" : "dark",
+    theme: isValidTheme(w.theme) ? w.theme : "dark",
     systemPrompt: typeof w.system_prompt === "string" ? w.system_prompt : "",
     defaultEngine: isValidEngine(w.default_engine) ? w.default_engine : "builtin",
     engineModelConfigs: coerceEngineModelConfigs(w.engine_model_configs),
@@ -298,7 +304,7 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
 
   const storedEngine = localStorage.getItem("pixie-default-engine");
   const config: AppConfig = {
-    theme: localStorage.getItem("pixie-theme") === "light" ? "light" : "dark",
+    theme: isValidTheme(localStorage.getItem("pixie-theme")) ? localStorage.getItem("pixie-theme") as AppTheme : "dark",
     systemPrompt: localStorage.getItem("pixie-system-prompt") ?? "",
     defaultEngine: isValidEngine(storedEngine) ? storedEngine : "builtin",
     engineModelConfigs,

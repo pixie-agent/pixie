@@ -254,6 +254,8 @@
     "theme": "テーマ",
     "dark": "ダーク",
     "light": "ライト",
+    "cyberTeal": "サイバーティール",
+    "paperMint": "ペーパーミント",
     "modelConfig": "モデル設定",
     "modelConfigHint": "エンジンごとの環境変数オーバーライド。空のままにするとシステムデフォルトを使用します。",
     "appliesOnly": "{{name}} セッションにのみ適用されます。",
