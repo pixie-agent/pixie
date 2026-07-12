@@ -93,7 +93,7 @@ export default function PageFind() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [matchCount, setMatchCount] = useState(0);
 
-  const selectActiveMark = useCallback((index: number) => {
+  const selectActiveMark = useCallback((index: number, scroll = true) => {
     const marks = marksRef.current;
     for (const mark of marks) {
       mark.classList.remove("page-find-active");
@@ -101,10 +101,12 @@ export default function PageFind() {
     const mark = marks[index];
     if (!mark) return;
     mark.classList.add("page-find-active");
-    mark.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    if (scroll) {
+      mark.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    }
   }, []);
 
-  const rebuildHighlights = useCallback((nextQuery: string, nextActiveIndex = activeIndex) => {
+  const rebuildHighlights = useCallback((nextQuery: string, nextActiveIndex: number, scroll = true) => {
     const appRoot = document.getElementById("root");
     if (!appRoot) return;
     const searchRoot = isUsableScope(activeScopeRef.current) ? activeScopeRef.current : appRoot;
@@ -119,12 +121,12 @@ export default function PageFind() {
     } else {
       const boundedIndex = Math.min(Math.max(nextActiveIndex, 0), marks.length - 1);
       setActiveIndex(boundedIndex);
-      selectActiveMark(boundedIndex);
+      selectActiveMark(boundedIndex, scroll);
     }
     window.setTimeout(() => {
       updatingRef.current = false;
     }, 0);
-  }, [activeIndex, selectActiveMark]);
+  }, [selectActiveMark]);
 
   useEffect(() => {
     const updateActiveScope = (target: EventTarget | null) => {
@@ -132,7 +134,7 @@ export default function PageFind() {
       if (!scope || scope === activeScopeRef.current) return;
       activeScopeRef.current = scope;
       if (open && query.trim()) {
-        window.setTimeout(() => rebuildHighlights(query, 0), 0);
+        window.setTimeout(() => rebuildHighlights(query, 0, true), 0);
       }
     };
     const handlePointerDown = (event: PointerEvent) => updateActiveScope(event.target);
@@ -185,9 +187,9 @@ export default function PageFind() {
       marksRef.current = [];
       return;
     }
-    const timer = window.setTimeout(() => rebuildHighlights(query, activeIndex), 0);
+    const timer = window.setTimeout(() => rebuildHighlights(query, 0, true), 0);
     return () => window.clearTimeout(timer);
-  }, [activeIndex, open, query, rebuildHighlights]);
+  }, [open, query, rebuildHighlights]);
 
   useEffect(() => {
     if (!open || !query.trim()) return;
@@ -197,7 +199,7 @@ export default function PageFind() {
     const observer = new MutationObserver(() => {
       if (updatingRef.current) return;
       window.clearTimeout(timer);
-      timer = window.setTimeout(() => rebuildHighlights(query, activeIndex), 80);
+      timer = window.setTimeout(() => rebuildHighlights(query, activeIndex, false), 80);
     });
     observer.observe(root, { childList: true, subtree: true, characterData: true });
     return () => {
