@@ -74,6 +74,12 @@
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
+  "pageFind": {
+    "placeholder": "Find on page",
+    "count": "{{current}}/{{total}}",
+    "previous": "Previous match",
+    "next": "Next match"
+  },
   "schedule": {
     "dailyAt": "Daily at {{hour}}:{{minute}}",
     "weekdaysAt": "Weekdays at {{hour}}:{{minute}}",

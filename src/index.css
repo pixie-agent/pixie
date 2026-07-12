@@ -94,6 +94,18 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.page-find-match {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.page-find-active {
+  background: var(--accent);
+  color: white;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Scrollbar                                                                 */
 /* -------------------------------------------------------------------------- */

@@ -20,6 +20,7 @@ const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel"
 const LoopTasksPanel = lazy(() => import("./components/LoopTasksPanel"));
 const FileExplorer = lazy(() => import("./components/RightPanel"));
 const SearchPalette = lazy(() => import("./components/SearchPalette"));
+const PageFind = lazy(() => import("./components/PageFind"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
 import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
@@ -1202,6 +1203,9 @@ ${entries}
           onClose={() => setSearchOpen(false)}
           onOpenPreview={(path) => handleOpenPreview({ kind: "file", path })}
         />
+      </Suspense>
+      <Suspense fallback={null}>
+        <PageFind />
       </Suspense>
     </div>
   );

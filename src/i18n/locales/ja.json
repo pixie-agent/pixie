@@ -74,6 +74,12 @@
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
+  "pageFind": {
+    "placeholder": "ページ内検索",
+    "count": "{{current}}/{{total}}",
+    "previous": "前の一致",
+    "next": "次の一致"
+  },
   "schedule": {
     "dailyAt": "毎日 {{hour}}:{{minute}}",
     "weekdaysAt": "平日 {{hour}}:{{minute}}",
