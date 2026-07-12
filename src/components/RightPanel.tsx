@@ -30,6 +30,7 @@ const CODE_EXTENSIONS = new Set([
 
 const MIN_WIDTH = 200;
 const DEFAULT_WIDTH = 320;
+const MAIN_COLUMN_MIN_WIDTH = 420;
 const DEFAULT_CHANGES_HEIGHT = 260;
 const MIN_CHANGES_HEIGHT = 120;
 const MIN_HISTORY_HEIGHT = 120;
@@ -293,7 +294,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewRenderReady, setPreviewRenderReady] = useState(false);
-  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+  const [panelFullscreen, setPanelFullscreen] = useState(false);
   const previewLoadTokenRef = useRef(0);
   const previewRenderTokenRef = useRef(0);
 
@@ -616,13 +617,13 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   }, [contentTab, previewContent, previewFile, previewLoading, previewRenderReady, tabLoading]);
 
   useEffect(() => {
-    if (!previewFullscreen) return;
+    if (!panelFullscreen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPreviewFullscreen(false);
+      if (event.key === "Escape") setPanelFullscreen(false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [previewFullscreen]);
+  }, [panelFullscreen]);
 
   // React to an externally-requested file preview target (a file path clicked
   // in a chat message). URLs never reach here — they are handed off to the
@@ -642,7 +643,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     setHistory([]);
     setPreviewFile(null);
     setPreviewContent(null);
-    setPreviewFullscreen(false);
+    setPanelFullscreen(false);
     setSelectedCommit(null);
     setGitDiff("");
     setGitWorkingDiff("");
@@ -661,7 +662,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing.current) return;
-      const maxWidth = window.innerWidth * 0.9;
+      const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - MAIN_COLUMN_MIN_WIDTH);
       setWidth(Math.min(maxWidth, Math.max(MIN_WIDTH, window.innerWidth - e.clientX)));
     };
     const handleMouseUp = () => {
@@ -808,16 +809,21 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
 
   return (
     <>
-    <div className="flex h-full" style={{ width, minWidth: MIN_WIDTH, maxWidth: "90vw" }}>
-      <div onMouseDown={startResize}
-        className="w-1 hover:w-1.5 cursor-col-resize bg-transparent hover:bg-[var(--accent)]/50 active:bg-[var(--accent)] transition-all shrink-0" />
+    <div
+      className={panelFullscreen ? "fixed inset-0 z-50 flex h-screen w-screen overflow-hidden" : "flex h-full shrink-0 overflow-hidden"}
+      style={panelFullscreen ? undefined : { width, minWidth: MIN_WIDTH, maxWidth: `calc(100vw - ${MAIN_COLUMN_MIN_WIDTH}px)` }}
+    >
+      {!panelFullscreen && (
+        <div onMouseDown={startResize}
+          className="w-1.5 cursor-col-resize bg-transparent hover:bg-[var(--accent)]/50 active:bg-[var(--accent)] transition-colors shrink-0" />
+      )}
 
       <div className="flex-1 flex flex-col bg-[var(--bg-secondary)] border-l border-[var(--border-color)] min-w-0">
         {/* Header + Tabs. No in-panel close button — the header toolbar toggles
             the whole panel, so an X here would be redundant. */}
         <div className="shrink-0 border-b border-[var(--border-color)]">
-          <div className="flex items-center px-4 py-2">
-            <div className="flex gap-1">
+          <div className={`relative flex items-center px-4 pr-12 pb-2 ${panelFullscreen ? "pt-8" : "pt-2"}`}>
+            <div className="flex gap-1 shrink-0 relative z-10">
               {([
                 ["files", "📁", t("rightPanel.files")],
                 ["preview", "📄", t("rightPanel.preview")],
@@ -838,7 +844,24 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                 </button>
               ))}
             </div>
-            <div className="flex-1 h-8" onMouseDown={handleDragRegion} />
+            <div className="flex-1 h-8 min-w-0" onMouseDown={handleDragRegion} />
+            <button
+              type="button"
+              title={panelFullscreen ? t("rightPanel.exitFullscreen") : t("rightPanel.enterFullscreen")}
+              aria-label={panelFullscreen ? t("rightPanel.exitFullscreen") : t("rightPanel.enterFullscreen")}
+              onClick={() => setPanelFullscreen((v) => !v)}
+              className="absolute right-4 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+            >
+              {panelFullscreen ? (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5.5 1.5v3a1 1 0 0 1-1 1h-3M8.5 12.5v-3a1 1 0 0 1 1-1h3M12.5 5.5h-3a1 1 0 0 1-1-1v-3M1.5 8.5h3a1 1 0 0 1 1 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5.5 1.5h-4v4M8.5 12.5h4v-4M12.5 5.5v-4h-4M1.5 8.5v4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
 
@@ -895,7 +918,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                       if (entry.is_dir) navigateTo(entry.path);
                       else if (canPreview) openPreview(entry);
                     }}
-                    className={`group flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors ${
+                    className={`group grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors ${
                       entry.is_dir || canPreview ? "cursor-pointer hover:bg-[var(--bg-tertiary)]" : "cursor-default"
                     }`}>
                     <span className="text-base shrink-0">{entry.is_dir ? "📁" : "📄"}</span>
@@ -910,7 +933,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                         ev.stopPropagation();
                         void revealInFileManager(entry.path);
                       }}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-opacity shrink-0"
+                      className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] opacity-70 hover:opacity-100 transition-opacity shrink-0"
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M4 4h6l2 2h8v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
@@ -947,23 +970,6 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                   </button>
                   <span className="text-xs text-[var(--text-primary)] truncate flex-1 min-w-0">{previewFile.name}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>
-                  <button
-                    type="button"
-                    title={previewFullscreen ? t("rightPanel.exitFullscreen") : t("rightPanel.enterFullscreen")}
-                    aria-label={previewFullscreen ? t("rightPanel.exitFullscreen") : t("rightPanel.enterFullscreen")}
-                    onClick={() => setPreviewFullscreen((v) => !v)}
-                    className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
-                  >
-                    {previewFullscreen ? (
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <path d="M5.5 1.5v3a1 1 0 0 1-1 1h-3M8.5 12.5v-3a1 1 0 0 1 1-1h3M12.5 5.5h-3a1 1 0 0 1-1-1v-3M1.5 8.5h3a1 1 0 0 1 1 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    ) : (
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <path d="M5.5 1.5h-4v4M8.5 12.5h4v-4M12.5 5.5v-4h-4M1.5 8.5v4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </button>
                 </div>
                 <div className="flex-1 min-h-0 w-full h-full overflow-auto">
                   {renderPreviewContent()}
@@ -1240,28 +1246,6 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         </div>
       </div>
     </div>
-    {previewFullscreen && previewFile && !previewWasCanceledBeforeContent && (
-      <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-secondary)]" data-page-find-scope="preview-fullscreen">
-        <div className="flex items-center gap-2 px-3 pt-8 pb-2 border-b border-[var(--border-color)] shrink-0">
-          <span className="text-xs text-[var(--text-primary)] truncate flex-1 min-w-0">{previewFile.name}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>
-          <button
-            type="button"
-            title={t("rightPanel.exitFullscreen")}
-            aria-label={t("rightPanel.exitFullscreen")}
-            onClick={() => setPreviewFullscreen(false)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M5.5 1.5v3a1 1 0 0 1-1 1h-3M8.5 12.5v-3a1 1 0 0 1 1-1h3M12.5 5.5h-3a1 1 0 0 1-1-1v-3M1.5 8.5h3a1 1 0 0 1 1 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-        <div className="flex-1 min-h-0 w-full h-full overflow-auto">
-          {renderPreviewContent()}
-        </div>
-      </div>
-    )}
     </>
   );
 }

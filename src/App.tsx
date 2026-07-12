@@ -1186,7 +1186,7 @@ ${entries}
           It is NOT keyed by workspace, so the per-workspace terminals mounted
           inside it also persist across workspace switches. */}
       {activeWorkspace?.path && (
-        <div className="h-full" data-page-find-scope="right-panel" style={{ display: fileExplorerOpen ? "block" : "none" }}>
+        <div className="h-full shrink-0" data-page-find-scope="right-panel" style={{ display: fileExplorerOpen ? "block" : "none" }}>
           <Suspense fallback={<LoadingPanel />}>
           <FileExplorer
             workspacePath={activeWorkspace.path}

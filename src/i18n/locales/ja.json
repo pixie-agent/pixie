@@ -491,7 +491,7 @@
     "failedReadFile": "ファイルの読み込みに失敗: {{error}}",
     "restartTerminal": "再起動",
     "diffCommit": "差分 {{hash}}",
-    "enterFullscreen": "全画面プレビュー",
+    "enterFullscreen": "全画面にする",
     "exitFullscreen": "全画面を終了",
     "plainTextExt": "text"
   },

@@ -491,7 +491,7 @@
     "failedReadFile": "Failed to read file: {{error}}",
     "restartTerminal": "Restart",
     "diffCommit": "Diff {{hash}}",
-    "enterFullscreen": "Fullscreen preview",
+    "enterFullscreen": "Enter fullscreen",
     "exitFullscreen": "Exit fullscreen",
     "plainTextExt": "text"
   },

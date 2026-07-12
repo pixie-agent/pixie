@@ -491,7 +491,7 @@
     "failedReadFile": "读取文件失败：{{error}}",
     "restartTerminal": "重新启动",
     "diffCommit": "差异 {{hash}}",
-    "enterFullscreen": "全屏预览",
+    "enterFullscreen": "进入全屏",
     "exitFullscreen": "退出全屏",
     "plainTextExt": "text"
   },
