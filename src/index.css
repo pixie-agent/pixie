@@ -234,6 +234,123 @@ body {
   margin: 1em 0;
 }
 
+.preview-markdown {
+  padding: 18px 20px 28px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+
+.preview-markdown h1,
+.preview-markdown h2,
+.preview-markdown h3,
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  color: var(--text-primary);
+  letter-spacing: 0;
+}
+
+.preview-markdown h1 {
+  margin: 0 0 0.8em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 1.6em;
+  line-height: 1.2;
+}
+
+.preview-markdown h2 {
+  margin-top: 1.45em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  font-size: 1.28em;
+}
+
+.preview-markdown h3 {
+  margin-top: 1.25em;
+  font-size: 1.12em;
+}
+
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  margin-top: 1em;
+  font-size: 1em;
+}
+
+.preview-markdown p {
+  margin: 0.65em 0;
+}
+
+.preview-markdown ul,
+.preview-markdown ol {
+  margin: 0.65em 0;
+  padding-left: 1.65em;
+}
+
+.preview-markdown li {
+  margin: 0.28em 0;
+}
+
+.preview-markdown li > p {
+  margin: 0.35em 0;
+}
+
+.preview-markdown blockquote {
+  margin: 0.9em 0;
+  padding: 0.45em 1em;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--bg-tertiary) 38%, transparent);
+  color: var(--text-secondary);
+}
+
+.preview-markdown pre {
+  margin: 0.85em 0;
+  padding: 0.9em 1em;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, #000 28%);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.preview-markdown pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.preview-markdown code:not(pre code) {
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-tertiary) 62%, transparent);
+  color: var(--text-primary);
+}
+
+.preview-markdown table {
+  margin: 1em 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: auto;
+}
+
+.preview-markdown th,
+.preview-markdown td {
+  padding: 0.5em 0.75em;
+  vertical-align: top;
+}
+
+.preview-markdown th {
+  background: color-mix(in srgb, var(--bg-tertiary) 78%, transparent);
+}
+
+.preview-markdown img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Code block wrapper                                                        */
 /* -------------------------------------------------------------------------- */

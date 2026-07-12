@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from "react";
+import { memo, useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ComponentPropsWithoutRef } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,6 +10,7 @@ import { languageFromExt } from "../lib/languages";
 import { segmentColor, tokenizeSource, type TokenSegment } from "../lib/highlight";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
+import { openExternal } from "../openExternal";
 import DiffViewer from "./DiffViewer";
 import Terminal from "./Terminal";
 
@@ -35,20 +36,74 @@ const TAB_MOUNT_DELAY_MS = 45;
 const PREVIEW_RENDER_DELAY_MS = 45;
 const RICH_PREVIEW_CHAR_LIMIT = 20_000;
 const HIGHLIGHT_BATCH_LINES = 160;
+const EXTERNAL_LINK_RE = /^(https?:\/\/|mailto:|tel:|obsidian:\/\/)/i;
+const HTML_PREVIEW_LINK_MESSAGE_TYPE = "pixie-preview-open-external";
 
 const MD_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: "0.5rem", fontSize: "0.75rem" };
 const REMARK_PLUGINS = [remarkGfm];
 const shellEscape = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+function isExternalPreviewLink(href: string): boolean {
+  return EXTERNAL_LINK_RE.test(href.trim());
+}
+
+function isHtmlPreviewLinkMessage(value: unknown): value is { type: typeof HTML_PREVIEW_LINK_MESSAGE_TYPE; href: string } {
+  if (!value || typeof value !== "object") return false;
+  const msg = value as Record<string, unknown>;
+  return msg.type === HTML_PREVIEW_LINK_MESSAGE_TYPE && typeof msg.href === "string";
+}
+
+function htmlPreviewSrcDoc(content: string): string {
+  const script = `<script>
+(function () {
+  var allowed = /^(https?:\\/\\/|mailto:|tel:|obsidian:\\/\\/)/i;
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+    var anchor = target && target.closest ? target.closest("a[href]") : null;
+    if (!anchor) return;
+    var href = anchor.href || anchor.getAttribute("href") || "";
+    event.preventDefault();
+    event.stopPropagation();
+    if (allowed.test(href)) {
+      window.parent.postMessage({ type: "${HTML_PREVIEW_LINK_MESSAGE_TYPE}", href: href }, "*");
+    }
+  }, true);
+}());
+</script>`;
+
+  if (/<\/body\s*>/i.test(content)) {
+    return content.replace(/<\/body\s*>/i, `${script}</body>`);
+  }
+  return `${content}${script}`;
+}
 
 // Memoize the whole markdown render so resize-drag (which re-renders the
 // panel) doesn't re-parse markdown and re-tokenize every fenced code block.
 // Only re-runs when the file content actually changes.
 const MarkdownView = memo(function MarkdownView({ content }: { content: string }) {
   return (
-    <div className="w-full min-h-full p-4 prose prose-sm prose-invert max-w-none">
+    <div className="markdown-body preview-markdown w-full min-h-full">
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         components={{
+          a({ href, children, ...props }: ComponentPropsWithoutRef<"a"> & { href?: string }) {
+            if (typeof href !== "string") return <span {...props}>{children}</span>;
+            const isExternal = isExternalPreviewLink(href);
+            return (
+              <a
+                href={href}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (isExternal) void openExternal(href);
+                }}
+                className="text-[var(--accent)] hover:underline"
+                {...props}
+              >
+                {children}
+              </a>
+            );
+          },
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || "");
             const codeStr = String(children).replace(/\n$/, "");
@@ -240,6 +295,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewRenderReady, setPreviewRenderReady] = useState(false);
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const previewLoadTokenRef = useRef(0);
   const previewRenderTokenRef = useRef(0);
 
@@ -388,6 +444,16 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     },
     [makeTerminalId],
   );
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (!isHtmlPreviewLinkMessage(event.data)) return;
+      if (!isExternalPreviewLink(event.data.href)) return;
+      void openExternal(event.data.href);
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
 
   const handleTerminalExit = useCallback(
     (ws: string, id: string) => {
@@ -551,6 +617,15 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     return () => window.clearTimeout(timer);
   }, [contentTab, previewContent, previewFile, previewLoading, previewRenderReady, tabLoading]);
 
+  useEffect(() => {
+    if (!previewFullscreen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreviewFullscreen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewFullscreen]);
+
   // React to an externally-requested file preview target (a file path clicked
   // in a chat message). URLs never reach here — they are handed off to the
   // system browser instead. Keyed on `previewTarget` (which carries a nonce)
@@ -569,6 +644,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     setHistory([]);
     setPreviewFile(null);
     setPreviewContent(null);
+    setPreviewFullscreen(false);
     setSelectedCommit(null);
     setGitDiff("");
     setGitWorkingDiff("");
@@ -691,7 +767,49 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const previewWasCanceledBeforeContent =
     previewNeedsTextContent && !previewLoading && !previewRenderReady && previewContent === null;
 
+  const renderPreviewContent = () => {
+    if (!previewFile) return null;
+    if (previewLoading || !previewRenderReady) {
+      return <PanelLoading onCancel={cancelPreviewLoad} />;
+    }
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      return (
+        <div className="w-full h-full p-4 flex items-center justify-center">
+          <img src={convertFileSrc(previewFile.path)} alt={previewFile.name}
+            className="max-w-full max-h-full object-contain rounded" />
+        </div>
+      );
+    }
+    if ((ext === "html" || ext === "htm") && previewText.trim()) {
+      return (
+        <iframe
+          srcDoc={htmlPreviewSrcDoc(previewText)}
+          className="w-full h-full min-h-full border-0 bg-white"
+          sandbox="allow-scripts"
+        />
+      );
+    }
+    if (CODE_EXTENSIONS.has(ext)) {
+      return (
+        <ChunkedCodePreview
+          key={`${previewFile.path}:${previewText.length}`}
+          content={previewText}
+          language={languageFromExt(ext)}
+          onCancel={cancelPreviewLoad}
+        />
+      );
+    }
+    if (!canUseRichPreview) {
+      return <PlainTextPreview content={previewText} />;
+    }
+    if (ext === "md" || ext === "markdown") {
+      return <MarkdownView content={previewText} />;
+    }
+    return <PlainTextPreview content={previewText} />;
+  };
+
   return (
+    <>
     <div className="flex h-full" style={{ width, minWidth: MIN_WIDTH, maxWidth: "90vw" }}>
       <div onMouseDown={startResize}
         className="w-1 hover:w-1.5 cursor-col-resize bg-transparent hover:bg-[var(--accent)]/50 active:bg-[var(--accent)] transition-all shrink-0" />
@@ -829,37 +947,28 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                       <path d="M9 3L5 7l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </button>
-                  <span className="text-xs text-[var(--text-primary)] truncate">{previewFile.name}</span>
+                  <span className="text-xs text-[var(--text-primary)] truncate flex-1 min-w-0">{previewFile.name}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>
+                  <button
+                    type="button"
+                    title={previewFullscreen ? t("rightPanel.exitFullscreen") : t("rightPanel.enterFullscreen")}
+                    aria-label={previewFullscreen ? t("rightPanel.exitFullscreen") : t("rightPanel.enterFullscreen")}
+                    onClick={() => setPreviewFullscreen((v) => !v)}
+                    className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
+                  >
+                    {previewFullscreen ? (
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M5.5 1.5v3a1 1 0 0 1-1 1h-3M8.5 12.5v-3a1 1 0 0 1 1-1h3M12.5 5.5h-3a1 1 0 0 1-1-1v-3M1.5 8.5h3a1 1 0 0 1 1 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M5.5 1.5h-4v4M8.5 12.5h4v-4M12.5 5.5v-4h-4M1.5 8.5v4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
                 <div className="flex-1 min-h-0 w-full h-full overflow-auto">
-                  {previewLoading || !previewRenderReady ? (
-                    <PanelLoading onCancel={cancelPreviewLoad} />
-                  ) : IMAGE_EXTENSIONS.has(ext) ? (
-                    <div className="w-full h-full p-4 flex items-center justify-center">
-                      <img src={convertFileSrc(previewFile.path)} alt={previewFile.name}
-                        className="max-w-full max-h-full object-contain rounded" />
-                    </div>
-                  ) : (ext === "html" || ext === "htm") && previewText.trim() ? (
-                    <iframe
-                      srcDoc={previewText}
-                      className="w-full h-full min-h-full border-0 bg-white"
-                      sandbox="allow-scripts"
-                    />
-                  ) : CODE_EXTENSIONS.has(ext) ? (
-                    <ChunkedCodePreview
-                      key={`${previewFile.path}:${previewText.length}`}
-                      content={previewText}
-                      language={languageFromExt(ext)}
-                      onCancel={cancelPreviewLoad}
-                    />
-                  ) : !canUseRichPreview ? (
-                    <PlainTextPreview content={previewText} />
-                  ) : ext === "md" || ext === "markdown" ? (
-                    <MarkdownView content={previewText} />
-                  ) : (
-                    <PlainTextPreview content={previewText} />
-                  )}
+                  {renderPreviewContent()}
                 </div>
               </>
             )}
@@ -1116,6 +1225,29 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
         </div>
       </div>
     </div>
+    {previewFullscreen && previewFile && !previewWasCanceledBeforeContent && (
+      <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-secondary)]">
+        <div className="flex items-center gap-2 px-3 pt-8 pb-2 border-b border-[var(--border-color)] shrink-0">
+          <span className="text-xs text-[var(--text-primary)] truncate flex-1 min-w-0">{previewFile.name}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>
+          <button
+            type="button"
+            title={t("rightPanel.exitFullscreen")}
+            aria-label={t("rightPanel.exitFullscreen")}
+            onClick={() => setPreviewFullscreen(false)}
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors shrink-0"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M5.5 1.5v3a1 1 0 0 1-1 1h-3M8.5 12.5v-3a1 1 0 0 1 1-1h3M12.5 5.5h-3a1 1 0 0 1-1-1v-3M1.5 8.5h3a1 1 0 0 1 1 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 w-full h-full overflow-auto">
+          {renderPreviewContent()}
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

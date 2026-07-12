@@ -478,6 +478,8 @@
     "failedReadFile": "Failed to read file: {{error}}",
     "restartTerminal": "Restart",
     "diffCommit": "Diff {{hash}}",
+    "enterFullscreen": "Fullscreen preview",
+    "exitFullscreen": "Exit fullscreen",
     "plainTextExt": "text"
   },
   "diffViewer": {
