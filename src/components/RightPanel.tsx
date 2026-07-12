@@ -879,7 +879,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                 </span>
               ))}
             </div>
-            <div className="flex-1 overflow-y-auto p-2">
+            <div className="flex-1 overflow-y-auto p-2" data-page-find-scope="files">
               {loading && entries.length === 0 && (
                 <div className="flex items-center justify-center py-12">
                   <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
@@ -933,7 +933,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
 
         {/* === PREVIEW TAB === */}
         {!tabLoading && contentTab === "preview" && (
-          <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex-1 flex flex-col min-h-0" data-page-find-scope="preview">
             {!previewFile || previewWasCanceledBeforeContent ? (
               <p className="text-xs text-[var(--text-secondary)] text-center py-12 px-4">
                 {t('rightPanel.selectFileHint')}
@@ -977,7 +977,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
 
         {/* === GIT TAB === */}
         {!tabLoading && contentTab === "git" && (
-          <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex-1 flex flex-col min-h-0" data-page-find-scope="git">
             {gitLoading ? (
               <div className="flex items-center justify-center py-12">
                 <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
@@ -1131,6 +1131,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
             <div
               key={ws}
               className="absolute inset-0 flex flex-col"
+              data-page-find-scope={isThisWs ? "terminal" : undefined}
               style={{ display: isThisWs ? "flex" : "none" }}
             >
               {/* Tab strip — only rendered for the visible workspace. */}
@@ -1226,7 +1227,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
       </div>
     </div>
     {previewFullscreen && previewFile && !previewWasCanceledBeforeContent && (
-      <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-secondary)]">
+      <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-secondary)]" data-page-find-scope="preview-fullscreen">
         <div className="flex items-center gap-2 px-3 pt-8 pb-2 border-b border-[var(--border-color)] shrink-0">
           <span className="text-xs text-[var(--text-primary)] truncate flex-1 min-w-0">{previewFile.name}</span>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">{ext || t("rightPanel.plainTextExt")}</span>

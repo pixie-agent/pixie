@@ -899,7 +899,7 @@ ${entries}
         loopTasks={loopTasks}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0" data-page-find-scope="main">
         {mainViewLoading && <LoadingPanel onCancel={cancelMainViewLoad} />}
 
         {!mainViewLoading && displayMainView === "chat" && (
@@ -1186,7 +1186,7 @@ ${entries}
           It is NOT keyed by workspace, so the per-workspace terminals mounted
           inside it also persist across workspace switches. */}
       {activeWorkspace?.path && (
-        <div className="h-full" style={{ display: fileExplorerOpen ? "block" : "none" }}>
+        <div className="h-full" data-page-find-scope="right-panel" style={{ display: fileExplorerOpen ? "block" : "none" }}>
           <Suspense fallback={<LoadingPanel />}>
           <FileExplorer
             workspacePath={activeWorkspace.path}

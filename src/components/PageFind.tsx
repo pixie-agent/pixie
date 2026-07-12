@@ -27,7 +27,6 @@ function isSearchableTextNode(node: Text): boolean {
 }
 
 function highlightMatches(root: HTMLElement, query: string): HTMLElement[] {
-  clearHighlights(root);
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return [];
 
@@ -71,10 +70,23 @@ function highlightMatches(root: HTMLElement, query: string): HTMLElement[] {
   return marks;
 }
 
+function closestScope(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  if (target.closest("[data-page-find-ignore]")) return null;
+  return target.closest("[data-page-find-scope]") as HTMLElement | null;
+}
+
+function isUsableScope(scope: HTMLElement | null): scope is HTMLElement {
+  if (!scope || !scope.isConnected) return false;
+  const style = window.getComputedStyle(scope);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
+
 export default function PageFind() {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const marksRef = useRef<HTMLElement[]>([]);
+  const activeScopeRef = useRef<HTMLElement | null>(null);
   const updatingRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -93,10 +105,12 @@ export default function PageFind() {
   }, []);
 
   const rebuildHighlights = useCallback((nextQuery: string, nextActiveIndex = activeIndex) => {
-    const root = document.getElementById("root");
-    if (!root) return;
+    const appRoot = document.getElementById("root");
+    if (!appRoot) return;
+    const searchRoot = isUsableScope(activeScopeRef.current) ? activeScopeRef.current : appRoot;
     updatingRef.current = true;
-    const marks = highlightMatches(root, nextQuery);
+    clearHighlights(appRoot);
+    const marks = highlightMatches(searchRoot, nextQuery);
     marksRef.current = marks;
     setMatchCount(marks.length);
 
@@ -112,6 +126,25 @@ export default function PageFind() {
     }, 0);
   }, [activeIndex, selectActiveMark]);
 
+  useEffect(() => {
+    const updateActiveScope = (target: EventTarget | null) => {
+      const scope = closestScope(target);
+      if (!scope || scope === activeScopeRef.current) return;
+      activeScopeRef.current = scope;
+      if (open && query.trim()) {
+        window.setTimeout(() => rebuildHighlights(query, 0), 0);
+      }
+    };
+    const handlePointerDown = (event: PointerEvent) => updateActiveScope(event.target);
+    const handleFocusIn = (event: FocusEvent) => updateActiveScope(event.target);
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("focusin", handleFocusIn, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("focusin", handleFocusIn, true);
+    };
+  }, [open, query, rebuildHighlights]);
+
   const move = useCallback((direction: 1 | -1) => {
     const count = marksRef.current.length;
     if (count === 0) return;
@@ -124,6 +157,7 @@ export default function PageFind() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
+        activeScopeRef.current = closestScope(document.activeElement) ?? activeScopeRef.current;
         setOpen(true);
         window.setTimeout(() => inputRef.current?.select(), 0);
         return;
