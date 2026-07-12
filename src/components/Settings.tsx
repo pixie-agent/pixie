@@ -122,49 +122,51 @@ export default function Settings({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 xl:grid-cols-2 gap-x-6 gap-y-5 content-start">
           {/* Agent engines */}
-          <section>
+          <section className="xl:col-span-2">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               {t('settings.agentEngines')}
             </h3>
             <div className="space-y-3">
               {engineStatuses ? (
-                engineStatuses.map((status) => {
-                  const ready = status.available && status.auth_state === "ready";
-                  const label = !status.available
-                    ? t('engineSetup.status.notInstalled')
-                    : ready
-                      ? t('engineSetup.status.ready')
-                      : status.auth_state === "unknown"
-                        ? t('engineSetup.status.probing')
-                        : t('engineSetup.status.notReady');
-                  const dot = !status.available
-                    ? "bg-red-400"
-                    : ready
-                      ? "bg-green-400"
-                      : "bg-amber-400";
-                  return (
-                    <div
-                      key={status.id}
-                      className="flex items-center justify-between bg-[var(--bg-primary)] rounded-xl px-4 py-3 border border-[var(--border-color)]"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot}`} />
-                        <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                          {engineLabel(status.id, t)}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {engineStatuses.map((status) => {
+                    const ready = status.available && status.auth_state === "ready";
+                    const label = !status.available
+                      ? t('engineSetup.status.notInstalled')
+                      : ready
+                        ? t('engineSetup.status.ready')
+                        : status.auth_state === "unknown"
+                          ? t('engineSetup.status.probing')
+                          : t('engineSetup.status.notReady');
+                    const dot = !status.available
+                      ? "bg-red-400"
+                      : ready
+                        ? "bg-green-400"
+                        : "bg-amber-400";
+                    return (
+                      <div
+                        key={status.id}
+                        className="flex items-center justify-between bg-[var(--bg-primary)] rounded-xl px-4 py-3 border border-[var(--border-color)]"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot}`} />
+                          <span className="text-sm font-medium text-[var(--text-primary)] truncate">
+                            {engineLabel(status.id, t)}
+                          </span>
+                        </div>
+                        <span
+                          className={`text-xs shrink-0 ${
+                            ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
+                          }`}
+                        >
+                          {label}
                         </span>
                       </div>
-                      <span
-                        className={`text-xs shrink-0 ${
-                          ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
-                        }`}
-                      >
-                        {label}
-                      </span>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               ) : (
                 <p className="text-sm text-[var(--text-secondary)]">{t('common.loading')}</p>
               )}
@@ -342,7 +344,7 @@ export default function Settings({
           </section>
 
           {/* Model Configuration (per engine, collapsed by default) */}
-          <section>
+          <section className="xl:col-span-2">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
               {t('settings.modelConfig')}
             </h3>
