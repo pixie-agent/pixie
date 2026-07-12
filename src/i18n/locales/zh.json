@@ -256,6 +256,8 @@
     "light": "柔光紫",
     "cyberTeal": "赛博青",
     "paperMint": "薄荷纸",
+    "interfaceScale": "界面缩放",
+    "interfaceScaleHint": "可用 Ctrl/Cmd + 加号、减号或 0 快速调整。",
     "modelConfig": "模型配置",
     "modelConfigHint": "每个引擎的环境变量覆盖。留空以使用系统默认值。",
     "appliesOnly": "仅适用于 {{name}} 会话。",
@@ -279,7 +281,10 @@
       "newLine": "新起一行",
       "toggleSidebar": "切换侧边栏",
       "toggleSettings": "设置",
-      "toggleSearch": "搜索知识库"
+      "toggleSearch": "搜索知识库",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "resetZoom": "重置缩放"
     },
     "backfill": {
       "scanning": "扫描中…",

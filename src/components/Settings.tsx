@@ -7,7 +7,7 @@ import { AGENT_ENGINES, ENGINE_MODEL_FIELDS } from "../types";
 import { engineLabel, modelFieldLabel, formatModShortcut } from "../lib/i18nFormat";
 import { useUpdater } from "../hooks/useUpdater";
 import { useDragRegion } from "../hooks/useDragRegion";
-import type { AppTheme } from "../lib/storage";
+import { UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "../lib/storage";
 import LanguageSelector from "./LanguageSelector";
 
 // Brand mark — same art as the app/README icon.
@@ -30,6 +30,8 @@ interface SettingsProps {
   onDefaultEngineChange: (engine: AgentEngineId) => void;
   theme: AppTheme;
   onThemeChange: (theme: AppTheme) => void;
+  uiScale: UiScale;
+  onUiScaleChange: (scale: UiScale) => void;
   onClose: () => void;
   systemPrompt: string;
   onSystemPromptChange: (prompt: string) => void;
@@ -58,6 +60,8 @@ export default function Settings({
   onDefaultEngineChange,
   theme,
   onThemeChange,
+  uiScale,
+  onUiScaleChange,
   onClose,
   systemPrompt,
   onSystemPromptChange,
@@ -332,6 +336,31 @@ export default function Settings({
             </div>
           </section>
 
+          {/* Interface scale */}
+          <section>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+              {t('settings.interfaceScale')}
+            </h3>
+            <div className="grid grid-cols-4 gap-2">
+              {UI_SCALE_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  onClick={() => onUiScaleChange(option)}
+                  className={`py-2 px-2 rounded-lg text-sm font-medium transition-colors ${
+                    uiScale === option
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)]"
+                  }`}
+                >
+                  {Math.round(option * 100)}%
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-[var(--text-secondary)] mt-2">
+              {t('settings.interfaceScaleHint')}
+            </p>
+          </section>
+
           {/* Language */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
@@ -586,6 +615,24 @@ export default function Settings({
                 <span>{t('settings.shortcuts.toggleSettings')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
                   {formatModShortcut(t, ',')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.zoomIn')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, '+')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.zoomOut')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, '-')}
+                </kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('settings.shortcuts.resetZoom')}</span>
+                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
+                  {formatModShortcut(t, '0')}
                 </kbd>
               </div>
             </div>

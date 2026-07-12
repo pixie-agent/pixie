@@ -39,6 +39,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub theme: Option<String>,
     #[serde(default)]
+    pub ui_scale: Option<f64>,
+    #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub default_engine: Option<String>,

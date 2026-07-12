@@ -35,7 +35,7 @@ import type {
 } from "./types";
 import { AGENT_ENGINES } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
-import { bootstrap, getConfig, getHistory, updateConfig, type AppTheme } from "./lib/storage";
+import { bootstrap, getConfig, getHistory, updateConfig, UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "./lib/storage";
 
 type MainView = "chat" | "tasks" | "loops" | "skills" | "settings";
 
@@ -400,6 +400,7 @@ function AppShell() {
   const [mainViewLoading, setMainViewLoading] = useState(false);
   const mainViewLoadTokenRef = useRef(0);
   const [theme, setTheme] = useState<AppTheme>(() => getConfig().theme);
+  const [uiScale, setUiScale] = useState<UiScale>(() => getConfig().uiScale);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
     () => getConfig().engineModelConfigs,
@@ -586,6 +587,11 @@ function AppShell() {
   }, [theme]);
 
   useEffect(() => {
+    document.documentElement.style.setProperty("--ui-scale", String(uiScale));
+    updateConfig({ uiScale });
+  }, [uiScale]);
+
+  useEffect(() => {
     updateConfig({ systemPrompt });
   }, [systemPrompt]);
 
@@ -635,12 +641,31 @@ function AppShell() {
         e.preventDefault();
         setSearchOpen((prev) => !prev);
       }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setUiScale((current) => {
+          const index = UI_SCALE_OPTIONS.indexOf(current);
+          return UI_SCALE_OPTIONS[Math.min(index + 1, UI_SCALE_OPTIONS.length - 1)];
+        });
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "-") {
+        e.preventDefault();
+        setUiScale((current) => {
+          const index = UI_SCALE_OPTIONS.indexOf(current);
+          return UI_SCALE_OPTIONS[Math.max(index - 1, 0)];
+        });
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "0") {
+        e.preventDefault();
+        setUiScale(1);
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [createConversation, defaultEngine, isGenerating, stopGeneration]);
 
   const handleThemeChange = useCallback((t: AppTheme) => setTheme(t), []);
+  const handleUiScaleChange = useCallback((scale: UiScale) => setUiScale(scale), []);
   const handleSystemPromptChange = useCallback((prompt: string) => setSystemPrompt(prompt), []);
   const handleEngineModelConfigChange = useCallback(
     (engine: keyof EngineModelConfigs, patch: Record<string, string | undefined>) => {
@@ -1134,6 +1159,8 @@ ${entries}
             onDefaultEngineChange={setDefaultEngine}
             theme={theme}
             onThemeChange={handleThemeChange}
+            uiScale={uiScale}
+            onUiScaleChange={handleUiScaleChange}
             onClose={() => setMainView("chat")}
             systemPrompt={systemPrompt}
             onSystemPromptChange={handleSystemPromptChange}

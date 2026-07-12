@@ -256,6 +256,8 @@
     "light": "ソフトバイオレット",
     "cyberTeal": "サイバーティール",
     "paperMint": "ペーパーミント",
+    "interfaceScale": "インターフェイス倍率",
+    "interfaceScaleHint": "Ctrl/Cmd + プラス、マイナス、0 で素早く調整できます。",
     "modelConfig": "モデル設定",
     "modelConfigHint": "エンジンごとの環境変数オーバーライド。空のままにするとシステムデフォルトを使用します。",
     "appliesOnly": "{{name}} セッションにのみ適用されます。",
@@ -279,7 +281,10 @@
       "newLine": "改行",
       "toggleSidebar": "サイドバーを切り替え",
       "toggleSettings": "設定",
-      "toggleSearch": "ナレッジベースを検索"
+      "toggleSearch": "ナレッジベースを検索",
+      "zoomIn": "拡大",
+      "zoomOut": "縮小",
+      "resetZoom": "ズームをリセット"
     },
     "backfill": {
       "scanning": "スキャン中…",

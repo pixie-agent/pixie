@@ -256,6 +256,8 @@
     "light": "Soft Violet",
     "cyberTeal": "Cyber Teal",
     "paperMint": "Paper Mint",
+    "interfaceScale": "Interface Scale",
+    "interfaceScaleHint": "Use Ctrl/Cmd + plus, minus, or 0 to adjust quickly.",
     "modelConfig": "Model Configuration",
     "modelConfigHint": "Environment overrides per engine. Leave empty to use system defaults.",
     "appliesOnly": "Applies only to {{name}} sessions.",
@@ -279,7 +281,10 @@
       "newLine": "New line",
       "toggleSidebar": "Toggle sidebar",
       "toggleSettings": "Settings",
-      "toggleSearch": "Search knowledge base"
+      "toggleSearch": "Search knowledge base",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "resetZoom": "Reset zoom"
     },
     "backfill": {
       "scanning": "Scanning…",

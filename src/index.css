@@ -5,6 +5,7 @@
 /* -------------------------------------------------------------------------- */
 
 :root {
+  --ui-scale: 1;
   --bg-primary: #1a1a2e;
   --bg-secondary: #16213e;
   --bg-tertiary: #0f3460;
@@ -78,6 +79,10 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+}
+
+html {
+  font-size: calc(16px * var(--ui-scale));
 }
 
 body {

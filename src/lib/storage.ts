@@ -23,9 +23,12 @@ import type {
 import { DEFAULT_ENGINE_MODEL_CONFIGS } from "../types";
 
 export type AppTheme = "dark" | "light" | "cyber-teal" | "paper-mint";
+export const UI_SCALE_OPTIONS = [0.9, 1, 1.1, 1.25] as const;
+export type UiScale = (typeof UI_SCALE_OPTIONS)[number];
 
 export interface AppConfig {
   theme: AppTheme;
+  uiScale: UiScale;
   systemPrompt: string;
   defaultEngine: AgentEngineId;
   engineModelConfigs: EngineModelConfigs;
@@ -45,6 +48,7 @@ export interface HistoryEntry {
 
 const EMPTY_CONFIG: AppConfig = {
   theme: "cyber-teal",
+  uiScale: 1,
   systemPrompt: "",
   defaultEngine: "builtin",
   engineModelConfigs: {
@@ -132,6 +136,7 @@ const markHistoryDirty = makeWriter(
 
 interface ConfigWire {
   theme?: string | null;
+  ui_scale?: number | null;
   system_prompt?: string | null;
   default_engine?: string | null;
   engine_model_configs?: unknown;
@@ -147,6 +152,10 @@ function isValidEngine(v: unknown): v is AgentEngineId {
 
 function isValidTheme(v: unknown): v is AppTheme {
   return v === "dark" || v === "light" || v === "cyber-teal" || v === "paper-mint";
+}
+
+function isValidUiScale(v: unknown): v is UiScale {
+  return typeof v === "number" && UI_SCALE_OPTIONS.some((option) => option === v);
 }
 
 /** Coerce a persisted `known_ready_engines` blob into a valid engine-id list. */
@@ -196,6 +205,7 @@ function wireToConfig(w: ConfigWire | null): AppConfig {
   if (!w) return { ...EMPTY_CONFIG };
   return {
     theme: isValidTheme(w.theme) ? w.theme : EMPTY_CONFIG.theme,
+    uiScale: isValidUiScale(w.ui_scale) ? w.ui_scale : EMPTY_CONFIG.uiScale,
     systemPrompt: typeof w.system_prompt === "string" ? w.system_prompt : "",
     defaultEngine: isValidEngine(w.default_engine) ? w.default_engine : "builtin",
     engineModelConfigs: coerceEngineModelConfigs(w.engine_model_configs),
@@ -210,6 +220,7 @@ function wireToConfig(w: ConfigWire | null): AppConfig {
 function configToWire(c: AppConfig): ConfigWire {
   return {
     theme: c.theme,
+    ui_scale: c.uiScale,
     system_prompt: c.systemPrompt,
     default_engine: c.defaultEngine,
     engine_model_configs: c.engineModelConfigs,
@@ -305,6 +316,7 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
   const storedEngine = localStorage.getItem("pixie-default-engine");
   const config: AppConfig = {
     theme: isValidTheme(localStorage.getItem("pixie-theme")) ? localStorage.getItem("pixie-theme") as AppTheme : EMPTY_CONFIG.theme,
+    uiScale: EMPTY_CONFIG.uiScale,
     systemPrompt: localStorage.getItem("pixie-system-prompt") ?? "",
     defaultEngine: isValidEngine(storedEngine) ? storedEngine : "builtin",
     engineModelConfigs,
