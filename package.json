@@ -13,6 +13,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@git-diff-view/react": "^0.1.6",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-updater": "^2",

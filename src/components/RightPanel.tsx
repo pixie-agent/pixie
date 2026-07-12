@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ComponentPropsWithoutRef } from "react";
+import { lazy, memo, Suspense, useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ComponentPropsWithoutRef } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -11,8 +11,9 @@ import { segmentColor, tokenizeSource, type TokenSegment } from "../lib/highligh
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
 import { openExternal } from "../openExternal";
-import DiffViewer from "./DiffViewer";
 import Terminal from "./Terminal";
+
+const DiffViewer = lazy(() => import("./DiffViewer"));
 
 interface RightPanelProps {
   workspacePath: string;
@@ -1019,7 +1020,15 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                     {!changesCollapsed && (
                       <div className="flex-1 overflow-auto min-h-0">
                         {gitWorkingDiff ? (
-                          <DiffViewer diff={gitWorkingDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
+                          <Suspense
+                            fallback={
+                              <div className="px-3 py-4 text-xs text-[var(--text-secondary)]">
+                                {t("common.loading")}
+                              </div>
+                            }
+                          >
+                            <DiffViewer diff={gitWorkingDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
+                          </Suspense>
                         ) : (
                           <p className="px-3 pb-2 text-xs text-[var(--text-secondary)]">{t('rightPanel.noUncommittedChanges')}</p>
                         )}
@@ -1104,7 +1113,15 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
                           </svg>
                         </button>
                     </div>
-                    <DiffViewer diff={gitDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
+                    <Suspense
+                      fallback={
+                        <div className="px-3 py-4 text-xs text-[var(--text-secondary)]">
+                          {t("common.loading")}
+                        </div>
+                      }
+                    >
+                      <DiffViewer diff={gitDiff} viewMode={diffViewMode} onRevealPath={revealInFileManager} />
+                    </Suspense>
                   </div>
                 )}
               </>
