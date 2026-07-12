@@ -44,7 +44,7 @@ export interface HistoryEntry {
 }
 
 const EMPTY_CONFIG: AppConfig = {
-  theme: "dark",
+  theme: "cyber-teal",
   systemPrompt: "",
   defaultEngine: "builtin",
   engineModelConfigs: {
@@ -195,7 +195,7 @@ function coerceWorkspaces(raw: unknown): WorkspaceState[] {
 function wireToConfig(w: ConfigWire | null): AppConfig {
   if (!w) return { ...EMPTY_CONFIG };
   return {
-    theme: isValidTheme(w.theme) ? w.theme : "dark",
+    theme: isValidTheme(w.theme) ? w.theme : EMPTY_CONFIG.theme,
     systemPrompt: typeof w.system_prompt === "string" ? w.system_prompt : "",
     defaultEngine: isValidEngine(w.default_engine) ? w.default_engine : "builtin",
     engineModelConfigs: coerceEngineModelConfigs(w.engine_model_configs),
@@ -304,7 +304,7 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
 
   const storedEngine = localStorage.getItem("pixie-default-engine");
   const config: AppConfig = {
-    theme: isValidTheme(localStorage.getItem("pixie-theme")) ? localStorage.getItem("pixie-theme") as AppTheme : "dark",
+    theme: isValidTheme(localStorage.getItem("pixie-theme")) ? localStorage.getItem("pixie-theme") as AppTheme : EMPTY_CONFIG.theme,
     systemPrompt: localStorage.getItem("pixie-system-prompt") ?? "",
     defaultEngine: isValidEngine(storedEngine) ? storedEngine : "builtin",
     engineModelConfigs,
