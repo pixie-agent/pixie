@@ -127,12 +127,9 @@ const MarkdownView = memo(function MarkdownView({ content }: { content: string }
 
 const PlainTextPreview = memo(function PlainTextPreview({ content }: { content: string }) {
   return (
-    <textarea
-      readOnly
-      spellCheck={false}
-      value={content}
-      className="flex-1 min-h-0 w-full h-full resize-none border-0 outline-none bg-transparent p-3 text-xs font-mono text-[var(--text-primary)] leading-relaxed whitespace-pre"
-    />
+    <pre className="flex-1 min-h-0 w-full h-full overflow-auto bg-transparent p-3 text-xs font-mono text-[var(--text-primary)] leading-relaxed whitespace-pre">
+      {content}
+    </pre>
   );
 });
 
