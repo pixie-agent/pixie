@@ -119,7 +119,7 @@ export function useUpdater(): UseUpdaterResult {
     setContentLength(0);
     try {
       const res = await fetch(
-        "https://api.github.com/repos/white1or1black/pixie/releases?per_page=30",
+        "https://api.github.com/repos/pixie-agent/pixie/releases?per_page=30",
         { headers: { Accept: "application/vnd.github+json" } },
       );
       if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
@@ -136,7 +136,7 @@ export function useUpdater(): UseUpdaterResult {
         setStatus("error");
         return;
       }
-      const endpoint = `https://github.com/white1or1black/pixie/releases/download/${beta.tag_name}/latest.json`;
+      const endpoint = `https://github.com/pixie-agent/pixie/releases/download/${beta.tag_name}/latest.json`;
       setStatus("downloading");
       const installed = await invoke<string | null>("install_update_from_endpoint", {
         endpoint,
