@@ -94,4 +94,5 @@ Use the `/release` skill (or follow `docs/releasing.md`). Non-obvious gotchas:
 - **Bump 4 version files in sync**: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, **and** the `pixie` entry in `src-tauri/Cargo.lock`. The new version must be **strictly greater** than the last published one, or the in-app updater reports "up to date".
 - Tag **`app-vX.Y.Z`** (the `app-` prefix is what triggers CI — `vX.Y.Z` alone does nothing).
 - CI publishes a **draft** GitHub Release; you must run `gh release edit app-vX.Y.Z --draft=false` (or publish on the web) before users see the update.
+- Keep the updater endpoint on `/releases/latest/download/latest.json` only. A fixed tag endpoint like `/releases/download/app-vX.Y.Z/latest.json` can pin that released client to its own manifest and make later updates look "up to date".
 - The updater signing key lives at `~/.tauri/pixie.key` — back it up; losing it permanently breaks updates for every already-installed copy.

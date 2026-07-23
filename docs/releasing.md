@@ -1,177 +1,192 @@
-# Pixie 发版指南
+# Pixie Release Guide
 
-> **Agent skill:** 在 Pixie 仓库内可用 `/release` 调用 `.claude/skills/release/SKILL.md`,让 agent 按步骤执行发版。
+> **Agent skill:** In this repo, use `/release` to invoke `.claude/skills/release/SKILL.md` and have the agent execute the release steps.
 
-本文档说明如何发布 Pixie 新版本,让已安装的用户通过 app 内 **Settings → Check for Updates** 自动更新到最新版。
-
----
-
-## 工作原理
-
-Pixie 使用 Tauri v2 官方 updater 插件实现应用内自动更新:
-
-1. 用户点击「Check for Updates」时,app 请求 `latest.json`(托管在 GitHub Release)。
-2. `latest.json` 里记录最新版本号和各平台下载地址 + 签名。
-3. app 拿 `latest.json` 的 `version` 与当前安装版比较:
-   - **更高** → 提示有新版本,用户确认后下载、验签、安装、重启。
-   - **相同或更低** → 显示「已是最新版本」,不更新。
-
-所以发版的本质就是:**升版本号 + 打 tag 触发 CI 自动构建并发布 Release**,让 `latest.json` 指向新版本。
+This document explains how to publish a new Pixie version so installed users can update through **Settings -> Check for Updates**.
 
 ---
 
-## 前置条件(已就绪,仅首次需要)
+## How Updates Work
 
-- [x] Tauri updater 签名密钥:`~/.tauri/pixie.key`(私钥)+ `tauri.conf.json` 里的 pubkey
-- [x] GitHub Secrets:`TAURI_SIGNING_PRIVATE_KEY`(私钥内容)+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`(空)
-- [x] CI workflow:`.github/workflows/release.yml`(打 `app-v*` tag 触发)
+Pixie uses the official Tauri v2 updater plugin for in-app updates:
+
+1. When a user clicks **Check for Updates**, the app requests `latest.json` from the GitHub Release.
+2. `latest.json` contains the latest version plus per-platform download URLs and signatures.
+3. The app compares the `version` in `latest.json` with the installed app version:
+   - **Higher**: show an available update, then download, verify, install, and restart after the user confirms.
+   - **Same or lower**: show "up to date" and do not update.
+
+The release process is therefore: **bump the version, push a tag, let CI build and publish a Release, and make sure `latest.json` points to the new version**.
+
+> Warning: keep the updater endpoint in `tauri.conf.json` on `/releases/latest/download/latest.json`.
+> Do not ship a fixed tag URL like `/releases/download/app-vX.Y.Z/latest.json` in the client config.
+> A fixed URL can pin that released client to its own old manifest, making later versions look "up to date".
 
 ---
 
-## 标准发版流程
+## Prerequisites
 
-以从 `0.1.1` 发布 `0.1.2` 为例。
+These are already set up and only need to be checked if the release pipeline breaks:
 
-### 1. 升版本号(三处必须一致)
+- [x] Tauri updater signing key: `~/.tauri/pixie.key` private key plus the pubkey in `tauri.conf.json`
+- [x] GitHub Secrets: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- [x] CI workflow: `.github/workflows/release.yml`, triggered by `app-v*` tags
 
-| 文件 | 字段 |
+---
+
+## Standard Release Flow
+
+Example: release `0.1.2` from `0.1.1`.
+
+### 1. Bump Versions
+
+Keep these files in sync:
+
+| File | Field |
 |---|---|
 | `package.json` | `"version": "0.1.2"` |
 | `src-tauri/Cargo.toml` | `version = "0.1.2"` |
 | `src-tauri/tauri.conf.json` | `"version": "0.1.2"` |
+| `src-tauri/Cargo.lock` | the `pixie` package entry |
 
-> ⚠️ 版本号必须 **大于** 已发布的最新版(当前 `0.1.1`),否则用户的 `check()` 判定为「已是最新」而不更新。
+> Warning: the new version must be **greater than** the latest published version. Otherwise the updater's `check()` call reports "up to date".
 
-### 2. 提交并推送到 main
+### 2. Commit and Push to Main
 
 ```bash
 git add -A
-git commit -m "feat: 你的变更说明"
+git commit -m "release: v0.1.2"
 git push origin main
 ```
 
-### 3. 打 tag 并推送(触发 CI)
+### 3. Push the Release Tag
 
 ```bash
 git tag app-v0.1.2
 git push origin app-v0.1.2
 ```
 
-> ⚠️ tag 必须是 `app-vX.Y.Z` 格式(匹配 workflow 的 `app-v*` 触发规则)。写成 `v0.1.2` 不会触发 CI。
+> Warning: the tag must match `app-vX.Y.Z`. A plain `v0.1.2` tag will not trigger the release workflow.
 
-### 4. 等 CI 完成(约 15–30 分钟)
+### 4. Wait for CI
 
-CI 在 `.github/workflows/release.yml` 会:
-- 三平台并行构建(macOS arm64 / x86_64、Linux、Windows)
-- 用 `~/.tauri/pixie.key` 签名所有安装包(生成 `.sig`)
-- 自动合并 `latest.json`(含全部平台 entry)
-- 创建一个 **draft Release**(草稿)
+CI in `.github/workflows/release.yml` will:
 
-查看进度:https://github.com/white1or1black/pixie/actions,或本地 `gh run watch`。
+- Build macOS arm64, macOS x86_64, Linux, and Windows.
+- Sign updater artifacts with the Tauri updater key and generate `.sig` files.
+- Merge `latest.json` with all platform entries.
+- Create a GitHub Release, usually as a draft unless configured otherwise.
 
-### 5. 发布 draft Release
+Watch progress at <https://github.com/pixie-agent/pixie/actions> or with `gh run watch`.
 
-CI 跑完发的是**草稿**,必须手动发布,用户才能 check 到(草稿不算 latest):
+### 5. Publish the Draft Release
+
+If CI creates a draft Release, publish it before users can see the update:
 
 ```bash
 gh release edit app-v0.1.2 --draft=false
 ```
 
-或在网页打开该 Release → 点 **Publish release**。
+You can also publish it from the GitHub Release page.
 
-### ✅ 完成
+### Done
 
-装着 `0.1.1` 的用户点「Check for Updates」就会发现 `0.1.2` 并更新。
+Users on `0.1.1` should now see `0.1.2` when they click **Check for Updates**.
 
 ---
 
-## 验证发版成功
+## Verify the Release
 
 ```bash
-# 确认 release 已发布且是 latest
-gh api repos/white1or1black/pixie/releases/latest \
+# Confirm the release is published and is the latest stable release.
+gh api repos/pixie-agent/pixie/releases/latest \
   --jq '{tag: .tag_name, draft: .draft, prerelease: .prerelease}'
 
-# 确认 latest.json 指向目标版本
+# Confirm latest.json points to the expected version.
 gh release download app-v0.1.2 -p latest.json -O - | head -3
 ```
 
-预期:`tag_name` 为 `app-v0.1.2`、`draft: false`、`latest.json` 的 `version` 为 `0.1.2`。
+Expected result: `tag_name` is `app-v0.1.2`, `draft` is `false`, and `latest.json` has `"version": "0.1.2"`.
 
 ---
 
-## 常见问题排查
+## Troubleshooting
 
-| 现象 | 原因 | 解决 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| 推 tag 后 CI 没触发 | tag 格式不对 | 必须是 `app-vX.Y.Z` |
-| CI 跑完但用户 check 不到更新 | draft 没发布 | `gh release edit app-vX.Y.Z --draft=false` |
-| 用户显示「已是最新」但应有新版 | 版本号没升 / 三处不一致 | 新版本号必须 > 已发布版,且三处一致 |
-| 刚发布用户还是 check 不到 | GitHub CDN 传播延迟 | 等几分钟重试 |
-| CI 签名步骤失败 | secrets 丢失或密钥不匹配 | 确认 `TAURI_SIGNING_PRIVATE_KEY` 是 `~/.tauri/pixie.key` 的内容 |
-| 某平台构建失败 | 平台特定问题 | `gh run view <run-id> --log-failed` 查日志 |
+| CI did not start after pushing the tag | Wrong tag format | Use `app-vX.Y.Z` |
+| CI finished but users cannot see the update | Release is still a draft | Run `gh release edit app-vX.Y.Z --draft=false` |
+| Users see "up to date" when a newer version exists | Version was not bumped or version files are inconsistent | New version must be greater than the published version and all version files must match |
+| A previously released version is stuck on itself | That version shipped a fixed tag updater endpoint | Replace that old Release's `latest.json` with the current latest manifest, and make sure new versions only use `/releases/latest/download/latest.json` |
+| Users still cannot see the update immediately after publishing | GitHub CDN propagation delay | Wait a few minutes and retry |
+| CI signing fails | Missing or mismatched signing secrets | Confirm `TAURI_SIGNING_PRIVATE_KEY` contains the contents of `~/.tauri/pixie.key` |
+| One platform fails to build | Platform-specific build failure | Inspect logs with `gh run view <run-id> --log-failed` |
 
 ---
 
-## 签名密钥管理
+## Signing Key Management
 
-- **私钥**:`~/.tauri/pixie.key`(无密码,已 gitignore,不入库)
-- **公钥**:`tauri.conf.json` → `plugins.updater.pubkey`
-- **GitHub Secret**:`TAURI_SIGNING_PRIVATE_KEY`(私钥文件内容)
+- **Private key:** `~/.tauri/pixie.key`, ignored by git
+- **Public key:** `plugins.updater.pubkey` in `tauri.conf.json`
+- **GitHub Secret:** `TAURI_SIGNING_PRIVATE_KEY`, containing the private key file contents
 
-> 🚨 **私钥务必备份**(密码管理器 / 加密离线存储)。一旦丢失,所有已安装的老版本将 **永远无法再更新** —— 新版安装包无法用原密钥签名,`check()` 验签会失败。
+> Back up the private key in a password manager or encrypted offline storage. If it is lost, already-installed apps can no longer update because future updater artifacts cannot be signed with the original key.
 
-### 重新生成密钥(仅当私钥丢失或泄漏)
+### Regenerate the Key
+
+Only do this if the private key is lost or compromised:
 
 ```bash
 pnpm tauri signer generate -w ~/.tauri/pixie.key --ci -f
-# 然后更新 tauri.conf.json 的 pubkey(从新的 .pub 文件)
-# 并更新 GitHub Secret TAURI_SIGNING_PRIVATE_KEY
-# 注意:从这一刻起,所有用旧密钥签发的已安装版本都无法再更新
+# Then update the pubkey in tauri.conf.json from the generated .pub file.
+# Also update the TAURI_SIGNING_PRIVATE_KEY GitHub Secret.
+# Existing installs signed with the old key will not be able to update.
 ```
 
 ---
 
-## macOS 代码签名说明
+## macOS Code Signing
 
-当前用 **ad-hoc 签名**(`signingIdentity: "-"`),因为没有 Apple Developer 账号:
+Pixie currently uses **ad-hoc signing** with `signingIdentity: "-"` because there is no Apple Developer account configured.
 
-- 用户首次打开 `.app` 需 **右键 → 打开**(双击会被 Gatekeeper 拦截,提示「无法打开 / 已损坏」)。
-- 更新替换 `.app` 后,可能再次提示 Gatekeeper。
+- On first launch, users may need to right-click the `.app` and choose **Open**. Double-clicking may be blocked by Gatekeeper.
+- After an update replaces the `.app`, Gatekeeper may prompt again.
 
-### 升级到正式签名(将来有 Apple Developer 账号后)
+### Move to Developer ID Signing
 
-1. 在 GitHub 加 secrets:`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`
-2. 删除 `tauri.conf.json` 里 `bundle.macOS.signingIdentity: "-"`
-3. updater 配置 **完全不用改**
+When an Apple Developer account is available:
+
+1. Add GitHub Secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`.
+2. Remove `bundle.macOS.signingIdentity: "-"` from `tauri.conf.json`.
+3. Leave the updater configuration unchanged.
 
 ---
 
-## 本地测试更新链路(可选,不发版)
+## Local Update-Flow Test
 
-验证「检查更新 → 下载 → 安装」是否正常工作:
+Use this only when you want to verify the update chain without publishing a new release:
 
 ```bash
-# 1. 临时把 tauri.conf.json 的 version 改成低于已发布的值(如 "0.1.0")
-# 2. 用私钥本地打包
+# 1. Temporarily set tauri.conf.json to a version lower than the published version, such as "0.1.0".
+# 2. Build locally with the updater signing key.
 TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/pixie.key)" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
 pnpm tauri build
 
-# 3. 运行打包出的旧版本 app → Settings → Check for Updates
-#    应发现已发布的更高版本并完成更新
-# 4. 测完把 tauri.conf.json 的 version 改回
+# 3. Run the packaged old-version app and use Settings -> Check for Updates.
+#    It should find and install the published newer version.
+# 4. Restore tauri.conf.json after testing.
 ```
 
 ---
 
-## 附:一键发版命令序列
+## One-Command Release Sequence
 
 ```bash
-V=0.1.2                                              # 改成你要发的版本
-# 手动改三处版本号(或用脚本),然后:
+V=0.1.2
+# Manually update the version files first, then:
 git add -A && git commit -m "release: v$V" && git push origin main
 git tag "app-v$V" && git push origin "app-v$V"
-# 等 CI 跑完后:
+# After CI finishes:
 gh release edit "app-v$V" --draft=false
 ```
