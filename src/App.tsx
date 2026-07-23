@@ -407,6 +407,8 @@ function AppShell() {
     () => getConfig().engineModelConfigs,
   );
   const [skills, setSkills] = useState<SkillEntry[]>([]);
+  const skillsCacheRef = useRef<Map<string, SkillEntry[]>>(new Map());
+  const skillsRequestSeqRef = useRef(0);
   const [defaultVaultPath, setDefaultVaultPath] = useState<string | null>(null);
   const [backfillStatus, setBackfillStatus] = useState<string | null>(null);
   // Composer drafts are kept per conversation (keyed by conversation id, derived
@@ -444,11 +446,10 @@ function AppShell() {
     workspaces,
     activeWorkspace,
     activeWorkspaceId,
-    workspaceFilter,
-    setWorkspaceFilter,
+    activeConversationWorkspaceId,
+    newConversationWorkspaceId,
+    chooseActiveConversationWorkspace,
     error,
-    addWorkspace,
-    removeWorkspace,
     createConversation,
     switchConversation,
     renameConversation,
@@ -610,10 +611,29 @@ function AppShell() {
   // Load skills for the skills picker: user-level always, project-level when a
   // workspace is active. `reloadSkills` is reused after a plugin install/uninstall
   // so the ✨ dropdown picks up newly added skills.
-  const reloadSkills = useCallback(() => {
-    invoke<SkillEntry[]>("list_skills", { workspace: activeWorkspace?.path ?? null })
-      .then(setSkills)
+  const reloadSkills = useCallback((opts?: { force?: boolean }) => {
+    const workspacePath = activeWorkspace?.path ?? null;
+    const cacheKey = workspacePath ?? "__global__";
+    const seq = ++skillsRequestSeqRef.current;
+    const cached = skillsCacheRef.current.get(cacheKey);
+    if (cached && !opts?.force) {
+      setSkills(cached);
+      return;
+    }
+    if (!cached) setSkills(skillsCacheRef.current.get("__global__") ?? []);
+    invoke<SkillEntry[]>("list_skills", { workspace: workspacePath, force: opts?.force ?? false })
+      .then((entries) => {
+        skillsCacheRef.current.set(cacheKey, entries);
+        if (workspacePath !== null && !skillsCacheRef.current.has("__global__")) {
+          skillsCacheRef.current.set(
+            "__global__",
+            entries.filter((skill) => skill.source !== "project"),
+          );
+        }
+        if (seq === skillsRequestSeqRef.current) setSkills(entries);
+      })
       .catch((err) => {
+        if (seq !== skillsRequestSeqRef.current) return;
         console.error("list_skills failed", err);
         setSkills([]);
       });
@@ -855,6 +875,23 @@ ${entries}
     return <SplashScreen />;
   }
 
+  const composerWorkspaceId =
+    activeConversation?.pendingWorkspaceId ??
+    (activeConversationWorkspaceId && activeConversationWorkspaceId !== "__pixie_unbound__"
+      ? activeConversationWorkspaceId
+      : null) ??
+    newConversationWorkspaceId ??
+    defaultWorkspacePath ??
+    activeWorkspaceId ??
+    workspaces[0]?.id ??
+    null;
+  const composerWorkspacePath =
+    workspaces.find((w) => w.id === composerWorkspaceId)?.path ?? composerWorkspaceId;
+  const composerWorkspaceName =
+    workspaces.find((w) => w.id === composerWorkspaceId)?.name ??
+    composerWorkspaceId?.replace(/\\/g, "/").split("/").filter(Boolean).pop() ??
+    null;
+
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)]">
       {setupOpen && (
@@ -866,13 +903,12 @@ ${entries}
           onClose={() => setSetupOpen(false)}
         />
       )}
-      <Sidebar
-        entries={unifiedConversations}
-        workspaces={workspaces}
-        defaultWorkspacePath={defaultWorkspacePath}
-        workspaceFilter={workspaceFilter}
-        activeId={activeId}
-        generatingIds={generatingIds}
+        <Sidebar
+          entries={unifiedConversations}
+          workspaces={workspaces}
+          defaultWorkspacePath={defaultWorkspacePath}
+          activeId={activeId}
+          generatingIds={generatingIds}
         onSelect={(id, workspaceId) => {
           setMainView("chat");
           switchConversation(id, workspaceId);
@@ -887,9 +923,6 @@ ${entries}
         readyEngineIds={readyEngineIds}
         onDelete={deleteConversation}
         onRename={renameConversation}
-        onAddWorkspace={addWorkspace}
-        onRemoveWorkspace={removeWorkspace}
-        onSetWorkspaceFilter={setWorkspaceFilter}
         onOpenSettings={() => setMainView("settings")}
         onOpenTasks={() => setMainView("tasks")}
         onOpenLoops={() => setMainView("loops")}
@@ -916,8 +949,7 @@ ${entries}
                       setMainView("chat");
                       createConversation(undefined, defaultEngine);
                     }}
-                    disabled={!activeWorkspace}
-                    className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
                     title={t('header.newSession', { shortcut: formatModShortcut(t, 'N') })}
                     aria-label={t('header.newSession', { shortcut: formatModShortcut(t, 'N') })}
                   >
@@ -1068,13 +1100,21 @@ ${entries}
               }}
               onStop={() => stopGeneration()}
               isGenerating={isGenerating}
-              disabled={!activeWorkspace}
+              disabled={false}
               disabledHint={t('chat.addWorkspaceHint')}
               value={draft}
               onChange={handleDraftChange}
               textareaRef={composerRef}
               skills={skills}
-              workspacePath={activeWorkspace?.path ?? null}
+              workspacePath={composerWorkspacePath}
+              selectedWorkspaceId={composerWorkspaceId}
+              selectedWorkspaceName={composerWorkspaceName}
+              workspaceLocked={
+                !!activeConversation &&
+                activeConversation.messages.length > 0 &&
+                activeConversationWorkspaceId !== "__pixie_unbound__"
+              }
+              onPickWorkspace={chooseActiveConversationWorkspace}
               engine={activeConversation?.engine}
               model={activeConversation?.model}
               onModelChange={handleModelChange}
@@ -1144,7 +1184,7 @@ ${entries}
           <Suspense fallback={<LoadingPanel />}>
           <MarketplacePanel
             onClose={() => setMainView("chat")}
-            onSkillsChanged={reloadSkills}
+            onSkillsChanged={() => reloadSkills({ force: true })}
           />
           </Suspense>
         )}

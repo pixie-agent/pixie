@@ -17,6 +17,17 @@ pub fn init_pty_map() -> PtyMap {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+fn utf8_locale() -> String {
+    for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            if value.to_uppercase().contains("UTF-8") || value.to_uppercase().contains("UTF8") {
+                return value;
+            }
+        }
+    }
+    "en_US.UTF-8".to_string()
+}
+
 #[cfg(unix)]
 fn make_writer(
     master: &mut Box<dyn portable_pty::MasterPty + Send>,
@@ -62,6 +73,9 @@ pub fn spawn_pty(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    let locale = utf8_locale();
+    cmd.env("LANG", &locale);
+    cmd.env("LC_CTYPE", &locale);
     cmd.args(["-i", "-l"]);
     if let Some(dir) = cwd {
         cmd.cwd(dir);

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, memo } from "react";
+import { useState, useMemo, useRef, memo } from "react";
 import { useTranslation } from "../hooks/useTranslation";
 import { relativeTime as formatRelativeTime } from "../lib/i18nFormat";
 import type { ConversationEntry } from "../hooks/useChat";
@@ -10,16 +10,12 @@ import EngineBadge from "./EngineBadge";
 interface SidebarProps {
   entries: ConversationEntry[];
   workspaces: WorkspaceState[];
-  workspaceFilter: string | null;
   activeId: string | null;
   generatingIds: Set<string>;
   onSelect: (id: string, workspaceId: string) => void;
   onNew: (opts?: { workspaceId?: string; engine?: AgentEngineId; model?: string }) => void;
   onDelete: (id: string, workspaceId: string) => void;
   onRename: (id: string, newTitle: string) => void;
-  onAddWorkspace: () => void;
-  onRemoveWorkspace: (id: string) => void;
-  onSetWorkspaceFilter: (id: string | null) => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
   onOpenLoops: () => void;
@@ -351,16 +347,12 @@ function EntryList({
 export default function Sidebar({
   entries,
   workspaces,
-  workspaceFilter,
   activeId,
   generatingIds,
   onSelect,
   onNew,
   onDelete,
   onRename,
-  onAddWorkspace,
-  onRemoveWorkspace,
-  onSetWorkspaceFilter,
   onOpenSettings,
   onOpenTasks,
   onOpenLoops,
@@ -376,22 +368,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
-  const [wsPendingRemove, setWsPendingRemove] = useState<string | null>(null);
-  const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
-  const wsDropdownRef = useRef<HTMLDivElement>(null);
   const handleDragRegion = useDragRegion();
-
-  // Close workspace dropdown on outside clicks
-  useEffect(() => {
-    if (!wsDropdownOpen) return;
-    const handleClick = (e: MouseEvent) => {
-      if (wsDropdownRef.current && !wsDropdownRef.current.contains(e.target as Node)) {
-        setWsDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [wsDropdownOpen]);
 
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [loopsExpanded, setLoopsExpanded] = useState(true);
@@ -404,47 +381,8 @@ export default function Sidebar({
     ? defaultEngine
     : (readyEngineIds[0] ?? defaultEngine);
 
-  // The auto-created default workspace (the configured default working dir) is
-  // hidden from the UI — it stays as the implicit CWD but never appears in the
-  // workspace list. `workspaces` (incl. the default) is still used elsewhere for
-  // resolving conversation labels.
-  const visibleWorkspaces = useMemo(
-    () => workspaces.filter((w) => w.path !== defaultWorkspacePath),
-    [workspaces, defaultWorkspacePath],
-  );
-
-  const defaultWorkspace = useMemo<WorkspaceState | null>(() => {
-    if (!defaultWorkspacePath) return null;
-    const base = defaultWorkspacePath.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? defaultWorkspacePath;
-    return (
-      workspaces.find((w) => w.path === defaultWorkspacePath) ?? {
-        id: defaultWorkspacePath,
-        path: defaultWorkspacePath,
-        name: base,
-      }
-    );
-  }, [workspaces, defaultWorkspacePath]);
-
-  const newAgentWorkspaceOptions = useMemo(() => {
-    const out: WorkspaceState[] = [];
-    const seen = new Set<string>();
-    if (defaultWorkspace && !seen.has(defaultWorkspace.id)) {
-      out.push(defaultWorkspace);
-      seen.add(defaultWorkspace.id);
-    }
-    for (const ws of visibleWorkspaces) {
-      if (seen.has(ws.id)) continue;
-      out.push(ws);
-      seen.add(ws.id);
-    }
-    return out;
-  }, [defaultWorkspace, visibleWorkspaces]);
-
   const filtered = useMemo(() => {
     let list = entries;
-    if (workspaceFilter) {
-      list = list.filter((e) => e.workspaceId === workspaceFilter);
-    }
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -454,7 +392,7 @@ export default function Sidebar({
       );
     }
     return list;
-  }, [entries, workspaceFilter, search, workspaces]);
+  }, [entries, search, workspaces]);
 
   const { activeEntries, historyEntries, loopGroups } = useMemo(() => {
     const active: ConversationEntry[] = [];
@@ -519,8 +457,6 @@ export default function Sidebar({
   const showHistoryExpanded = historyExpanded || activeInHistory;
 
   const isSearching = search.trim().length > 0;
-  const newAgentTargetWs = workspaceFilter ?? newAgentWorkspaceOptions[0]?.id ?? null;
-
   return (
     <>
       {isOpen && (
@@ -540,105 +476,6 @@ export default function Sidebar({
         {navigator.platform?.includes("Mac") && (
           <div className="shrink-0 h-[38px]" onMouseDown={handleDragRegion} />
         )}
-        {/* Workspace filter & management */}
-        {visibleWorkspaces.length > 0 ? (
-          <div className="px-3 py-2 border-b border-[var(--border-color)]">
-            <div className="relative" ref={wsDropdownRef}>
-              <button
-                onClick={() => setWsDropdownOpen(!wsDropdownOpen)}
-                className="w-full flex items-center justify-between bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors cursor-pointer"
-              >
-                <span className="truncate">
-                  {workspaceFilter
-                    ? workspaces.find((w) => w.id === workspaceFilter)?.name ?? t('sidebar.allWorkspaces')
-                    : t('sidebar.allWorkspaces')}
-                </span>
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={`shrink-0 ml-2 text-[var(--text-secondary)] transition-transform duration-200 ${wsDropdownOpen ? "rotate-180" : ""}`}>
-                  <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-              {wsDropdownOpen && (
-                <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden">
-                    <button
-                      onClick={() => { onSetWorkspaceFilter(null); setWsDropdownOpen(false); }}
-                      className={`w-full flex items-center px-3 py-2 text-xs hover:bg-[var(--bg-tertiary)] transition-colors ${
-                        workspaceFilter === null ? "text-[var(--accent)] font-medium" : "text-[var(--text-primary)]"
-                      }`}
-                    >
-                      {t('sidebar.allWorkspaces')}
-                    </button>
-                    {visibleWorkspaces.map((ws) => (
-                      <div
-                        key={ws.id}
-                        className={`flex items-center gap-2 px-3 py-2 text-xs hover:bg-[var(--bg-tertiary)] transition-colors ${
-                          workspaceFilter === ws.id ? "text-[var(--accent)] font-medium" : "text-[var(--text-primary)]"
-                        }`}
-                      >
-                        <button
-                          onClick={() => { onSetWorkspaceFilter(ws.id); setWsDropdownOpen(false); }}
-                          className="flex-1 min-w-0 truncate text-left"
-                          title={ws.path}
-                        >
-                          {ws.name}
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (wsPendingRemove === ws.id) {
-                              onRemoveWorkspace(ws.id);
-                              setWsPendingRemove(null);
-                              setWsDropdownOpen(false);
-                            } else {
-                              setWsPendingRemove(ws.id);
-                              setTimeout(() => setWsPendingRemove((prev) => prev === ws.id ? null : prev), 3000);
-                            }
-                          }}
-                          className={`shrink-0 p-0.5 rounded transition-colors ${
-                            wsPendingRemove === ws.id
-                              ? "bg-red-500/30 text-red-400"
-                              : "hover:bg-red-500/20 text-[var(--text-secondary)] hover:text-red-400"
-                          }`}
-                          title={wsPendingRemove === ws.id ? t('common.confirmAgain') : t('sidebar.removeWorkspace')}
-                          aria-label={wsPendingRemove === ws.id ? t('common.confirmAgain') : t('sidebar.removeWorkspace')}
-                        >
-                          {wsPendingRemove === ws.id ? (
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                              <path d="M2 6h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                            </svg>
-                          ) : (
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                              <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                            </svg>
-                          )}
-                        </button>
-                      </div>
-                    ))}
-                    <button
-                      onClick={() => { onAddWorkspace(); setWsDropdownOpen(false); }}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors border-t border-[var(--border-color)]"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                        <path d="M6 3v6M3 6h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                      {t('sidebar.addWorkspace')}
-                    </button>
-                  </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="px-3 py-2 border-b border-[var(--border-color)]">
-            <button
-              onClick={onAddWorkspace}
-              className="w-full flex items-center justify-center gap-2 bg-[var(--accent)] hover:opacity-90 text-white rounded-lg px-3 py-2 text-xs font-medium transition-opacity cursor-pointer"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M6 3v6M3 6h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-              {t('sidebar.addWorkspace')}
-            </button>
-          </div>
-        )}
-
         {/* Search */}
         <div className="px-3 py-2 border-b border-[var(--border-color)]">
           <input
@@ -656,9 +493,7 @@ export default function Sidebar({
             <p className="text-xs text-[var(--text-secondary)] text-center mt-8 px-2">
               {search
                 ? t('sidebar.noMatchingAgents')
-                : workspaces.length === 0
-                  ? t('sidebar.addWorkspaceToStart')
-                  : t('sidebar.noAgentsYet')}
+                : t('sidebar.noAgentsYet')}
             </p>
           )}
 
@@ -745,10 +580,9 @@ export default function Sidebar({
           <div className="flex gap-1.5">
             <button
               type="button"
-              onClick={() => onNew({ workspaceId: newAgentTargetWs ?? undefined, engine: effectiveDefaultEngine })}
+              onClick={() => onNew({ engine: effectiveDefaultEngine })}
               className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              disabled={!newAgentTargetWs}
-              title={newAgentTargetWs ? t('sidebar.newAgentDefaults') : t('header.addWorkspaceFirst')}
+              title={t('sidebar.newAgentDefaults')}
             >
               <EngineBadge engine={effectiveDefaultEngine} tone="onAccent" />
               {t('sidebar.newAgent')}
@@ -757,7 +591,6 @@ export default function Sidebar({
               type="button"
               onClick={() => setNewAgentModalOpen(true)}
               className="shrink-0 flex items-center justify-center px-2 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-90 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-              disabled={!newAgentTargetWs}
               title={t('sidebar.advancedOptions')}
             >
               {/* Sliders icon */}
@@ -828,14 +661,12 @@ export default function Sidebar({
 
       {newAgentModalOpen && (
         <NewAgentModal
-          workspaces={newAgentWorkspaceOptions}
-          defaultWorkspaceId={newAgentTargetWs}
           defaultEngine={defaultEngine}
           engineModelConfigs={engineModelConfigs}
           readyEngineIds={readyEngineIds}
           onDefaultEngineChange={onDefaultEngineChange}
-          onCreate={({ workspaceId, engine, model }) => {
-            onNew({ workspaceId, engine, model });
+          onCreate={({ engine, model }) => {
+            onNew({ engine, model });
           }}
           onClose={() => setNewAgentModalOpen(false)}
         />

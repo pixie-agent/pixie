@@ -2,7 +2,7 @@
   "name": "pixie",
   "private": true,
   "repository": "https://github.com/pixie-agent/pixie.git",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "packageManager": "pnpm@11.5.2",
   "scripts": {

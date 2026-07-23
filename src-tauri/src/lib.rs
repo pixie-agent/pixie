@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -110,6 +110,12 @@ pub struct ResponseChunk {
 pub struct ResponseDone {
     pub conversation_id: String,
     pub full_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseSession {
+    pub conversation_id: String,
+    pub session_id: String,
 }
 
 /// Notification that a persistent turn crashed mid-stream and the backend is
@@ -506,6 +512,16 @@ fn emit_agent_events(
             );
         }
 
+        if let NormalizedEvent::SessionEstablished { session_id } = evt {
+            let _ = app.emit(
+                "agent-session",
+                ResponseSession {
+                    conversation_id: conversation_id.to_string(),
+                    session_id: session_id.clone(),
+                },
+            );
+        }
+
         if let Some(thinking) = evt.streaming_thinking() {
             let _ = app.emit(
                 "agent-thinking-text",
@@ -618,6 +634,7 @@ async fn send_message(
     engine: Option<String>,
     is_continue: Option<bool>,
     model: Option<String>,
+    session_id: Option<String>,
     images: Option<Vec<String>>,
     app: AppHandle,
     state: tauri::State<'_, AppState>,
@@ -637,6 +654,19 @@ async fn send_message(
     };
 
     bind_conversation_engine(&state.conversation_engines, &conversation_id, engine_id).await;
+    if let Some(session_id) = session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        remember_session_id(
+            &state.conversation_engines,
+            &conversation_id,
+            engine_id,
+            session_id,
+        )
+        .await;
+    }
 
     // Store per-conversation model override on the backend.
     set_conversation_model(&state.conversation_engines, &conversation_id, model.clone()).await;
@@ -1702,6 +1732,21 @@ fn scan_skills(root: &std::path::Path, source: &str, out: &mut Vec<SkillEntry>) 
     }
 }
 
+fn global_skills_cache() -> &'static StdMutex<Option<Vec<SkillEntry>>> {
+    static CACHE: OnceLock<StdMutex<Option<Vec<SkillEntry>>>> = OnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(None))
+}
+
+fn scan_global_skills() -> Vec<SkillEntry> {
+    let mut entries = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let claude_root = std::path::Path::new(&home).join(".claude");
+        scan_skills(&claude_root, "user", &mut entries);
+        scan_plugin_skills(&claude_root.join("plugins"), &mut entries);
+    }
+    entries
+}
+
 /// Recursively walk a plugin tree and collect every `SKILL.md` found.
 /// Used for `~/.claude/plugins`, whose layout is
 /// `marketplaces/<mp>/(plugins|external_plugins)/<plugin>/skills/<skill>/SKILL.md`.
@@ -1731,14 +1776,26 @@ fn scan_plugin_skills(root: &std::path::Path, out: &mut Vec<SkillEntry>) {
 /// (`~/.claude/plugins/**/SKILL.md`). When names collide, project shadows
 /// user, which shadows plugin.
 #[tauri::command]
-fn list_skills(workspace: Option<String>) -> Result<Vec<SkillEntry>, String> {
-    let mut entries: Vec<SkillEntry> = Vec::new();
+fn list_skills(workspace: Option<String>, force: Option<bool>) -> Result<Vec<SkillEntry>, String> {
+    let refresh = force.unwrap_or(false);
+    let mut entries = {
+        let cache = global_skills_cache();
+        let mut guard = cache
+            .lock()
+            .map_err(|_| "skills cache poisoned".to_string())?;
+        if refresh {
+            *guard = None;
+        }
+        match guard.as_ref() {
+            Some(cached) => cached.clone(),
+            None => {
+                let scanned = scan_global_skills();
+                *guard = Some(scanned.clone());
+                scanned
+            }
+        }
+    };
 
-    if let Ok(home) = std::env::var("HOME") {
-        let claude_root = std::path::Path::new(&home).join(".claude");
-        scan_skills(&claude_root, "user", &mut entries);
-        scan_plugin_skills(&claude_root.join("plugins"), &mut entries);
-    }
     if let Some(ws) = workspace {
         let ws = ws.trim();
         if !ws.is_empty() {
@@ -5371,7 +5428,7 @@ mod tests {
     fn every_skill_has_name_and_invocation() {
         // Integration check against the real host. Passes on any machine
         // (just asserts invariants on whatever was found); reports the count.
-        let skills = list_skills(None).unwrap_or_default();
+        let skills = list_skills(None, None).unwrap_or_default();
         let plugin_count = skills.iter().filter(|s| s.source == "plugin").count();
         eprintln!(
             "list_skills(None) -> {} skills ({} plugin)",

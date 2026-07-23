@@ -55,6 +55,10 @@ export interface Conversation {
   engine: AgentEngineId;
   /** Per-conversation model override. When empty/undefined, uses the engine's global config. */
   model?: string;
+  /** Engine-owned session/thread id, used by engines whose id differs from Pixie's conversation id. */
+  externalSessionId?: string;
+  /** Workspace selected for a new empty conversation; committed on the first send. */
+  pendingWorkspaceId?: string;
   /** When present, this conversation is a loop iteration and belongs to the
    *  loop task with this id. The sidebar uses this to group iterations under their parent. */
   loopTaskId?: string;
@@ -121,6 +125,11 @@ export interface ResponseChunk {
 export interface ResponseDone {
   conversation_id: string;
   full_text: string;
+}
+
+export interface ResponseSession {
+  conversation_id: string;
+  session_id: string;
 }
 
 /**

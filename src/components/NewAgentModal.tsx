@@ -2,17 +2,11 @@ import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "../hooks/useTranslation";
 import { engineLabel } from "../lib/i18nFormat";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEngineId, EngineModelConfigs, ModelEntry, WorkspaceState } from "../types";
+import type { AgentEngineId, EngineModelConfigs, ModelEntry } from "../types";
 import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
 import EngineBadge from "./EngineBadge";
 
-function workspaceLabel(workspaces: WorkspaceState[], id: string): string {
-  return workspaces.find((w) => w.id === id)?.name ?? id.split("/").pop() ?? id;
-}
-
 export default function NewAgentModal({
-  workspaces,
-  defaultWorkspaceId,
   defaultEngine,
   engineModelConfigs,
   readyEngineIds,
@@ -20,14 +14,12 @@ export default function NewAgentModal({
   onCreate,
   onClose,
 }: {
-  workspaces: WorkspaceState[];
-  defaultWorkspaceId: string | null;
   defaultEngine: AgentEngineId;
   engineModelConfigs: EngineModelConfigs;
   /** Engines that are installed + ready; the picker is limited to these. */
   readyEngineIds: AgentEngineId[];
   onDefaultEngineChange: (engine: AgentEngineId) => void;
-  onCreate: (opts: { workspaceId: string; engine: AgentEngineId; model?: string }) => void;
+  onCreate: (opts: { engine: AgentEngineId; model?: string }) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -38,11 +30,6 @@ export default function NewAgentModal({
   );
 
   const firstAvailableEngine = availableEngines[0]?.id ?? defaultEngine;
-  const firstWorkspace = workspaces[0]?.id ?? "";
-
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(
-    () => defaultWorkspaceId ?? firstWorkspace
-  );
   const [selectedEngine, setSelectedEngine] = useState<AgentEngineId>(() => {
     const isDefaultReady = readyEngineIds.includes(defaultEngine);
     return isDefaultReady ? defaultEngine : firstAvailableEngine;
@@ -131,7 +118,6 @@ export default function NewAgentModal({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  const wsLabel = selectedWorkspaceId ? workspaceLabel(workspaces, selectedWorkspaceId) : "";
   const modelSummary =
     selectedModel === "__custom__"
       ? (customModel.trim() || t('common.custom'))
@@ -161,7 +147,7 @@ export default function NewAgentModal({
     setModelDropdownOpen(false);
   }, []);
 
-  const canCreate = !!selectedWorkspaceId && !!selectedEngine;
+  const canCreate = !!selectedEngine;
 
   return (
     <div
@@ -175,10 +161,8 @@ export default function NewAgentModal({
         <div className="px-4 py-3 border-b border-[var(--border-color)] flex items-center justify-between">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-[var(--text-primary)]">{t('newAgent.title')}</div>
-            <div className="text-[10px] text-[var(--text-secondary)] truncate" title={selectedWorkspaceId}>
+            <div className="text-[10px] text-[var(--text-secondary)] truncate">
               <EngineBadge engine={selectedEngine} />
-              <span className="mx-1">·</span>
-              {wsLabel}
               {modelSummary ? (
                 <>
                   <span className="mx-1">·</span>
@@ -201,27 +185,6 @@ export default function NewAgentModal({
         </div>
 
         <div className="px-4 py-3 space-y-3">
-          <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">{t('newAgent.workspace')}</div>
-            <select
-              value={selectedWorkspaceId}
-              onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-              className="w-full text-xs rounded-lg px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]"
-              title={selectedWorkspaceId}
-            >
-              {workspaces.map((ws) => (
-                <option key={ws.id} value={ws.id}>
-                  {ws.name}
-                </option>
-              ))}
-            </select>
-            {selectedWorkspaceId && (
-              <div className="text-[10px] text-[var(--text-secondary)] truncate" title={selectedWorkspaceId}>
-                {selectedWorkspaceId}
-              </div>
-            )}
-          </div>
-
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)] font-medium">{t('newAgent.engine')}</div>
             <select
@@ -371,7 +334,7 @@ export default function NewAgentModal({
                   ? customModel.trim() || undefined
                   : selectedModel || undefined;
               if (setAsDefaultEngine) onDefaultEngineChange(selectedEngine);
-              onCreate({ workspaceId: selectedWorkspaceId, engine: selectedEngine, model });
+              onCreate({ engine: selectedEngine, model });
               onClose();
             }}
             className="px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
@@ -383,4 +346,3 @@ export default function NewAgentModal({
     </div>
   );
 }
-

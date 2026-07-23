@@ -22,6 +22,10 @@ interface InputBarProps {
   /** Active workspace folder path (= Claude's CWD). Used to render @mentions
    *  relative to the project so they resolve cleanly. null when no workspace. */
   workspacePath?: string | null;
+  selectedWorkspaceId: string | null;
+  selectedWorkspaceName?: string | null;
+  workspaceLocked: boolean;
+  onPickWorkspace: () => void;
   /** Engine of the active conversation. */
   engine?: AgentEngineId;
   /** Current model override for the active conversation. */
@@ -100,6 +104,10 @@ export default function InputBar({
   textareaRef,
   skills,
   workspacePath,
+  selectedWorkspaceId,
+  selectedWorkspaceName,
+  workspaceLocked,
+  onPickWorkspace,
   engine,
   model,
   onModelChange,
@@ -516,6 +524,26 @@ export default function InputBar({
 
         {/* Bottom action bar: Attach, Skills, Model */}
         <div className="flex items-center gap-0.5 mt-1 px-1">
+          <button
+            type="button"
+            onClick={onPickWorkspace}
+            disabled={workspaceLocked || isGenerating}
+            className={`flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] transition-colors ${
+                workspaceLocked
+                  ? "text-[var(--text-secondary)] opacity-70"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+              } disabled:cursor-not-allowed`}
+            title={workspacePath ?? selectedWorkspaceId ?? t('common.workspace')}
+            aria-label={t('common.workspace')}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+              <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
+            </svg>
+            <span className="truncate max-w-[160px]">
+              {selectedWorkspaceName ?? (selectedWorkspaceId ? basename(selectedWorkspaceId) : t('common.workspace'))}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={handlePickFiles}
