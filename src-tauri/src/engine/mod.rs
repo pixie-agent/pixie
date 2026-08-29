@@ -644,13 +644,14 @@ pub async fn spawn_headless(
     session_id: &str,
     message: &str,
     cwd: Option<&str>,
+    model: Option<&str>,
 ) -> Result<Child> {
     match engine_id {
-        "claude" => claude::spawn_headless(session_id, message, cwd).await,
-        "codex" => codex::spawn_headless(session_id, message, cwd).await,
+        "claude" => claude::spawn_headless(session_id, message, cwd, model).await,
+        "codex" => codex::spawn_headless(session_id, message, cwd, model).await,
         // CodeBuddy/Cursor fall back to their regular spawn_single for now.
         // Builtin engine doesn't spawn child processes (handled separately)
-        other => spawn_single(other, session_id, message, cwd, None).await,
+        other => spawn_single(other, session_id, message, cwd, model).await,
     }
 }
 

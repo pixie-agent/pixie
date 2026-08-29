@@ -19,7 +19,8 @@ use pty::PtyMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -101,6 +102,168 @@ impl From<EngineStatus> for EngineStatusResponse {
             probe_error: s.probe_error,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationAuthor {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationTemplateRef {
+    pub id: String,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationField {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    #[serde(default)]
+    pub required: Option<bool>,
+    #[serde(default)]
+    pub default: Option<serde_json::Value>,
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
+    #[serde(default)]
+    pub schema: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub preview: Option<bool>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationAction {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub workflow: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationManifest {
+    #[serde(default)]
+    pub schema_version: Option<String>,
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub author: Option<PixieApplicationAuthor>,
+    #[serde(default)]
+    pub template: Option<PixieApplicationTemplateRef>,
+    pub entry: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub inputs: Vec<PixieApplicationField>,
+    #[serde(default)]
+    pub outputs: Vec<PixieApplicationField>,
+    #[serde(default)]
+    pub actions: Vec<PixieApplicationAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationSource {
+    #[serde(rename = "type", alias = "sourceType")]
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub linked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub author: Option<PixieApplicationAuthor>,
+    #[serde(default)]
+    pub template: Option<PixieApplicationTemplateRef>,
+    pub entry: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub inputs: Vec<PixieApplicationField>,
+    #[serde(default)]
+    pub outputs: Vec<PixieApplicationField>,
+    #[serde(default)]
+    pub actions: Vec<PixieApplicationAction>,
+    pub source: PixieApplicationSource,
+    pub install_path: String,
+    pub data_path: String,
+    pub installed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationRegistry {
+    #[serde(default)]
+    pub apps: Vec<PixieApplicationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PixieApplicationRunRecord {
+    pub id: String,
+    pub app_id: String,
+    pub app_name: String,
+    pub app_version: Option<String>,
+    pub source_commit: Option<String>,
+    pub action_id: String,
+    pub engine: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub inputs: serde_json::Value,
+    pub outputs: serde_json::Value,
+    pub raw_result: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -684,7 +847,14 @@ async fn send_message(
         message.len()
     );
 
-    let workspace = state.workspace.lock().await.clone();
+    let workspace = match state.workspace.lock().await.clone() {
+        Some(path) => Some(
+            ensure_directory_no_symlink(Path::new(&path), "Workspace")?
+                .to_string_lossy()
+                .to_string(),
+        ),
+        None => None,
+    };
     let session_id =
         resolve_session_id(&state.conversation_engines, &conversation_id, engine_id).await;
     // Absolute paths of image attachments. Claude/CodeBuddy embed these as native
@@ -718,7 +888,10 @@ async fn send_message(
                     return;
                 }
                 let base_url = engine::builtin::get_base_url();
-                let cwd = workspace_owned.as_deref().unwrap_or(".");
+                let cwd = match workspace_owned.as_deref() {
+                    Some(path) => path,
+                    None => ".",
+                };
                 let session = BuiltinSession::new(
                     &conv_id,
                     model_owned.as_deref(),
@@ -1368,18 +1541,18 @@ fn state_stopped_ref(app: &AppHandle) -> StoppedSet {
 
 #[tauri::command]
 fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
+    let dir = ensure_directory_no_symlink(Path::new(&path), "Directory")?;
     let entries =
-        std::fs::read_dir(&path).map_err(|e| format!("Failed to read directory: {}", e))?;
+        std::fs::read_dir(&dir).map_err(|e| format!("Failed to read directory: {}", e))?;
     let mut files: Vec<FileEntry> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let metadata = entry
-            .metadata()
+        let metadata = fs::symlink_metadata(entry.path())
             .map_err(|e| format!("Failed to read metadata: {}", e))?;
         files.push(FileEntry {
             name: entry.file_name().to_string_lossy().to_string(),
             path: entry.path().to_string_lossy().to_string(),
-            is_dir: metadata.is_dir(),
+            is_dir: metadata.is_dir() && !metadata.file_type().is_symlink(),
             size: metadata.len(),
         });
     }
@@ -1393,6 +1566,7 @@ fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
 
 #[tauri::command]
 async fn run_command(command: String, cwd: String) -> Result<String, String> {
+    let cwd = ensure_directory_no_symlink(Path::new(&cwd), "Command directory")?;
     let output = std::process::Command::new("sh")
         .args(["-c", &command])
         .current_dir(&cwd)
@@ -1435,6 +1609,196 @@ fn open_external(target: String) -> Result<(), String> {
     Ok(())
 }
 
+fn open_file_external(path: &std::path::Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to inspect file '{}': {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("File '{}' must not be a symlink", path.display()));
+    }
+    if !metadata.is_file() {
+        return Err(format!("File '{}' does not exist", path.display()));
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to inspect file '{}': {e}", path.display()))?;
+    let canonical_metadata = fs::symlink_metadata(&path)
+        .map_err(|e| format!("Failed to inspect file '{}': {e}", path.display()))?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_file()
+        || !same_file_identity(&metadata, &canonical_metadata)
+    {
+        return Err(format!(
+            "File '{}' changed while being inspected",
+            path.display()
+        ));
+    }
+    let target = path.to_string_lossy().to_string();
+    let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+        ("open", vec![&target])
+    } else if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C", "start", "", &target])
+    } else {
+        ("xdg-open", vec![&target])
+    };
+    std::process::Command::new(program)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("Failed to open file '{}': {e}", path.display()))?;
+    Ok(())
+}
+
+fn create_dir_all_no_symlink(path: &Path, label: &str) -> Result<(), String> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if current.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "{label} '{}' must not contain a symlink directory",
+                        current.display()
+                    ));
+                }
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "{label} '{}' is not a directory",
+                        current.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current).map_err(|e| {
+                    format!(
+                        "Failed to create {label} directory '{}': {e}",
+                        current.display()
+                    )
+                })?;
+                let metadata = fs::symlink_metadata(&current).map_err(|e| {
+                    format!(
+                        "Failed to inspect created {label} directory '{}': {e}",
+                        current.display()
+                    )
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "{label} '{}' changed while being created",
+                        current.display()
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Failed to inspect {label} directory '{}': {e}",
+                    current.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_directory_no_symlink(path: &Path, label: &str) -> Result<PathBuf, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "{label} '{}' must not be a symlink",
+                    path.display()
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(format!("{label} '{}' is not a directory", path.display()));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            create_dir_all_no_symlink(path, label)?;
+        }
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect {label} '{}': {e}",
+                path.display()
+            ))
+        }
+    }
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to inspect {label} '{}': {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{label} '{}' must not be a symlink",
+            path.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!("{label} '{}' is not a directory", path.display()));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to inspect {label} '{}': {e}", path.display()))?;
+    let canonical_metadata = fs::symlink_metadata(&canonical)
+        .map_err(|e| format!("Failed to inspect {label} '{}': {e}", canonical.display()))?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_dir()
+        || !same_file_identity(&metadata, &canonical_metadata)
+    {
+        return Err(format!(
+            "{label} '{}' changed while being inspected",
+            path.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+pub(crate) fn read_regular_text_file_no_symlink_limited(
+    path: &Path,
+    limit: usize,
+) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to inspect file '{}': {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("File '{}' must not be a symlink", path.display()));
+    }
+    if !metadata.is_file() {
+        return Err(format!("File '{}' is not a regular file", path.display()));
+    }
+    let mut file = open_regular_file_no_symlink(path)?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to inspect opened file '{}': {e}", path.display()))?;
+    if !opened_metadata.is_file() || !same_file_identity(&metadata, &opened_metadata) {
+        return Err(format!(
+            "File '{}' changed while being opened",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    io::Read::by_ref(&mut file)
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+    let truncated = bytes.len() > limit;
+    if truncated {
+        bytes.truncate(limit);
+    }
+    let mut content = String::from_utf8_lossy(&bytes).to_string();
+    if truncated {
+        content.push_str("\n\n... (truncated)");
+    }
+    Ok(content)
+}
+
+pub(crate) fn ensure_vault_dir_no_symlink(path: &Path) -> Result<PathBuf, String> {
+    ensure_directory_no_symlink(path, "Vault")
+}
+
+pub(crate) fn ensure_vault_pixie_dir_no_symlink(vault_path: &Path) -> Result<PathBuf, String> {
+    let vault = ensure_vault_dir_no_symlink(vault_path)?;
+    ensure_directory_no_symlink(&vault.join("Pixie"), "Vault Pixie directory")
+}
+
 /// Reveal a file/folder in the OS file manager (Finder / Explorer / etc).
 /// Requires the target to be within the current workspace when `workspace_path`
 /// is provided.
@@ -1445,8 +1809,7 @@ fn reveal_in_file_manager(path: String, workspace_path: Option<String>) -> Resul
     let ws = workspace_path
         .as_deref()
         .ok_or_else(|| "workspace_path is required".to_string())?;
-    let ws_canon = std::fs::canonicalize(ws)
-        .map_err(|e| format!("Failed to canonicalize workspace '{}': {}", ws, e))?;
+    let ws_canon = ensure_directory_no_symlink(Path::new(ws), "Workspace")?;
 
     let raw = PathBuf::from(&path);
     let abs: PathBuf = if raw.is_absolute() {
@@ -1455,9 +1818,17 @@ fn reveal_in_file_manager(path: String, workspace_path: Option<String>) -> Resul
         Path::new(ws).join(raw)
     };
 
-    let meta = std::fs::metadata(&abs);
+    let meta = std::fs::symlink_metadata(&abs);
     let (target, is_dir) = match meta {
-        Ok(m) => (abs.clone(), m.is_dir()),
+        Ok(m) => {
+            if m.file_type().is_symlink() {
+                return Err(format!(
+                    "Refusing to reveal symlink path: {}",
+                    abs.to_string_lossy()
+                ));
+            }
+            (abs.clone(), m.is_dir())
+        }
         Err(_) => {
             // Deleted / missing file: best effort, open its parent directory.
             let parent = abs
@@ -1481,6 +1852,7 @@ fn reveal_in_file_manager(path: String, workspace_path: Option<String>) -> Resul
             check_path.to_string_lossy()
         ));
     }
+    let target = check_path;
 
     if cfg!(target_os = "macos") {
         if is_dir {
@@ -1533,6 +1905,14 @@ async fn pty_spawn(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let cwd = match cwd {
+        Some(path) => Some(
+            ensure_directory_no_symlink(Path::new(&path), "PTY directory")?
+                .to_string_lossy()
+                .to_string(),
+        ),
+        None => None,
+    };
     pty::spawn_pty(
         &state.pty_map,
         &id,
@@ -1570,9 +1950,10 @@ async fn pty_kill(id: String, state: tauri::State<'_, AppState>) -> Result<(), S
 
 #[tauri::command]
 async fn git_status(path: String) -> Result<String, String> {
+    let dir = ensure_directory_no_symlink(Path::new(&path), "Git directory")?;
     let output = std::process::Command::new("git")
         .args(["status", "--short"])
-        .current_dir(&path)
+        .current_dir(&dir)
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -1581,6 +1962,7 @@ async fn git_status(path: String) -> Result<String, String> {
 #[tauri::command]
 async fn git_log(path: String, count: Option<usize>) -> Result<String, String> {
     let n = count.unwrap_or(20);
+    let dir = ensure_directory_no_symlink(Path::new(&path), "Git directory")?;
     let output = std::process::Command::new("git")
         .args([
             "log",
@@ -1589,7 +1971,7 @@ async fn git_log(path: String, count: Option<usize>) -> Result<String, String> {
             "--decorate",
             format!("-{n}").as_str(),
         ])
-        .current_dir(&path)
+        .current_dir(&dir)
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -1615,9 +1997,10 @@ async fn git_diff(
     if let Some(ref c) = commit {
         args.push(c.clone());
     }
+    let dir = ensure_directory_no_symlink(Path::new(&path), "Git directory")?;
     let output = std::process::Command::new("git")
         .args(&args)
-        .current_dir(&path)
+        .current_dir(&dir)
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -1625,13 +2008,7 @@ async fn git_diff(
 
 #[tauri::command]
 fn read_file_content(path: String) -> Result<String, String> {
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
-    if content.len() > 500_000 {
-        Ok(content[..500_000].to_string() + "\n\n... (truncated)")
-    } else {
-        Ok(content)
-    }
+    read_regular_text_file_no_symlink_limited(Path::new(&path), 500_000)
 }
 
 // ---------------------------------------------------------------------------
@@ -1733,8 +2110,7 @@ fn truncate_str(s: &str, n: usize) -> String {
 /// The skill name falls back to the parent directory's stem when the
 /// frontmatter omits `name`.
 fn skill_entry_from_file(skill_md: &std::path::Path, source: &str) -> Option<SkillEntry> {
-    let bytes = fs::read(skill_md).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
+    let text = read_regular_text_file_no_symlink_limited(skill_md, 500_000).ok()?;
     let (fm_name, fm_desc, body) = parse_frontmatter(&text);
 
     let name = fm_name.or_else(|| {
@@ -1764,11 +2140,17 @@ fn scan_skills(root: &std::path::Path, source: &str, out: &mut Vec<SkillEntry>) 
     };
     for entry in entries.flatten() {
         let dir = entry.path();
-        if !dir.is_dir() {
+        let Ok(metadata) = fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
             continue;
         }
         let skill_md = dir.join("SKILL.md");
-        if !skill_md.is_file() {
+        let Ok(metadata) = fs::symlink_metadata(&skill_md) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
             continue;
         }
         if let Some(skill) = skill_entry_from_file(&skill_md, source) {
@@ -1802,13 +2184,19 @@ fn scan_plugin_skills(root: &std::path::Path, out: &mut Vec<SkillEntry>) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
             // Skip noisy / irrelevant trees (.git, .github, node_modules, ...).
             if name == "node_modules" || name.starts_with('.') {
                 continue;
             }
             scan_plugin_skills(&path, out);
-        } else if path.is_file() && name == "SKILL.md" {
+        } else if metadata.is_file() && name == "SKILL.md" {
             if let Some(skill) = skill_entry_from_file(&path, "plugin") {
                 out.push(skill);
             }
@@ -1844,7 +2232,10 @@ fn list_skills(workspace: Option<String>, force: Option<bool>) -> Result<Vec<Ski
     if let Some(ws) = workspace {
         let ws = ws.trim();
         if !ws.is_empty() {
-            let project_root = std::path::Path::new(ws).join(".claude");
+            let Ok(ws) = ensure_directory_no_symlink(std::path::Path::new(ws), "Workspace") else {
+                return Ok(entries);
+            };
+            let project_root = ws.join(".claude");
             scan_skills(&project_root, "project", &mut entries);
         }
     }
@@ -1943,20 +2334,2651 @@ async fn plugin_uninstall(name: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Pixie Applications (AI-native app manifest + local/GitHub installation)
+// ---------------------------------------------------------------------------
+
+const APPLICATION_MANIFEST: &str = "pixie.application.json";
+const APPLICATION_REGISTRY: &str = "applications.json";
+const APPLICATION_RUNS: &str = "application_runs.json";
+const WORKSPACE_FILE: &str = "workspace.txt";
+const DEFAULT_WORKSPACE_FILE: &str = "default_workspace.txt";
+const APP_CONFIG_FILE: &str = "config.json";
+const HISTORY_FILE: &str = "history.jsonl";
+const SCHEDULED_TASKS_FILE: &str = "scheduled_tasks.json";
+const TASK_RUNS_FILE: &str = "task_runs.json";
+const LOOP_TASKS_FILE: &str = "loop_tasks.json";
+const LOOP_ITERATIONS_FILE: &str = "loop_iterations.json";
+const APPLICATION_SCHEMA_VERSION: &str = "0.1";
+const APPLICATION_DEFAULT_TEMPLATE: &str = "single-action-form";
+const APPLICATION_KNOWN_PERMISSIONS: &[&str] = &[
+    "ai:model",
+    "storage",
+    "filesystem:workspace-read",
+    "filesystem:workspace-write",
+    "network",
+    "shell",
+    "clipboard:write",
+    "file:read-selected",
+];
+const APPLICATION_INPUT_TYPES: &[&str] = &[
+    "text", "textarea", "number", "boolean", "select", "file", "json",
+];
+const APPLICATION_OUTPUT_TYPES: &[&str] = &["text", "markdown", "json", "file", "html"];
+const APPLICATION_ACTION_MODES: &[&str] = &["agent"];
+
+fn application_registry_path(app: &AppHandle) -> Result<PathBuf, String> {
+    ensure_application_data_file_path(&get_data_dir(app)?, APPLICATION_REGISTRY, "registry")
+}
+
+fn ensure_application_data_root_dir(
+    data_dir: &std::path::Path,
+    label: &str,
+) -> Result<PathBuf, String> {
+    match fs::symlink_metadata(data_dir) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "Application {label} root '{}' must not be a symlink",
+                    data_dir.display()
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "Application {label} root '{}' is not a directory",
+                    data_dir.display()
+                ));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            create_dir_all_no_symlink(data_dir, &format!("Application {label} root"))?;
+        }
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect application {label} root '{}': {e}",
+                data_dir.display()
+            ))
+        }
+    }
+    let metadata = fs::symlink_metadata(data_dir).map_err(|e| {
+        format!(
+            "Failed to inspect application {label} root '{}': {e}",
+            data_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application {label} root '{}' must not be a symlink",
+            data_dir.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Application {label} root '{}' is not a directory",
+            data_dir.display()
+        ));
+    }
+    let canonical = data_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to inspect application {label} root '{}': {e}",
+            data_dir.display()
+        )
+    })?;
+    let canonical_metadata = fs::symlink_metadata(&canonical).map_err(|e| {
+        format!(
+            "Failed to inspect application {label} root '{}': {e}",
+            canonical.display()
+        )
+    })?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_dir()
+        || !same_file_identity(&metadata, &canonical_metadata)
+    {
+        return Err(format!(
+            "Application {label} root '{}' changed while being inspected",
+            data_dir.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn ensure_application_data_subdir(
+    data_dir: &std::path::Path,
+    child: &str,
+    label: &str,
+) -> Result<PathBuf, String> {
+    if std::path::Path::new(child).components().count() != 1 {
+        return Err(format!("Application {label} directory name is invalid"));
+    }
+    let data_dir = ensure_application_data_root_dir(data_dir, label)?;
+    let path = data_dir.join(child);
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Application {label} directory must not be a symlink"
+            ));
+        }
+    }
+    create_dir_all_no_symlink(&path, &format!("Application {label} directory"))?;
+    let path = verified_application_directory(&path, &format!("{label} directory"))?;
+    if path.parent() != Some(data_dir.as_path()) {
+        return Err(format!(
+            "Application {label} directory escapes the application data root"
+        ));
+    }
+    Ok(path)
+}
+
+fn application_install_root(app: &AppHandle) -> Result<PathBuf, String> {
+    ensure_application_data_subdir(&get_data_dir(app)?, "applications", "install")
+}
+
+fn application_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    ensure_application_data_subdir(&get_data_dir(app)?, "application-data", "storage")
+}
+
+fn application_runs_path(app: &AppHandle) -> Result<PathBuf, String> {
+    ensure_application_data_file_path(&get_data_dir(app)?, APPLICATION_RUNS, "runs")
+}
+
+fn read_application_data_file_if_exists(
+    path: &Path,
+    label: &str,
+) -> Result<Option<String>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!("Application {label} file must not be a symlink"));
+            }
+            if !metadata.is_file() {
+                return Err(format!("Application {label} path is not a file"));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect application {label} file '{}': {e}",
+                path.display()
+            ))
+        }
+    }
+    read_regular_file_no_symlink(path, label).map(Some)
+}
+
+fn local_data_file_path(app: &AppHandle, file_name: &str, label: &str) -> Result<PathBuf, String> {
+    ensure_application_data_file_path(&get_data_dir(app)?, file_name, label)
+}
+
+fn read_local_data_file_if_exists(
+    app: &AppHandle,
+    file_name: &str,
+    label: &str,
+) -> Result<Option<String>, String> {
+    let path = local_data_file_path(app, file_name, label)?;
+    read_application_data_file_if_exists(&path, label)
+}
+
+fn ensure_application_root_dir(path: &Path) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| {
+        format!(
+            "Failed to inspect application directory '{}': {e}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not be a symlink",
+            path.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' does not exist",
+            path.display()
+        ));
+    }
+    let canonical = path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to inspect application directory '{}': {e}",
+            path.display()
+        )
+    })?;
+    let canonical_metadata = fs::symlink_metadata(&canonical).map_err(|e| {
+        format!(
+            "Failed to inspect application directory '{}': {e}",
+            canonical.display()
+        )
+    })?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_dir()
+        || !same_file_identity(&metadata, &canonical_metadata)
+    {
+        return Err(format!(
+            "Application directory '{}' changed while being inspected",
+            path.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn ensure_application_data_file_path(
+    data_dir: &std::path::Path,
+    file_name: &str,
+    label: &str,
+) -> Result<PathBuf, String> {
+    if std::path::Path::new(file_name).components().count() != 1 {
+        return Err(format!("Application {label} file name is invalid"));
+    }
+    let data_dir = ensure_application_data_root_dir(data_dir, label)?;
+    let path = data_dir.join(file_name);
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("Application {label} file must not be a symlink"));
+        }
+        if !metadata.is_file() {
+            return Err(format!("Application {label} path is not a file"));
+        }
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Application {label} file has no parent directory"))?
+        .canonicalize()
+        .map_err(|e| format!("Failed to inspect application {label} directory: {e}"))?;
+    if parent != data_dir {
+        return Err(format!(
+            "Application {label} file escapes the application data root"
+        ));
+    }
+    Ok(path)
+}
+
+fn ensure_application_data_child_dir(
+    data_root: &std::path::Path,
+    id: &str,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let id = sanitize_application_id(id)?;
+    let data_root = ensure_application_data_root_dir(data_root, label)?;
+    let path = data_root.join(&id);
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Application {label} directory '{}' must not be a symlink",
+                path.display()
+            ));
+        }
+    }
+    create_dir_all_no_symlink(&path, &format!("Application {label} directory"))?;
+    let path = verified_application_directory(&path, &format!("{label} directory"))?;
+    if path.parent() != Some(data_root.as_path()) {
+        return Err(format!(
+            "Application {label} directory escapes the application data root"
+        ));
+    }
+    Ok(path)
+}
+
+fn sanitize_application_id(id: &str) -> Result<String, String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err("Application id is required".to_string());
+    }
+    if trimmed.len() < 3 || trimmed.len() > 64 {
+        return Err("Application id must be 3-64 characters".to_string());
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Err(format!(
+            "Application id '{trimmed}' may only contain letters, numbers, '.', '-' and '_'"
+        ))
+    }
+}
+
+fn stringish_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    let field = value.get(key)?;
+    if let Some(s) = field.as_str() {
+        let trimmed = s.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    let obj = field.as_object()?;
+    for nested in ["path", "file", "entry", "value", "name", "url"] {
+        if let Some(s) = obj.get(nested).and_then(|v| v.as_str()) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn string_vec_field(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_application_author(value: &serde_json::Value) -> Option<PixieApplicationAuthor> {
+    let author = value.get("author")?;
+    if let Some(name) = author.as_str() {
+        let name = name.trim();
+        return (!name.is_empty()).then(|| PixieApplicationAuthor {
+            name: Some(name.to_string()),
+            url: None,
+        });
+    }
+    let obj = author.as_object()?;
+    Some(PixieApplicationAuthor {
+        name: obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        url: obj
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn parse_application_template(value: &serde_json::Value) -> Option<PixieApplicationTemplateRef> {
+    let template = value.get("template")?;
+    if let Some(id) = template.as_str() {
+        let id = id.trim();
+        return (!id.is_empty()).then(|| PixieApplicationTemplateRef {
+            id: id.to_string(),
+            version: None,
+        });
+    }
+    let obj = template.as_object()?;
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some(PixieApplicationTemplateRef {
+        id: id.to_string(),
+        version: obj
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn parse_application_field(value: &serde_json::Value) -> Option<PixieApplicationField> {
+    let id = stringish_field(value, "id")?;
+    Some(PixieApplicationField {
+        id,
+        label: stringish_field(value, "label"),
+        field_type: stringish_field(value, "type").unwrap_or_else(|| "text".to_string()),
+        required: value.get("required").and_then(|v| v.as_bool()),
+        default: value.get("default").cloned(),
+        options: value.get("options").and_then(|v| {
+            v.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        item.as_str()
+                            .map(str::to_string)
+                            .or_else(|| stringish_field(item, "value"))
+                    })
+                    .collect()
+            })
+        }),
+        schema: stringish_field(value, "schema"),
+        path: stringish_field(value, "path"),
+        preview: value.get("preview").and_then(|v| v.as_bool()),
+        description: stringish_field(value, "description"),
+    })
+}
+
+fn parse_application_action(value: &serde_json::Value) -> Option<PixieApplicationAction> {
+    let id = stringish_field(value, "id")?;
+    Some(PixieApplicationAction {
+        id,
+        label: stringish_field(value, "label"),
+        description: stringish_field(value, "description"),
+        inputs: string_vec_field(value, "inputs"),
+        outputs: string_vec_field(value, "outputs"),
+        mode: stringish_field(value, "mode"),
+        workflow: stringish_field(value, "workflow"),
+    })
+}
+
+fn parse_application_manifest_text(text: &str) -> Result<PixieApplicationManifest, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Invalid {APPLICATION_MANIFEST}: {e}"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| format!("Invalid {APPLICATION_MANIFEST}: root must be an object"))?;
+    let id =
+        stringish_field(&value, "id").ok_or_else(|| "Application id is required".to_string())?;
+    let name = stringish_field(&value, "name").unwrap_or_else(|| id.clone());
+    let entry = stringish_field(&value, "entry")
+        .ok_or_else(|| "Application entry is required".to_string())?;
+
+    let parse_fields = |key: &str| -> Vec<PixieApplicationField> {
+        obj.get(key)
+            .and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(parse_application_field).collect())
+            .unwrap_or_default()
+    };
+    let parse_actions = |key: &str| -> Vec<PixieApplicationAction> {
+        obj.get(key)
+            .and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(parse_application_action).collect())
+            .unwrap_or_default()
+    };
+
+    Ok(PixieApplicationManifest {
+        schema_version: stringish_field(&value, "schemaVersion"),
+        id,
+        name,
+        version: stringish_field(&value, "version"),
+        description: stringish_field(&value, "description"),
+        author: parse_application_author(&value),
+        template: parse_application_template(&value),
+        entry,
+        agent: stringish_field(&value, "agent"),
+        permissions: string_vec_field(&value, "permissions"),
+        inputs: parse_fields("inputs"),
+        outputs: parse_fields("outputs"),
+        actions: parse_actions("actions"),
+    })
+}
+
+fn read_application_manifest(dir: &std::path::Path) -> Result<PixieApplicationManifest, String> {
+    let manifest_path = validate_application_relative_file(dir, APPLICATION_MANIFEST, "manifest")?;
+    let text = read_regular_file_no_symlink(&manifest_path, "manifest")?;
+    let manifest = parse_application_manifest_text(&text)?;
+    validate_application_manifest(dir, &manifest)?;
+    Ok(manifest)
+}
+
+fn validate_application_relative_file(
+    root: &Path,
+    rel: &str,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let root = ensure_application_root_dir(root)?;
+    let components = application_relative_components(rel, label)?;
+    let mut path = root.clone();
+    for (index, component) in components.iter().enumerate() {
+        path.push(component);
+        let metadata = fs::symlink_metadata(&path).map_err(|e| {
+            format!(
+                "Failed to inspect application {label} '{}': {e}",
+                rel.trim()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Application {label} '{}' must not contain symlinks",
+                rel.trim()
+            ));
+        }
+        if index + 1 == components.len() {
+            if !metadata.is_file() {
+                return Err(format!(
+                    "Application {label} '{}' does not exist",
+                    rel.trim()
+                ));
+            }
+        } else if !metadata.is_dir() {
+            return Err(format!(
+                "Application {label} '{}' parent is not a directory",
+                rel.trim()
+            ));
+        }
+        let canonical = path.canonicalize().map_err(|e| {
+            format!(
+                "Failed to inspect application {label} '{}': {e}",
+                rel.trim()
+            )
+        })?;
+        let canonical_metadata = fs::symlink_metadata(&canonical).map_err(|e| {
+            format!(
+                "Failed to inspect application {label} '{}': {e}",
+                rel.trim()
+            )
+        })?;
+        if canonical_metadata.file_type().is_symlink()
+            || !same_file_identity(&metadata, &canonical_metadata)
+        {
+            return Err(format!(
+                "Application {label} '{}' changed while being inspected",
+                rel.trim()
+            ));
+        }
+        if !canonical.starts_with(&root) {
+            return Err(format!(
+                "Application {label} '{}' escapes the application directory",
+                rel.trim()
+            ));
+        }
+        path = canonical;
+    }
+    Ok(path)
+}
+
+fn application_relative_components(
+    rel: &str,
+    label: &str,
+) -> Result<Vec<std::ffi::OsString>, String> {
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return Err(format!("Application {label} is required"));
+    }
+    let rel_path = std::path::Path::new(trimmed);
+    if rel_path.is_absolute() {
+        return Err(format!("Application {label} must be a relative path"));
+    }
+    let mut components = Vec::new();
+    for component in rel_path.components() {
+        match component {
+            std::path::Component::Normal(part) => components.push(part.to_os_string()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(format!(
+                    "Application {label} '{}' must not contain '..'",
+                    trimmed
+                ))
+            }
+            _ => {
+                return Err(format!(
+                    "Application {label} '{}' must be a relative path",
+                    trimmed
+                ))
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(format!("Application {label} is required"));
+    }
+    Ok(components)
+}
+
+fn prepare_application_relative_file_for_write(
+    root: &Path,
+    rel: &str,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let root = ensure_application_root_dir(root)?;
+    let components = application_relative_components(rel, label)?;
+    let (file_name, parents) = components
+        .split_last()
+        .ok_or_else(|| format!("Application {label} is required"))?;
+    let mut parent = root.clone();
+    for component in parents {
+        parent.push(component);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "Application {label} '{}' must not contain symlinks",
+                        rel.trim()
+                    ));
+                }
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "Application {label} '{}' parent is not a directory",
+                        rel.trim()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&parent)
+                    .map_err(|e| format!("Failed to create application {label} directory: {e}"))?;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Failed to inspect application {label} directory '{}': {e}",
+                    parent.display()
+                ))
+            }
+        }
+        let metadata = fs::symlink_metadata(&parent).map_err(|e| {
+            format!(
+                "Failed to inspect application {label} directory '{}': {e}",
+                parent.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Application {label} '{}' must not contain symlinks",
+                rel.trim()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Application {label} '{}' parent is not a directory",
+                rel.trim()
+            ));
+        }
+        let canonical = parent.canonicalize().map_err(|e| {
+            format!(
+                "Failed to inspect application {label} directory '{}': {e}",
+                parent.display()
+            )
+        })?;
+        let canonical_metadata = fs::symlink_metadata(&canonical).map_err(|e| {
+            format!(
+                "Failed to inspect application {label} directory '{}': {e}",
+                canonical.display()
+            )
+        })?;
+        if canonical_metadata.file_type().is_symlink()
+            || !canonical_metadata.is_dir()
+            || !same_file_identity(&metadata, &canonical_metadata)
+        {
+            return Err(format!(
+                "Application {label} '{}' changed while being inspected",
+                rel.trim()
+            ));
+        }
+        if !canonical.starts_with(&root) {
+            return Err(format!(
+                "Application {label} '{}' escapes the application directory",
+                rel.trim()
+            ));
+        }
+        parent = canonical;
+    }
+    let path = parent.join(file_name);
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Application {label} '{}' must not contain symlinks",
+                rel.trim()
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(format!(
+                "Application {label} '{}' is not a file",
+                rel.trim()
+            ));
+        }
+    }
+
+    Ok(path)
+}
+
+fn validate_application_unique_id(
+    seen: &mut HashSet<String>,
+    id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(format!("Application {label} id is required"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "Application {label} id '{id}' may only contain letters, numbers, '.', '-' and '_'"
+        ));
+    }
+    if !seen.insert(id.to_string()) {
+        return Err(format!("Duplicate application {label} id '{id}'"));
+    }
+    Ok(())
+}
+
+fn validate_application_manifest(
+    dir: &std::path::Path,
+    manifest: &PixieApplicationManifest,
+) -> Result<(), String> {
+    sanitize_application_id(&manifest.id)?;
+    match manifest.schema_version.as_deref() {
+        Some(APPLICATION_SCHEMA_VERSION) => {}
+        Some(version) => {
+            return Err(format!(
+                "Unsupported application schemaVersion '{version}', expected '{APPLICATION_SCHEMA_VERSION}'"
+            ))
+        }
+        None => return Err("Application schemaVersion is required".to_string()),
+    }
+    if manifest.name.trim().is_empty() {
+        return Err("Application name is required".to_string());
+    }
+    let Some(template) = &manifest.template else {
+        return Err("Application template is required".to_string());
+    };
+    if template.id != APPLICATION_DEFAULT_TEMPLATE {
+        return Err(format!(
+            "Unsupported application template '{}', expected '{}'",
+            template.id, APPLICATION_DEFAULT_TEMPLATE
+        ));
+    }
+    validate_application_relative_file(dir, &manifest.entry, "entry")?;
+    let Some(agent) = &manifest.agent else {
+        return Err("Application agent is required".to_string());
+    };
+    validate_application_relative_file(dir, agent, "agent")?;
+
+    for permission in &manifest.permissions {
+        if !APPLICATION_KNOWN_PERMISSIONS.contains(&permission.as_str()) {
+            return Err(format!("Unknown application permission '{permission}'"));
+        }
+    }
+
+    let mut input_ids = HashSet::new();
+    for input in &manifest.inputs {
+        validate_application_unique_id(&mut input_ids, &input.id, "input")?;
+        if input
+            .label
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(format!(
+                "Application input '{}' label is required",
+                input.id
+            ));
+        }
+        if !APPLICATION_INPUT_TYPES.contains(&input.field_type.as_str()) {
+            return Err(format!(
+                "Unsupported application input type '{}' for '{}'",
+                input.field_type, input.id
+            ));
+        }
+        if input.field_type == "select" && input.options.as_ref().map(Vec::is_empty).unwrap_or(true)
+        {
+            return Err(format!(
+                "Application select input '{}' must declare options",
+                input.id
+            ));
+        }
+    }
+
+    let mut output_ids = HashSet::new();
+    for output in &manifest.outputs {
+        validate_application_unique_id(&mut output_ids, &output.id, "output")?;
+        if output
+            .label
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(format!(
+                "Application output '{}' label is required",
+                output.id
+            ));
+        }
+        if !APPLICATION_OUTPUT_TYPES.contains(&output.field_type.as_str()) {
+            return Err(format!(
+                "Unsupported application output type '{}' for '{}'",
+                output.field_type, output.id
+            ));
+        }
+    }
+
+    let mut action_ids = HashSet::new();
+    for action in &manifest.actions {
+        validate_application_unique_id(&mut action_ids, &action.id, "action")?;
+        if action
+            .label
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(format!(
+                "Application action '{}' label is required",
+                action.id
+            ));
+        }
+        let mode = action.mode.as_deref().unwrap_or("agent");
+        if !APPLICATION_ACTION_MODES.contains(&mode) {
+            return Err(format!(
+                "Unsupported application action mode '{}' for '{}'",
+                mode, action.id
+            ));
+        }
+        if action.inputs.is_empty() {
+            return Err(format!(
+                "Application action '{}' must reference at least one input",
+                action.id
+            ));
+        }
+        if action.outputs.is_empty() {
+            return Err(format!(
+                "Application action '{}' must reference at least one output",
+                action.id
+            ));
+        }
+        for input in &action.inputs {
+            if !input_ids.contains(input) {
+                return Err(format!(
+                    "Application action '{}' references unknown input '{}'",
+                    action.id, input
+                ));
+            }
+        }
+        for output in &action.outputs {
+            if !output_ids.contains(output) {
+                return Err(format!(
+                    "Application action '{}' references unknown output '{}'",
+                    action.id, output
+                ));
+            }
+        }
+    }
+
+    if template.id == APPLICATION_DEFAULT_TEMPLATE
+        && (manifest.inputs.is_empty()
+            || manifest.outputs.is_empty()
+            || manifest.actions.len() != 1)
+    {
+        return Err(format!(
+            "Template '{}' requires at least one input, one output, and exactly one action",
+            APPLICATION_DEFAULT_TEMPLATE
+        ));
+    }
+
+    Ok(())
+}
+
+fn load_application_registry(app: &AppHandle) -> Result<PixieApplicationRegistry, String> {
+    let path = application_registry_path(app)?;
+    let Some(text) = read_application_data_file_if_exists(&path, "registry")? else {
+        return Ok(PixieApplicationRegistry::default());
+    };
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse application registry: {e}"))
+}
+
+fn save_application_registry(
+    app: &AppHandle,
+    registry: &PixieApplicationRegistry,
+) -> Result<(), String> {
+    let path = application_registry_path(app)?;
+    let json = serde_json::to_string_pretty(registry)
+        .map_err(|e| format!("Failed to serialize application registry: {e}"))?;
+    atomic_write(&path, &json).map_err(|e| format!("Failed to write application registry: {e}"))
+}
+
+fn ensure_path_within_application_source_root(
+    path: &Path,
+    source_root: &Path,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let source_root = verified_application_directory(source_root, "source root")?;
+    let canonical = path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to inspect application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    if !canonical.starts_with(source_root) {
+        return Err(format!(
+            "Application {label} '{}' escapes the application directory",
+            path.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+fn verified_application_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    let initial_metadata = fs::symlink_metadata(path).map_err(|e| {
+        format!(
+            "Failed to inspect application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application {label} '{}' must not be a symlink",
+            path.display()
+        ));
+    }
+    if !initial_metadata.is_dir() {
+        return Err(format!(
+            "Application {label} '{}' is not a directory",
+            path.display()
+        ));
+    }
+    let canonical = path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to inspect application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    let canonical_metadata = fs::symlink_metadata(&canonical).map_err(|e| {
+        format!(
+            "Failed to inspect application {label} '{}': {e}",
+            canonical.display()
+        )
+    })?;
+    if canonical_metadata.file_type().is_symlink()
+        || !canonical_metadata.is_dir()
+        || !same_file_identity(&initial_metadata, &canonical_metadata)
+    {
+        return Err(format!(
+            "Application {label} '{}' changed while being inspected",
+            path.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    left.file_attributes() == right.file_attributes()
+        && left.creation_time() == right.creation_time()
+        && left.last_write_time() == right.last_write_time()
+        && left.file_size() == right.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    true
+}
+
+fn copy_regular_file_no_symlink_with_root(
+    from: &Path,
+    to: &Path,
+    source_root: &Path,
+) -> Result<(), String> {
+    let initial_metadata = fs::symlink_metadata(from).map_err(|e| {
+        format!(
+            "Failed to inspect application file '{}': {e}",
+            from.display()
+        )
+    })?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            from.display()
+        ));
+    }
+    if !initial_metadata.is_file() {
+        return Err(format!(
+            "Application path '{}' is not a regular file",
+            from.display()
+        ));
+    }
+    let from = ensure_path_within_application_source_root(from, source_root, "file")?;
+    let metadata = fs::symlink_metadata(&from).map_err(|e| {
+        format!(
+            "Failed to inspect application file '{}': {e}",
+            from.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            from.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Application path '{}' is not a regular file",
+            from.display()
+        ));
+    }
+    if !same_file_identity(&initial_metadata, &metadata) {
+        return Err(format!(
+            "Application file '{}' changed while being inspected",
+            from.display()
+        ));
+    }
+    match fs::symlink_metadata(to) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "Application install destination '{}' must not contain symlinks",
+                    to.display()
+                ));
+            }
+            return Err(format!(
+                "Application install destination '{}' already exists",
+                to.display()
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect application install destination '{}': {e}",
+                to.display()
+            ))
+        }
+    }
+    let mut source = open_regular_file_no_symlink(&from)?;
+    let source_metadata = source.metadata().map_err(|e| {
+        format!(
+            "Failed to inspect opened application file '{}': {e}",
+            from.display()
+        )
+    })?;
+    if !source_metadata.is_file() {
+        return Err(format!(
+            "Application path '{}' is not a regular file",
+            from.display()
+        ));
+    }
+    if !same_file_identity(&metadata, &source_metadata) {
+        return Err(format!(
+            "Application file '{}' changed while being opened",
+            from.display()
+        ));
+    }
+    let mut dest = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .map_err(|e| format!("Failed to create application file '{}': {e}", to.display()))?;
+    if let Err(e) = io::copy(&mut source, &mut dest) {
+        let _ = fs::remove_file(to);
+        return Err(format!(
+            "Failed to copy '{}' to '{}': {e}",
+            from.display(),
+            to.display()
+        ));
+    }
+    fs::set_permissions(to, source_metadata.permissions()).map_err(|e| {
+        let _ = fs::remove_file(to);
+        format!(
+            "Failed to copy permissions from '{}' to '{}': {e}",
+            from.display(),
+            to.display()
+        )
+    })
+}
+
+#[cfg(unix)]
+fn open_regular_file_no_symlink(path: &Path) -> Result<fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("Failed to open application file '{}': {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn open_regular_file_no_symlink(path: &Path) -> Result<fs::File, String> {
+    fs::File::open(path)
+        .map_err(|e| format!("Failed to open application file '{}': {e}", path.display()))
+}
+
+#[cfg(unix)]
+fn open_new_file_no_symlink(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_new_file_no_symlink(path: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+fn read_regular_file_no_symlink(path: &Path, label: &str) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| {
+        format!(
+            "Failed to inspect application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application {label} '{}' must not contain symlinks",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Application {label} '{}' is not a regular file",
+            path.display()
+        ));
+    }
+    let mut file = open_regular_file_no_symlink(path)?;
+    let opened_metadata = file.metadata().map_err(|e| {
+        format!(
+            "Failed to inspect opened application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    if !opened_metadata.is_file() || !same_file_identity(&metadata, &opened_metadata) {
+        return Err(format!(
+            "Application {label} '{}' changed while being opened",
+            path.display()
+        ));
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(|e| {
+        format!(
+            "Failed to read application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    let after_read_metadata = file.metadata().map_err(|e| {
+        format!(
+            "Failed to inspect opened application {label} '{}': {e}",
+            path.display()
+        )
+    })?;
+    if !after_read_metadata.is_file() || !same_file_identity(&opened_metadata, &after_read_metadata)
+    {
+        return Err(format!(
+            "Application {label} '{}' changed while being read",
+            path.display()
+        ));
+    }
+    Ok(text)
+}
+
+fn copy_dir_recursive_with_root(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    source_root: &std::path::Path,
+) -> Result<(), String> {
+    let initial_metadata = fs::symlink_metadata(src)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", src.display()))?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            src.display()
+        ));
+    }
+    if !initial_metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            src.display()
+        ));
+    }
+    let src = ensure_path_within_application_source_root(src, source_root, "directory")?;
+    let source_metadata = fs::symlink_metadata(&src)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", src.display()))?;
+    if source_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            src.display()
+        ));
+    }
+    if !source_metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            src.display()
+        ));
+    }
+    if !same_file_identity(&initial_metadata, &source_metadata) {
+        return Err(format!(
+            "Application directory '{}' changed while being inspected",
+            src.display()
+        ));
+    }
+    match fs::symlink_metadata(dest) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "Application install destination '{}' must not contain symlinks",
+                    dest.display()
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "Application install destination '{}' is not a directory",
+                    dest.display()
+                ));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(dest).map_err(|e| {
+                format!(
+                    "Failed to create application directory '{}': {e}",
+                    dest.display()
+                )
+            })?;
+        }
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect application install destination '{}': {e}",
+                dest.display()
+            ))
+        }
+    }
+    let dest_metadata = fs::symlink_metadata(dest)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dest.display()))?;
+    if dest_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application install destination '{}' must not contain symlinks",
+            dest.display()
+        ));
+    }
+    if !dest_metadata.is_dir() {
+        return Err(format!(
+            "Application install destination '{}' is not a directory",
+            dest.display()
+        ));
+    }
+    let entries = fs::read_dir(&src)
+        .map_err(|e| format!("Failed to read directory '{}': {e}", src.display()))?;
+    let after_read_metadata = fs::symlink_metadata(&src)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", src.display()))?;
+    if after_read_metadata.file_type().is_symlink()
+        || !after_read_metadata.is_dir()
+        || !same_file_identity(&source_metadata, &after_read_metadata)
+    {
+        return Err(format!(
+            "Application directory '{}' changed while being read",
+            src.display()
+        ));
+    }
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect directory entry: {e}"))?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if file_type.is_symlink() {
+            return Err(format!(
+                "Application directory '{}' must not contain symlinks",
+                src.display()
+            ));
+        } else if file_type.is_dir() {
+            copy_dir_recursive_with_root(&from, &to, source_root)?;
+        } else if file_type.is_file() {
+            copy_regular_file_no_symlink_with_root(&from, &to, source_root)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    let initial_metadata = fs::symlink_metadata(src)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", src.display()))?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            src.display()
+        ));
+    }
+    if !initial_metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            src.display()
+        ));
+    }
+    let source_root = src
+        .canonicalize()
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", src.display()))?;
+    let metadata = fs::symlink_metadata(src)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", src.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            src.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            src.display()
+        ));
+    }
+    if !same_file_identity(&initial_metadata, &metadata) {
+        return Err(format!(
+            "Application directory '{}' changed while being inspected",
+            src.display()
+        ));
+    }
+    copy_dir_recursive_with_root(src, dest, &source_root)
+}
+
+fn ensure_application_file_has_no_symlink_with_root(
+    path: &Path,
+    source_root: &Path,
+) -> Result<(), String> {
+    let initial_metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to inspect file '{}': {e}", path.display()))?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            path.display()
+        ));
+    }
+    if !initial_metadata.is_file() {
+        return Err(format!(
+            "Application path '{}' is not a regular file",
+            path.display()
+        ));
+    }
+    let path = ensure_path_within_application_source_root(path, source_root, "file")?;
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|e| format!("Failed to inspect file '{}': {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Application path '{}' is not a regular file",
+            path.display()
+        ));
+    }
+    if !same_file_identity(&initial_metadata, &metadata) {
+        return Err(format!(
+            "Application file '{}' changed while being inspected",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_application_dir_has_no_symlinks_with_root(
+    dir: &Path,
+    source_root: &Path,
+) -> Result<(), String> {
+    let initial_metadata = fs::symlink_metadata(dir)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dir.display()))?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            dir.display()
+        ));
+    }
+    if !initial_metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            dir.display()
+        ));
+    }
+    let dir = ensure_path_within_application_source_root(dir, source_root, "directory")?;
+    let metadata = fs::symlink_metadata(&dir)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            dir.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            dir.display()
+        ));
+    }
+    if !same_file_identity(&initial_metadata, &metadata) {
+        return Err(format!(
+            "Application directory '{}' changed while being inspected",
+            dir.display()
+        ));
+    }
+    let entries = fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read directory '{}': {e}", dir.display()))?;
+    let after_read_metadata = fs::symlink_metadata(&dir)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dir.display()))?;
+    if after_read_metadata.file_type().is_symlink()
+        || !after_read_metadata.is_dir()
+        || !same_file_identity(&metadata, &after_read_metadata)
+    {
+        return Err(format!(
+            "Application directory '{}' changed while being read",
+            dir.display()
+        ));
+    }
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect directory entry: {e}"))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "Application directory '{}' must not contain symlinks",
+                dir.display()
+            ));
+        }
+        if file_type.is_dir() {
+            ensure_application_dir_has_no_symlinks_with_root(&entry.path(), source_root)?;
+        } else if file_type.is_file() {
+            ensure_application_file_has_no_symlink_with_root(&entry.path(), source_root)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_application_dir_has_no_symlinks(dir: &std::path::Path) -> Result<(), String> {
+    let initial_metadata = fs::symlink_metadata(dir)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dir.display()))?;
+    if initial_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            dir.display()
+        ));
+    }
+    if !initial_metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            dir.display()
+        ));
+    }
+    let source_root = dir
+        .canonicalize()
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dir.display()))?;
+    let metadata = fs::symlink_metadata(dir)
+        .map_err(|e| format!("Failed to inspect directory '{}': {e}", dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Application directory '{}' must not contain symlinks",
+            dir.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Application directory '{}' is not a directory",
+            dir.display()
+        ));
+    }
+    if !same_file_identity(&initial_metadata, &metadata) {
+        return Err(format!(
+            "Application directory '{}' changed while being inspected",
+            dir.display()
+        ));
+    }
+    ensure_application_dir_has_no_symlinks_with_root(dir, &source_root)
+}
+
+fn application_install_tmp_path(install_root: &std::path::Path, id: &str) -> PathBuf {
+    install_root.join(format!(
+        ".tmp-{id}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
+}
+
+fn application_entry_from_manifest(
+    app: &AppHandle,
+    manifest: PixieApplicationManifest,
+    install_path: PathBuf,
+    source: PixieApplicationSource,
+) -> Result<PixieApplicationEntry, String> {
+    let id = sanitize_application_id(&manifest.id)?;
+    let data_path =
+        ensure_application_data_child_dir(&application_data_root(app)?, &id, "storage")?;
+    Ok(PixieApplicationEntry {
+        id,
+        name: manifest.name,
+        version: manifest.version,
+        description: manifest.description,
+        author: manifest.author,
+        template: manifest.template,
+        entry: manifest.entry,
+        agent: manifest.agent,
+        permissions: manifest.permissions,
+        inputs: manifest.inputs,
+        outputs: manifest.outputs,
+        actions: manifest.actions,
+        source,
+        install_path: install_path.to_string_lossy().to_string(),
+        data_path: data_path.to_string_lossy().to_string(),
+        installed_at: Utc::now().to_rfc3339(),
+    })
+}
+
+fn validate_managed_application_install_path(
+    install_root: &std::path::Path,
+    id: &str,
+    install_path: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let id = sanitize_application_id(id)?;
+    let install_root = verified_application_directory(install_root, "install directory")?;
+    if install_path.file_name().and_then(|s| s.to_str()) != Some(id.as_str()) {
+        return Err(format!(
+            "Registered application path '{}' does not match application id '{}'",
+            install_path.display(),
+            id
+        ));
+    }
+    let canonical_install_path =
+        verified_application_directory(install_path, "registered application path")?;
+    let parent = install_path.parent().ok_or_else(|| {
+        format!(
+            "Registered application path '{}' has no parent directory",
+            install_path.display()
+        )
+    })?;
+    let parent = verified_application_directory(parent, "registered application parent")?;
+    if parent != install_root {
+        return Err(format!(
+            "Registered application path '{}' escapes the application install directory",
+            install_path.display()
+        ));
+    }
+    let direct_install_path = install_root.join(&id);
+    if install_path != direct_install_path {
+        return Err(format!(
+            "Registered application path '{}' must be the direct install path for application id '{}'",
+            install_path.display(),
+            id
+        ));
+    }
+    if canonical_install_path != direct_install_path {
+        return Err(format!(
+            "Registered application path '{}' escapes the application install directory",
+            install_path.display()
+        ));
+    }
+    Ok(canonical_install_path)
+}
+
+fn remove_existing_managed_application_install(
+    install_root: &std::path::Path,
+    id: &str,
+    install_path: &std::path::Path,
+) -> Result<(), String> {
+    match fs::symlink_metadata(install_path) {
+        Ok(_) => {
+            let install_path =
+                validate_managed_application_install_path(install_root, id, install_path)?;
+            fs::remove_dir_all(&install_path)
+                .map_err(|e| format!("Failed to replace existing application '{id}': {e}"))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "Failed to inspect existing application '{}': {e}",
+            install_path.display()
+        )),
+    }
+}
+
+fn registered_application_install_path(
+    app: &AppHandle,
+    entry: &PixieApplicationEntry,
+) -> Result<PathBuf, String> {
+    let install_path = PathBuf::from(entry.install_path.trim());
+    if install_path.as_os_str().is_empty() {
+        return Err(format!(
+            "Registered application '{}' has an empty install path",
+            entry.id
+        ));
+    }
+    if entry.source.linked == Some(true) {
+        if entry.source.source_type != "local-link" {
+            return Err(format!(
+                "Registered linked application '{}' has invalid source type '{}'",
+                entry.id, entry.source.source_type
+            ));
+        }
+        let source_path = entry.source.path.as_deref().ok_or_else(|| {
+            format!(
+                "Registered linked application '{}' has no source path",
+                entry.id
+            )
+        })?;
+        let source_path = PathBuf::from(source_path.trim());
+        let source_path = ensure_application_root_dir(&source_path)?;
+        let install_path = ensure_application_root_dir(&install_path)?;
+        if install_path != source_path {
+            return Err(format!(
+                "Registered linked application '{}' install path does not match its source path",
+                entry.id
+            ));
+        }
+        ensure_application_dir_has_no_symlinks(&install_path)?;
+        return Ok(install_path);
+    }
+    validate_managed_application_install_path(
+        &application_install_root(app)?,
+        &entry.id,
+        &install_path,
+    )
+}
+
+fn ensure_registered_manifest_id(
+    expected_id: &str,
+    manifest: &PixieApplicationManifest,
+) -> Result<(), String> {
+    let manifest_id = sanitize_application_id(&manifest.id)?;
+    if manifest_id != expected_id {
+        return Err(format!(
+            "Installed application manifest id '{}' does not match registry id '{}'",
+            manifest_id, expected_id
+        ));
+    }
+    Ok(())
+}
+
+fn record_application_run(app: &AppHandle, record: PixieApplicationRunRecord) {
+    let Ok(path) = application_runs_path(app) else {
+        return;
+    };
+    let mut runs: Vec<PixieApplicationRunRecord> =
+        read_application_data_file_if_exists(&path, "runs")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+    runs.retain(|r| r.id != record.id);
+    runs.push(record);
+    let keep_from = runs.len().saturating_sub(500);
+    runs.drain(0..keep_from);
+    if let Ok(json) = serde_json::to_string_pretty(&runs) {
+        let _ = atomic_write(&path, &json);
+    }
+}
+
+#[derive(Debug)]
+struct ApplicationOutputParseResult {
+    outputs: serde_json::Value,
+    status: String,
+    error: Option<String>,
+}
+
+fn json_fenced_blocks(text: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("```") {
+        let after_ticks = &rest[start + 3..];
+        let language_end = after_ticks
+            .find('\n')
+            .or_else(|| after_ticks.find('\r'))
+            .unwrap_or(after_ticks.len());
+        let language = after_ticks[..language_end].trim();
+        let after_lang = if language.eq_ignore_ascii_case("json") {
+            &after_ticks[language_end..]
+        } else if language.is_empty() {
+            after_ticks
+        } else {
+            rest = after_ticks;
+            continue;
+        };
+        let content = after_lang
+            .strip_prefix("\r\n")
+            .or_else(|| after_lang.strip_prefix('\n'))
+            .unwrap_or(after_lang);
+        if let Some(end) = content.find("```") {
+            blocks.push(content[..end].trim());
+            rest = &content[end + 3..];
+            continue;
+        }
+        break;
+    }
+    blocks
+}
+
+fn parse_last_application_json(text: &str) -> Option<serde_json::Value> {
+    for block in json_fenced_blocks(text).into_iter().rev() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(block) {
+            return Some(value);
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(text).ok()
+}
+
+fn application_action_output_ids(
+    action: &PixieApplicationAction,
+    manifest: &PixieApplicationManifest,
+) -> Vec<String> {
+    let manifest_output_ids: HashSet<&str> = manifest
+        .outputs
+        .iter()
+        .map(|output| output.id.as_str())
+        .collect();
+    action
+        .outputs
+        .iter()
+        .filter(|id| manifest_output_ids.contains(id.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn parse_application_outputs(
+    raw: &str,
+    action: &PixieApplicationAction,
+    manifest: &PixieApplicationManifest,
+) -> ApplicationOutputParseResult {
+    let declared_output_ids = application_action_output_ids(action, manifest);
+    let parsed = parse_last_application_json(raw);
+    if let Some(outputs) = parsed
+        .as_ref()
+        .and_then(|value| value.get("outputs"))
+        .and_then(|value| value.as_object())
+    {
+        let filtered: serde_json::Map<String, serde_json::Value> = declared_output_ids
+            .iter()
+            .filter_map(|id| outputs.get(id).map(|value| (id.clone(), value.clone())))
+            .collect();
+        let missing: Vec<String> = declared_output_ids
+            .iter()
+            .filter(|id| !filtered.contains_key(id.as_str()))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return ApplicationOutputParseResult {
+                outputs: serde_json::Value::Object(filtered),
+                status: "output_contract_failed".to_string(),
+                error: Some(format!(
+                    "Application output contract failed: missing output id(s) {}",
+                    missing.join(", ")
+                )),
+            };
+        }
+        return ApplicationOutputParseResult {
+            outputs: serde_json::Value::Object(filtered),
+            status: "ok".to_string(),
+            error: None,
+        };
+    }
+
+    let text_output = declared_output_ids.iter().find(|id| {
+        manifest
+            .outputs
+            .iter()
+            .find(|output| output.id == **id)
+            .map(|output| matches!(output.field_type.as_str(), "markdown" | "text"))
+            .unwrap_or(false)
+    });
+    let Some(id) = text_output else {
+        return ApplicationOutputParseResult {
+            outputs: serde_json::json!({}),
+            status: "output_contract_failed".to_string(),
+            error: Some(
+                "Application output was not valid contract JSON and no markdown/text output is available for fallback"
+                    .to_string(),
+            ),
+        };
+    };
+    ApplicationOutputParseResult {
+        outputs: serde_json::json!({ id: raw }),
+        status: "completed_with_parse_warning".to_string(),
+        error: Some(
+            "Application output was not valid contract JSON; stored raw result in the first text output"
+                .to_string(),
+        ),
+    }
+}
+
+fn build_application_run_prompt(
+    manifest: &PixieApplicationManifest,
+    action: &PixieApplicationAction,
+    agent_instructions: &str,
+    inputs: &serde_json::Value,
+    data_path: &std::path::Path,
+) -> Result<String, String> {
+    let manifest_json = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("Failed to serialize application manifest: {e}"))?;
+    let inputs_json = serde_json::to_string_pretty(inputs)
+        .map_err(|e| format!("Failed to serialize application inputs: {e}"))?;
+    let outputs = application_action_output_ids(action, manifest);
+    let outputs_json = serde_json::to_string_pretty(&outputs)
+        .map_err(|e| format!("Failed to serialize application outputs: {e}"))?;
+    Ok(format!(
+        "Run Pixie Application action '{action_id}'.\n\n\
+Application manifest:\n```json\n{manifest_json}\n```\n\n\
+Application agent instructions:\n{agent_instructions}\n\n\
+User inputs:\n```json\n{inputs_json}\n```\n\n\
+Application data path: {data_path}\n\n\
+Return the final answer as exactly one JSON fenced block with this shape:\n```json\n{{\"outputs\": {{}}}}\n```\n\
+The outputs object must include these output ids: {outputs_json}.",
+        action_id = action.id,
+        data_path = data_path.display()
+    ))
+}
+
+#[tauri::command]
+fn application_ensure_studio_defaults(path: String) -> Result<PixieApplicationEntry, String> {
+    let requested_app_dir = PathBuf::from(path.trim());
+    let app_dir = ensure_application_root_dir(&requested_app_dir)?;
+
+    let manifest_path =
+        prepare_application_relative_file_for_write(&app_dir, APPLICATION_MANIFEST, "manifest")?;
+    if !manifest_path.exists() {
+        let id = app_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pixie-application")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        let id = if id.is_empty() {
+            "pixie-application".to_string()
+        } else {
+            id
+        };
+        let manifest = serde_json::json!({
+            "schemaVersion": "0.1",
+            "id": id,
+            "name": "Pixie Application",
+            "version": "0.1.0",
+            "description": "An AI-driven application where data, intent, chat, and page state work together.",
+            "template": {
+                "id": APPLICATION_DEFAULT_TEMPLATE,
+                "version": "0.1"
+            },
+            "entry": "ui/index.html",
+            "agent": "agent/instructions.md",
+            "permissions": ["ai:model", "storage", "file:read-selected"],
+            "inputs": [
+                {
+                    "id": "sourceData",
+                    "label": "Source data",
+                    "type": "textarea",
+                    "required": false
+                },
+                {
+                    "id": "userIntent",
+                    "label": "User intent",
+                    "type": "textarea",
+                    "required": true
+                },
+                {
+                    "id": "chatMessage",
+                    "label": "Chat message",
+                    "type": "textarea",
+                    "required": true
+                },
+                {
+                    "id": "currentState",
+                    "label": "Current app state",
+                    "type": "json",
+                    "required": false
+                }
+            ],
+            "outputs": [
+                {
+                    "id": "appState",
+                    "label": "Application state",
+                    "type": "json",
+                    "preview": true
+                }
+            ],
+            "actions": [
+                {
+                    "id": "design",
+                    "label": "Design with AI",
+                    "description": "Understand the provided data and update the dynamic application page.",
+                    "inputs": ["sourceData", "userIntent", "chatMessage", "currentState"],
+                    "outputs": ["appState"],
+                    "mode": "agent"
+                }
+            ]
+        });
+        let manifest_text = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("Failed to serialize default application manifest: {e}"))?;
+        atomic_write(&manifest_path, &manifest_text)
+            .map_err(|e| format!("Failed to write default application manifest: {e}"))?;
+    }
+
+    let mut manifest = read_application_manifest(&app_dir).or_else(|_| {
+        let text = read_regular_file_no_symlink(&manifest_path, "manifest")?;
+        parse_application_manifest_text(&text)
+    })?;
+    if manifest.template.is_none() {
+        let text = read_regular_file_no_symlink(&manifest_path, "manifest")?;
+        let mut value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("Invalid {APPLICATION_MANIFEST}: {e}"))?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "template".to_string(),
+                serde_json::json!({
+                    "id": APPLICATION_DEFAULT_TEMPLATE,
+                    "version": "0.1"
+                }),
+            );
+            let updated = serde_json::to_string_pretty(&value)
+                .map_err(|e| format!("Failed to serialize application manifest: {e}"))?;
+            atomic_write(&manifest_path, &updated)
+                .map_err(|e| format!("Failed to update application manifest: {e}"))?;
+            manifest.template = Some(PixieApplicationTemplateRef {
+                id: APPLICATION_DEFAULT_TEMPLATE.to_string(),
+                version: Some("0.1".to_string()),
+            });
+        }
+    }
+
+    let entry_path =
+        prepare_application_relative_file_for_write(&app_dir, &manifest.entry, "entry")?;
+    if !entry_path.exists() {
+        let html = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pixie AI Application</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #f7f4ee; color: #23262d; }
+      main { min-height: 100vh; display: grid; grid-template-columns: minmax(280px, 360px) 1fr; }
+      aside { border-right: 1px solid #d8d1c4; background: #fffaf2; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+      section { min-width: 0; padding: 28px; overflow: auto; }
+      h1, h2, h3, p { margin: 0; }
+      h1 { font-size: 22px; line-height: 1.15; font-weight: 720; letter-spacing: 0; }
+      h2 { font-size: 28px; line-height: 1.15; font-weight: 740; letter-spacing: 0; }
+      h3 { font-size: 15px; font-weight: 680; letter-spacing: 0; }
+      p, textarea, input, button { font: inherit; }
+      .muted { color: #6c6f78; line-height: 1.5; }
+      .field { display: grid; gap: 7px; }
+      label { font-size: 12px; font-weight: 680; color: #4a4d55; }
+      textarea, input[type="file"] { width: 100%; border: 1px solid #d8d1c4; border-radius: 8px; background: #ffffff; color: #23262d; padding: 10px; outline: none; }
+      textarea:focus { border-color: #246bfe; box-shadow: 0 0 0 3px rgba(36, 107, 254, 0.12); }
+      textarea { min-height: 96px; resize: vertical; line-height: 1.45; }
+      .chat { margin-top: auto; display: grid; gap: 8px; }
+      .chat textarea { min-height: 86px; }
+      button { border: 0; border-radius: 8px; background: #246bfe; color: #fff; padding: 10px 12px; font-weight: 680; cursor: pointer; }
+      button:disabled { opacity: 0.55; cursor: not-allowed; }
+      .status { min-height: 18px; font-size: 12px; color: #6c6f78; }
+      .canvas { max-width: 1040px; margin: 0 auto; display: grid; gap: 22px; }
+      .hero { border-bottom: 1px solid #d8d1c4; padding-bottom: 18px; display: grid; gap: 10px; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .card { border: 1px solid #d8d1c4; border-radius: 8px; background: #fffdf8; padding: 14px; display: grid; gap: 8px; min-height: 112px; }
+      .section { display: grid; gap: 8px; padding: 16px 0; border-bottom: 1px solid #e2dacc; }
+      .script { white-space: pre-wrap; background: #23262d; color: #f7f4ee; border-radius: 8px; padding: 14px; line-height: 1.55; }
+      .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+      .chip { border: 1px solid #c7d7ff; background: #eef4ff; color: #174aaf; border-radius: 999px; padding: 6px 9px; font-size: 12px; }
+      @media (max-width: 760px) {
+        main { grid-template-columns: 1fr; }
+        aside { border-right: 0; border-bottom: 1px solid #d8d1c4; }
+        section { padding: 18px; }
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <aside>
+        <div>
+          <h1>AI Application MVP</h1>
+          <p class="muted">Add data, describe the outcome, then chat with AI to reshape the live page.</p>
+        </div>
+        <div class="field">
+          <label for="file">Data file</label>
+          <input id="file" type="file" />
+        </div>
+        <div class="field">
+          <label for="data">Data preview</label>
+          <textarea id="data" placeholder="Paste book text, notes, research, customer data, or any source material."></textarea>
+        </div>
+        <div class="field">
+          <label for="intent">Application logic</label>
+          <textarea id="intent" placeholder="Example: Help me share this book with friends through a beautiful guide, key ideas, quotes, and a short talk track."></textarea>
+        </div>
+        <div class="chat">
+          <label for="message">Chat</label>
+          <textarea id="message" placeholder="Ask AI to understand the data, design the page, or revise the content."></textarea>
+          <button id="run">Ask AI</button>
+          <div id="status" class="status"></div>
+        </div>
+      </aside>
+      <section>
+        <div class="canvas">
+          <div class="hero">
+            <h2 id="title">Untitled AI application</h2>
+            <p id="brief" class="muted">The page will be generated from your data and chat instructions.</p>
+          </div>
+          <div id="cards" class="grid"></div>
+          <div id="sections"></div>
+          <div>
+            <h3>Share script</h3>
+            <div id="script" class="script">Ask AI to create a shareable narrative.</div>
+          </div>
+          <div>
+            <h3>Next actions</h3>
+            <div id="followups" class="chips"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script>
+      const state = {
+        title: "Book sharing assistant",
+        brief: "Upload or paste a book, describe how you want to share it, then ask AI to design this page.",
+        cards: [
+          { title: "Source", body: "Waiting for book content or notes." },
+          { title: "Intent", body: "Tell the app who the sharing is for and what feeling it should create." }
+        ],
+        sections: [],
+        shareScript: "Ask AI to create a shareable narrative.",
+        followups: ["Extract key ideas", "Design a reading guide", "Write a 3-minute talk"]
+      };
+
+      const dataEl = document.getElementById("data");
+      const intentEl = document.getElementById("intent");
+      const messageEl = document.getElementById("message");
+      const statusEl = document.getElementById("status");
+      const runEl = document.getElementById("run");
+
+      function applyState(next) {
+        if (!next || typeof next !== "object") return;
+        Object.assign(state, next);
+        document.getElementById("title").textContent = state.title || "Untitled AI application";
+        document.getElementById("brief").textContent = state.brief || "";
+        document.getElementById("cards").innerHTML = (state.cards || []).map((card) =>
+          `<article class="card"><h3>${escapeHtml(card.title || "")}</h3><p class="muted">${escapeHtml(card.body || "")}</p></article>`
+        ).join("");
+        document.getElementById("sections").innerHTML = (state.sections || []).map((item) =>
+          `<div class="section"><h3>${escapeHtml(item.title || "")}</h3><p class="muted">${escapeHtml(item.body || "")}</p></div>`
+        ).join("");
+        document.getElementById("script").textContent = state.shareScript || "";
+        document.getElementById("followups").innerHTML = (state.followups || []).map((item) =>
+          `<span class="chip">${escapeHtml(String(item))}</span>`
+        ).join("");
+        try {
+          localStorage.setItem("pixie-ai-app-state", JSON.stringify(state));
+        } catch {
+          // Sandboxed Pixie previews may not expose persistent browser storage.
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
+      }
+
+      document.getElementById("file").addEventListener("change", async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        dataEl.value = await file.text();
+      });
+
+      runEl.addEventListener("click", () => {
+        const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        runEl.disabled = true;
+        statusEl.textContent = "AI is updating the application...";
+        window.parent.postMessage({
+          type: "pixie-application-run",
+          requestId,
+          actionId: "design",
+          inputs: {
+            sourceData: dataEl.value,
+            userIntent: intentEl.value,
+            chatMessage: messageEl.value,
+            currentState: state
+          }
+        }, "*");
+      });
+
+      window.addEventListener("message", (event) => {
+        const message = event.data || {};
+        if (message.type !== "pixie-application-run-result") return;
+        runEl.disabled = false;
+        if (message.error) {
+          statusEl.textContent = message.error;
+          return;
+        }
+        try {
+          const output = message.record && message.record.outputs && message.record.outputs.appState;
+          applyState(typeof output === "string" ? JSON.parse(output) : output);
+          statusEl.textContent = "Application updated.";
+        } catch (error) {
+          statusEl.textContent = `AI returned state that could not be rendered: ${error}`;
+        }
+      });
+
+      try {
+        const saved = localStorage.getItem("pixie-ai-app-state");
+        applyState(JSON.parse(saved || "null") || state);
+      } catch {
+        applyState(state);
+      }
+    </script>
+  </body>
+</html>
+"#;
+        atomic_write(&entry_path, html)
+            .map_err(|e| format!("Failed to write default application entry: {e}"))?;
+    }
+
+    if let Some(agent) = &manifest.agent {
+        let agent_path = prepare_application_relative_file_for_write(&app_dir, agent, "agent")?;
+        if !agent_path.exists() {
+            let instructions = r#"# Pixie AI Application Agent
+
+You power an AI-native application. The app is not a static page: it accepts user data, follows the user's intent, and updates a dynamic page state through chat.
+
+When action `design` runs:
+- Read `sourceData` as the user's uploaded or pasted data.
+- Read `userIntent` as the product logic for how the data should be transformed or shared.
+- Read `chatMessage` as the latest instruction.
+- Read `currentState` as the page state you may preserve, revise, or replace.
+- Return one JSON fenced block only, with `outputs.appState`.
+
+`outputs.appState` must be an object with this shape:
+- `title`: short page title
+- `brief`: one paragraph explaining the generated experience
+- `cards`: array of objects with `title` and `body`
+- `sections`: array of objects with `title` and `body`
+- `shareScript`: a practical narrative the user can share
+- `followups`: array of short next actions the user can ask for
+
+Favor concrete, useful output grounded in the provided data. If the data is thin, make the best useful first draft and ask for the next missing input through `followups`.
+"#;
+            atomic_write(&agent_path, instructions)
+                .map_err(|e| format!("Failed to write default agent instructions: {e}"))?;
+        }
+    }
+
+    ensure_application_dir_has_no_symlinks(&app_dir)?;
+    let manifest = read_application_manifest(&app_dir)?;
+    let source = PixieApplicationSource {
+        source_type: "local-link".to_string(),
+        url: None,
+        path: Some(app_dir.to_string_lossy().to_string()),
+        branch: None,
+        commit: git_commit(&app_dir),
+        linked: Some(true),
+    };
+    Ok(PixieApplicationEntry {
+        id: sanitize_application_id(&manifest.id)?,
+        name: manifest.name,
+        version: manifest.version,
+        description: manifest.description,
+        author: manifest.author,
+        template: manifest.template,
+        entry: manifest.entry,
+        agent: manifest.agent,
+        permissions: manifest.permissions,
+        inputs: manifest.inputs,
+        outputs: manifest.outputs,
+        actions: manifest.actions,
+        source,
+        install_path: app_dir.to_string_lossy().to_string(),
+        data_path: app_dir.to_string_lossy().to_string(),
+        installed_at: Utc::now().to_rfc3339(),
+    })
+}
+
+#[tauri::command]
+fn application_studio_entry_path(path: String) -> Result<String, String> {
+    let app_dir = ensure_application_root_dir(&PathBuf::from(path.trim()))?;
+    let manifest = read_application_manifest(&app_dir)?;
+    let entry_path = validate_application_relative_file(&app_dir, &manifest.entry, "entry")?;
+    Ok(entry_path.to_string_lossy().to_string())
+}
+
+fn upsert_application_registry(
+    app: &AppHandle,
+    entry: PixieApplicationEntry,
+) -> Result<PixieApplicationEntry, String> {
+    let mut registry = load_application_registry(app)?;
+    registry.apps.retain(|a| a.id != entry.id);
+    registry.apps.push(entry.clone());
+    registry
+        .apps
+        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    save_application_registry(app, &registry)?;
+    Ok(entry)
+}
+
+fn normalize_github_source(source: &str) -> Result<String, String> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Err("GitHub source is required".to_string());
+    }
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("git@")
+    {
+        return Ok(trimmed.to_string());
+    }
+    if trimmed.split('/').count() == 2 {
+        return Ok(format!("https://github.com/{trimmed}.git"));
+    }
+    Err("Use a GitHub owner/repo, HTTPS git URL, or SSH git URL".to_string())
+}
+
+fn git_commit(path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit.is_empty() {
+        None
+    } else {
+        Some(commit)
+    }
+}
+
+#[tauri::command]
+fn application_list(app: AppHandle) -> Result<Vec<PixieApplicationEntry>, String> {
+    Ok(load_application_registry(&app)?.apps)
+}
+
+#[tauri::command]
+fn application_install_local(
+    path: String,
+    link: bool,
+    app: AppHandle,
+) -> Result<PixieApplicationEntry, String> {
+    let source_path = ensure_application_root_dir(&PathBuf::from(path.trim()))?;
+    let manifest = read_application_manifest(&source_path)?;
+    ensure_application_dir_has_no_symlinks(&source_path)?;
+    let id = sanitize_application_id(&manifest.id)?;
+    let install_path = if link {
+        source_path.clone()
+    } else {
+        let root = application_install_root(&app)?;
+        let dest = root.join(&id);
+        let tmp = application_install_tmp_path(&root, &id);
+        if tmp.exists() {
+            return Err(format!(
+                "Temporary application install directory '{}' already exists",
+                tmp.display()
+            ));
+        }
+        if let Err(e) = copy_dir_recursive(&source_path, &tmp) {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+        remove_existing_managed_application_install(&root, &id, &dest)?;
+        fs::rename(&tmp, &dest).map_err(|e| {
+            let _ = fs::remove_dir_all(&tmp);
+            format!("Failed to install application '{id}': {e}")
+        })?;
+        dest
+    };
+    let source = PixieApplicationSource {
+        source_type: if link { "local-link" } else { "local" }.to_string(),
+        url: None,
+        path: Some(source_path.to_string_lossy().to_string()),
+        branch: None,
+        commit: git_commit(&source_path),
+        linked: Some(link),
+    };
+    let entry = application_entry_from_manifest(&app, manifest, install_path, source)?;
+    upsert_application_registry(&app, entry)
+}
+
+#[tauri::command]
+fn application_install_github(
+    source: String,
+    branch: Option<String>,
+    app: AppHandle,
+) -> Result<PixieApplicationEntry, String> {
+    let repo = normalize_github_source(&source)?;
+    let root = application_install_root(&app)?;
+    let tmp = application_install_tmp_path(&root, "github");
+    if tmp.exists() {
+        return Err(format!(
+            "Temporary application install directory '{}' already exists",
+            tmp.display()
+        ));
+    }
+    let mut args = vec!["clone".to_string(), "--depth".to_string(), "1".to_string()];
+    if let Some(branch_name) = branch.as_ref().map(|b| b.trim()).filter(|b| !b.is_empty()) {
+        args.push("--branch".to_string());
+        args.push(branch_name.to_string());
+    }
+    args.push(repo.clone());
+    args.push(tmp.to_string_lossy().to_string());
+    let output = std::process::Command::new("git")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("Failed to run git clone: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(format!("git clone failed: {}", stderr.trim()));
+    }
+
+    let manifest = match read_application_manifest(&tmp) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
+    let id = sanitize_application_id(&manifest.id)?;
+    if let Err(e) = ensure_application_dir_has_no_symlinks(&tmp) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    let dest = root.join(&id);
+    remove_existing_managed_application_install(&root, &id, &dest)?;
+    fs::rename(&tmp, &dest).map_err(|e| {
+        let _ = fs::remove_dir_all(&tmp);
+        format!("Failed to install application '{id}': {e}")
+    })?;
+    let source = PixieApplicationSource {
+        source_type: "github".to_string(),
+        url: Some(repo),
+        path: None,
+        branch,
+        commit: git_commit(&dest),
+        linked: Some(false),
+    };
+    let entry = application_entry_from_manifest(&app, manifest, dest, source)?;
+    upsert_application_registry(&app, entry)
+}
+
+#[tauri::command]
+fn application_uninstall(id: String, app: AppHandle) -> Result<(), String> {
+    let id = sanitize_application_id(&id)?;
+    let mut registry = load_application_registry(&app)?;
+    let Some(existing) = registry.apps.iter().find(|a| a.id == id).cloned() else {
+        return Ok(());
+    };
+    let install_path_to_remove = if existing.source.linked != Some(true) {
+        let install_path = PathBuf::from(existing.install_path.trim());
+        match fs::symlink_metadata(&install_path) {
+            Ok(_) => Some(registered_application_install_path(&app, &existing)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(format!(
+                    "Failed to inspect application install path '{}': {e}",
+                    install_path.display()
+                ))
+            }
+        }
+    } else {
+        None
+    };
+    registry.apps.retain(|a| a.id != id);
+    save_application_registry(&app, &registry)?;
+    if let Some(install_path) = install_path_to_remove {
+        fs::remove_dir_all(&install_path)
+            .map_err(|e| format!("Failed to remove application files: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn application_open(id: String, app: AppHandle) -> Result<(), String> {
+    let id = sanitize_application_id(&id)?;
+    let registry = load_application_registry(&app)?;
+    let entry = registry
+        .apps
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("Application '{id}' is not installed"))?;
+    let install_path = registered_application_install_path(&app, entry)?;
+    let manifest = read_application_manifest(&install_path)?;
+    ensure_registered_manifest_id(&id, &manifest)?;
+    let entry_path = validate_application_relative_file(&install_path, &manifest.entry, "entry")?;
+    open_file_external(&entry_path)
+}
+
+#[tauri::command]
+fn application_entry_content(id: String, app: AppHandle) -> Result<String, String> {
+    let id = sanitize_application_id(&id)?;
+    let registry = load_application_registry(&app)?;
+    let entry = registry
+        .apps
+        .iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| format!("Application '{id}' is not installed"))?;
+    let install_path = registered_application_install_path(&app, entry)?;
+    let manifest = read_application_manifest(&install_path)?;
+    ensure_registered_manifest_id(&id, &manifest)?;
+    let entry_path = validate_application_relative_file(&install_path, &manifest.entry, "entry")?;
+    read_regular_text_file_no_symlink_limited(&entry_path, 2_000_000)
+}
+
+#[allow(clippy::too_many_arguments)] // engine + model overrides keep the two call sites uniform
+async fn run_application_action(
+    app: AppHandle,
+    id: String,
+    action_id: String,
+    inputs: serde_json::Value,
+    engine: Option<String>,
+    model: Option<String>,
+    install_path: PathBuf,
+    manifest: PixieApplicationManifest,
+    source_commit: Option<String>,
+) -> Result<PixieApplicationRunRecord, String> {
+    let id = sanitize_application_id(&id)?;
+    let action = manifest
+        .actions
+        .iter()
+        .find(|a| a.id == action_id)
+        .cloned()
+        .ok_or_else(|| format!("Application action '{action_id}' does not exist"))?;
+    let input_obj = inputs
+        .as_object()
+        .ok_or_else(|| "Application inputs must be an object".to_string())?;
+    for input_id in &action.inputs {
+        let field = manifest
+            .inputs
+            .iter()
+            .find(|input| &input.id == input_id)
+            .ok_or_else(|| {
+                format!(
+                    "Application action '{}' references unknown input '{}'",
+                    action.id, input_id
+                )
+            })?;
+        if field.required.unwrap_or(false) {
+            let missing = match input_obj.get(input_id) {
+                None | Some(serde_json::Value::Null) => true,
+                Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+                Some(serde_json::Value::Array(items)) => items.is_empty(),
+                _ => false,
+            };
+            if missing {
+                return Err(format!("Application input '{}' is required", field.id));
+            }
+        }
+    }
+
+    let agent = manifest
+        .agent
+        .as_deref()
+        .ok_or_else(|| "Application agent is required".to_string())?;
+    let agent_path = validate_application_relative_file(&install_path, agent, "agent")?;
+    let agent_instructions = read_regular_file_no_symlink(&agent_path, "agent")?;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let engine_id = normalize_engine_id(engine.as_deref().unwrap_or("builtin"))
+        .map_err(|e| e.to_string())?
+        .to_string();
+    let model_override = model.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let data_path =
+        ensure_application_data_child_dir(&application_data_root(&app)?, &id, "storage")?;
+    let prompt =
+        build_application_run_prompt(&manifest, &action, &agent_instructions, &inputs, &data_path)?;
+    let started = Utc::now();
+    let install_path_string = install_path.to_string_lossy().to_string();
+
+    let run_result: Result<String, String> = if engine_id == "builtin" {
+        let api_key = engine::builtin::get_api_key();
+        if api_key.is_empty() {
+            Err("No ANTHROPIC_API_KEY configured for builtin engine".to_string())
+        } else {
+            let base_url = engine::builtin::get_base_url();
+            let mut session = BuiltinSession::new(
+                &run_id,
+                model_override,
+                None,
+                &install_path_string,
+                &api_key,
+                base_url.as_deref(),
+            );
+            match session.run_turn(&prompt, &[], |_event| {}).await {
+                Ok((text, false)) => Ok(text),
+                Ok((text, true)) => Err(if text.trim().is_empty() {
+                    "Application agent returned an error event".to_string()
+                } else {
+                    text
+                }),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    } else {
+        let child = spawn_headless(
+            &engine_id,
+            &run_id,
+            &prompt,
+            Some(&install_path_string),
+            model_override,
+        )
+        .await
+        .map_err(|e| format!("Failed to start application agent: {e}"))?;
+        read_child_stream(&engine_id, child, |_events| {})
+            .await
+            .map_err(|e| e.to_string())
+    };
+
+    let finished = Utc::now();
+    let (mut status, raw_result, mut error) = match run_result {
+        Ok(text) => ("ok".to_string(), text, None),
+        Err(message) => ("error".to_string(), String::new(), Some(message)),
+    };
+    let outputs = if status == "ok" {
+        let parsed_outputs = parse_application_outputs(&raw_result, &action, &manifest);
+        status = parsed_outputs.status;
+        error = parsed_outputs.error;
+        parsed_outputs.outputs
+    } else {
+        serde_json::json!({})
+    };
+    let record = PixieApplicationRunRecord {
+        id: run_id,
+        app_id: id,
+        app_name: manifest.name,
+        app_version: manifest.version,
+        source_commit,
+        action_id: action.id,
+        engine: engine_id,
+        model: model_override.map(str::to_string),
+        inputs,
+        outputs,
+        raw_result,
+        status,
+        error,
+        started_at: started.to_rfc3339(),
+        finished_at: finished.to_rfc3339(),
+    };
+    record_application_run(&app, record.clone());
+    Ok(record)
+}
+
+#[tauri::command]
+async fn application_run(
+    id: String,
+    action_id: String,
+    inputs: serde_json::Value,
+    engine: Option<String>,
+    model: Option<String>,
+    app: AppHandle,
+) -> Result<PixieApplicationRunRecord, String> {
+    let id = sanitize_application_id(&id)?;
+    let registry = load_application_registry(&app)?;
+    let entry = registry
+        .apps
+        .iter()
+        .find(|a| a.id == id)
+        .cloned()
+        .ok_or_else(|| format!("Application '{id}' is not installed"))?;
+    let install_path = registered_application_install_path(&app, &entry)?;
+    let manifest = read_application_manifest(&install_path)?;
+    ensure_registered_manifest_id(&id, &manifest)?;
+    let source_commit = git_commit(&install_path).or(entry.source.commit);
+    run_application_action(
+        app,
+        id,
+        action_id,
+        inputs,
+        engine,
+        model,
+        install_path,
+        manifest,
+        source_commit,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn application_studio_run(
+    path: String,
+    action_id: String,
+    inputs: serde_json::Value,
+    engine: Option<String>,
+    model: Option<String>,
+    app: AppHandle,
+) -> Result<PixieApplicationRunRecord, String> {
+    let app_dir = ensure_application_root_dir(&PathBuf::from(path.trim()))?;
+    ensure_application_dir_has_no_symlinks(&app_dir)?;
+    let manifest = read_application_manifest(&app_dir)?;
+    let id = sanitize_application_id(&manifest.id)?;
+    let source_commit = git_commit(&app_dir);
+    run_application_action(
+        app,
+        id,
+        action_id,
+        inputs,
+        engine,
+        model,
+        app_dir,
+        manifest,
+        source_commit,
+    )
+    .await
+}
+
+#[tauri::command]
+fn application_runs(app: AppHandle) -> Result<Vec<PixieApplicationRunRecord>, String> {
+    let path = application_runs_path(&app)?;
+    let Some(text) = read_application_data_file_if_exists(&path, "runs")? else {
+        return Ok(vec![]);
+    };
+    serde_json::from_str(&text).map_err(|e| format!("Invalid application runs: {e}"))
+}
+
 #[tauri::command]
 async fn get_default_workspace_path(app: AppHandle) -> Result<String, String> {
     // A user-configured override (Settings) wins; otherwise default to ~/.pixie.
     if let Some(custom) = load_default_workspace_override(&app) {
         let dir = std::path::Path::new(&custom);
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("failed to create default workspace '{custom}': {e}"))?;
-        return Ok(custom);
+        let dir = ensure_directory_no_symlink(dir, "Default workspace")
+            .map_err(|e| format!("cannot use '{custom}' as default workspace: {e}"))?;
+        return Ok(dir.to_string_lossy().to_string());
     }
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "cannot determine home directory".to_string())?;
     let dir = std::path::Path::new(&home).join(".pixie");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create ~/.pixie: {e}"))?;
+    let dir = ensure_directory_no_symlink(&dir, "Default workspace")
+        .map_err(|e| format!("failed to create ~/.pixie: {e}"))?;
     Ok(dir.to_string_lossy().to_string())
 }
 
@@ -1973,9 +4995,9 @@ async fn set_default_workspace_path(path: Option<String>, app: AppHandle) -> Res
                 persist_default_workspace_override(&app, &None);
                 return Ok(());
             }
-            std::fs::create_dir_all(&trimmed)
+            let dir = ensure_directory_no_symlink(Path::new(&trimmed), "Default workspace")
                 .map_err(|e| format!("cannot use '{trimmed}' as default workspace: {e}"))?;
-            persist_default_workspace_override(&app, &Some(trimmed));
+            persist_default_workspace_override(&app, &Some(dir.to_string_lossy().to_string()));
         }
         None => {
             persist_default_workspace_override(&app, &None);
@@ -2001,6 +5023,9 @@ async fn set_active_workspace(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let path = ensure_directory_no_symlink(Path::new(&path), "Workspace")?
+        .to_string_lossy()
+        .to_string();
     let mut workspace = state.workspace.lock().await;
     *workspace = Some(path);
     Ok(())
@@ -2203,7 +5228,8 @@ async fn select_workspace(
     let dir = app.dialog().file().blocking_pick_folder();
     match dir {
         Some(path) => {
-            let path_str = path.to_string();
+            let path = ensure_directory_no_symlink(Path::new(&path.to_string()), "Workspace")?;
+            let path_str = path.to_string_lossy().to_string();
             let mut workspace = state.workspace.lock().await;
             *workspace = Some(path_str.clone());
             // Persist
@@ -2241,24 +5267,23 @@ async fn save_pasted_image(app: AppHandle, data: String, ext: String) -> Result<
     if bytes.is_empty() {
         return Err("Empty image data".to_string());
     }
-    let dir = get_data_dir(&app)?.join("pasted-images");
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create pasted-images dir: {e}"))?;
-    // Monotonic-enough filename: no Math.random on the JS side either, and this
-    // single millisecond is unique enough for human paste cadence.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("System clock error: {e}"))?
-        .as_millis();
+    let dir =
+        ensure_application_data_subdir(&get_data_dir(&app)?, "pasted-images", "pasted images")?;
     let safe_ext = {
         let e = ext.trim().trim_start_matches('.').to_lowercase();
-        if e.is_empty() {
+        if e.is_empty() || e.len() > 12 || !e.chars().all(|c| c.is_ascii_alphanumeric()) {
             "png".to_string()
         } else {
             e
         }
     };
-    let path = dir.join(format!("pasted-{now}.{safe_ext}"));
-    fs::write(&path, &bytes).map_err(|e| format!("Failed to write pasted image: {e}"))?;
+    let path = dir.join(format!("pasted-{}.{}", uuid::Uuid::new_v4(), safe_ext));
+    let mut file = open_new_file_no_symlink(&path)
+        .map_err(|e| format!("Failed to create pasted image '{}': {e}", path.display()))?;
+    file.write_all(&bytes)
+        .map_err(|e| format!("Failed to write pasted image '{}': {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("Failed to flush pasted image '{}': {e}", path.display()))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -2270,11 +5295,14 @@ async fn get_workspace(
     let workspace = state.workspace.lock().await;
     match workspace.as_ref() {
         Some(path) => {
-            let name = PathBuf::from(path)
+            let path = ensure_directory_no_symlink(Path::new(path), "Workspace")?
+                .to_string_lossy()
+                .to_string();
+            let name = PathBuf::from(&path)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string());
             Ok(WorkspaceInfo {
-                path: Some(path.clone()),
+                path: Some(path),
                 name,
             })
         }
@@ -2283,9 +5311,12 @@ async fn get_workspace(
             drop(workspace);
             let loaded = load_workspace(&app);
             if let Some(ref path) = loaded {
+                let path = ensure_directory_no_symlink(Path::new(path), "Workspace")?
+                    .to_string_lossy()
+                    .to_string();
                 let mut workspace = state.workspace.lock().await;
                 *workspace = Some(path.clone());
-                let name = PathBuf::from(path)
+                let name = PathBuf::from(&path)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string());
                 Ok(WorkspaceInfo {
@@ -2305,12 +5336,9 @@ async fn get_workspace(
 /// Load `config.json`, or `None` when the file does not exist yet (first run).
 #[tauri::command]
 async fn load_app_config(app: AppHandle) -> Result<Option<AppConfig>, String> {
-    let file = get_data_dir(&app)?.join("config.json");
-    if !file.exists() {
+    let Some(content) = read_local_data_file_if_exists(&app, APP_CONFIG_FILE, "config")? else {
         return Ok(None);
-    }
-    let content =
-        fs::read_to_string(&file).map_err(|e| format!("Failed to read config.json: {e}"))?;
+    };
     // Tolerate a corrupted/partial file by falling back to defaults rather than
     // bricking the app on a bad read.
     let config: AppConfig = serde_json::from_str(&content).unwrap_or_default();
@@ -2320,11 +5348,10 @@ async fn load_app_config(app: AppHandle) -> Result<Option<AppConfig>, String> {
 /// Persist the full app config to `config.json` atomically.
 #[tauri::command]
 async fn save_app_config(config: AppConfig, app: AppHandle) -> Result<(), String> {
-    let data_dir = get_data_dir(&app)?;
-    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data directory: {e}"))?;
+    let path = local_data_file_path(&app, APP_CONFIG_FILE, "config")?;
     let json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {e}"))?;
-    atomic_write(&data_dir.join("config.json"), &json)
+    atomic_write(&path, &json)
 }
 
 /// Fire-and-forget: summarize a conversation and write an Obsidian note.
@@ -2372,7 +5399,7 @@ async fn backfill_list(
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => data_dir.join("kb"),
     };
-    let pixie_dir = vault.join("Pixie");
+    let pixie_dir = ensure_vault_pixie_dir_no_symlink(&vault)?;
 
     // Collect existing conversation IDs from the vault.
     let mut existing_ids = std::collections::HashSet::new();
@@ -2392,11 +5419,8 @@ async fn backfill_list(
     }
 
     // Load history and find missing entries.
-    let history_file = data_dir.join("history.jsonl");
     let mut missing = Vec::new();
-    if history_file.exists() {
-        let content = fs::read_to_string(&history_file)
-            .map_err(|e| format!("Failed to read history: {e}"))?;
+    if let Some(content) = read_local_data_file_if_exists(&app, HISTORY_FILE, "history")? {
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -2454,6 +5478,8 @@ async fn search_kb(
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => default_vault_dir(),
     };
+    let vault = ensure_vault_dir_no_symlink(&vault)?;
+    ensure_vault_pixie_dir_no_symlink(&vault)?;
     search::search(&query, &vault, 10)
         .await
         .map_err(|e| e.to_string())
@@ -2469,6 +5495,8 @@ async fn index_kb(
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => default_vault_dir(),
     };
+    let vault = ensure_vault_dir_no_symlink(&vault)?;
+    ensure_vault_pixie_dir_no_symlink(&vault)?;
     search::rebuild_index(&vault)
         .await
         .map_err(|e| e.to_string())
@@ -2482,7 +5510,7 @@ async fn get_default_vault_path(_app: AppHandle) -> Result<Option<String>, Strin
     // visible in Finder and can be synced via iCloud.  Falls back to the
     // app data directory if Documents isn't available.
     let kb = default_vault_dir();
-    let _ = fs::create_dir_all(&kb);
+    let kb = ensure_vault_dir_no_symlink(&kb)?;
     Ok(Some(kb.to_string_lossy().into_owned()))
 }
 
@@ -2496,8 +5524,6 @@ async fn initialize_kb_vault(vault_path: Option<String>) -> Result<(), String> {
         Some(p) if !p.trim().is_empty() => p.to_string(),
         _ => default_vault_dir().to_string_lossy().into_owned(),
     };
-    // Create the vault directory if it doesn't exist yet.
-    let _ = fs::create_dir_all(&path);
     // Write .obsidian/ metadata.
     ensure_obsidian_vault(&path)?;
     Ok(())
@@ -2510,9 +5536,8 @@ async fn open_vault_folder(_app: AppHandle, vault_path: Option<String>) -> Resul
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => default_vault_dir(),
     };
-    let pixie_dir = vault.join("Pixie");
+    let pixie_dir = ensure_vault_pixie_dir_no_symlink(&vault)?;
     // Ensure the directory exists so Finder/Explorer doesn't open a missing path.
-    let _ = fs::create_dir_all(&pixie_dir);
     #[cfg(target_os = "macos")]
     {
         tokio::process::Command::new("open")
@@ -2586,10 +5611,12 @@ async fn open_vault_in_obsidian(vault_path: Option<String>) -> Result<(), String
 
     // 1. Ensure .obsidian/ exists so Obsidian recognizes this as a valid vault.
     ensure_obsidian_vault(&vault_path)?;
-    let vault_name = PathBuf::from(&vault_path)
+    let vault_path = ensure_vault_dir_no_symlink(Path::new(&vault_path))?;
+    let vault_name = vault_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Pixie".to_string());
+    let vault_path = vault_path.to_string_lossy().to_string();
 
     // 2. Register the vault in Obsidian's vault list so it appears in the
     // vault switcher even after a restart.
@@ -2638,9 +5665,10 @@ async fn open_vault_in_obsidian(vault_path: Option<String>) -> Result<(), String
 /// it as a valid vault.  Idempotent — safe to call multiple times; creates
 /// `app.json` and `appearance.json` only when missing.
 pub(crate) fn ensure_obsidian_vault(vault_path: &str) -> Result<(), String> {
-    let vault = PathBuf::from(vault_path);
+    let vault = ensure_vault_dir_no_symlink(Path::new(vault_path))?;
     let obsidian_dir = vault.join(".obsidian");
-    fs::create_dir_all(&obsidian_dir).map_err(|e| format!("Cannot create .obsidian: {e}"))?;
+    ensure_directory_no_symlink(&obsidian_dir, "Obsidian metadata directory")
+        .map_err(|e| format!("Cannot create .obsidian: {e}"))?;
 
     let vault_name = vault
         .file_name()
@@ -2648,13 +5676,43 @@ pub(crate) fn ensure_obsidian_vault(vault_path: &str) -> Result<(), String> {
         .unwrap_or_else(|| "Pixie".to_string());
 
     let app_json = obsidian_dir.join("app.json");
-    if !app_json.exists() {
-        fs::write(&app_json, format!("{{\"vaultName\":\"{vault_name}\"}}"))
-            .map_err(|e| format!("Cannot write app.json: {e}"))?;
+    match fs::symlink_metadata(&app_json) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "Cannot write symlink app.json: {}",
+                app_json.display()
+            ));
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(format!("app.json is not a file: {}", app_json.display()));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            atomic_write(&app_json, &format!("{{\"vaultName\":\"{vault_name}\"}}"))
+                .map_err(|e| format!("Cannot write app.json: {e}"))?;
+        }
+        Err(e) => return Err(format!("Cannot inspect app.json: {e}")),
     }
     let appearance_json = obsidian_dir.join("appearance.json");
-    if !appearance_json.exists() {
-        fs::write(&appearance_json, "{}").ok();
+    match fs::symlink_metadata(&appearance_json) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "Cannot write symlink appearance.json: {}",
+                appearance_json.display()
+            ));
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(format!(
+                "appearance.json is not a file: {}",
+                appearance_json.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            atomic_write(&appearance_json, "{}")
+                .map_err(|e| format!("Cannot write appearance.json: {e}"))?;
+        }
+        Err(e) => return Err(format!("Cannot inspect appearance.json: {e}")),
     }
     Ok(())
 }
@@ -2681,9 +5739,18 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
     // config directory and a minimal registry with our vault.  This avoids the
     // "vault not found" error that would otherwise occur when we try to open
     // via obsidian://open?vault=<name> without a registration entry.
+    if fs::symlink_metadata(&obsidian_config)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "Cannot use symlink obsidian.json: {}",
+            obsidian_config.display()
+        ));
+    }
     if !obsidian_config.exists() {
         if let Some(parent) = obsidian_config.parent() {
-            let _ = fs::create_dir_all(parent);
+            ensure_directory_no_symlink(parent, "Obsidian config directory")?;
         }
         let vault_id = &uuid::Uuid::new_v4().to_string()[..16];
         let entry = serde_json::json!({
@@ -2701,7 +5768,7 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
         return Ok(());
     }
 
-    let content = fs::read_to_string(&obsidian_config)
+    let content = read_regular_file_no_symlink(&obsidian_config, "obsidian config")
         .map_err(|e| format!("Cannot read obsidian.json: {e}"))?;
 
     let mut config: serde_json::Value =
@@ -2749,12 +5816,9 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
 /// lines are skipped so a single bad line can't prevent startup.
 #[tauri::command]
 async fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
-    let file = get_data_dir(&app)?.join("history.jsonl");
-    if !file.exists() {
+    let Some(content) = read_local_data_file_if_exists(&app, HISTORY_FILE, "history")? else {
         return Ok(vec![]);
-    }
-    let content =
-        fs::read_to_string(&file).map_err(|e| format!("Failed to read history.jsonl: {e}"))?;
+    };
     let mut entries = Vec::new();
     for line in content.lines() {
         let line = line.trim();
@@ -2772,8 +5836,7 @@ async fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
 /// The frontend coalesces/debounces calls so this receives the latest state.
 #[tauri::command]
 async fn save_history(entries: Vec<HistoryEntry>, app: AppHandle) -> Result<(), String> {
-    let data_dir = get_data_dir(&app)?;
-    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data directory: {e}"))?;
+    let path = local_data_file_path(&app, HISTORY_FILE, "history")?;
     let mut out = String::new();
     for entry in &entries {
         let line = serde_json::to_string(entry)
@@ -2781,7 +5844,7 @@ async fn save_history(entries: Vec<HistoryEntry>, app: AppHandle) -> Result<(), 
         out.push_str(&line);
         out.push('\n');
     }
-    atomic_write(&data_dir.join("history.jsonl"), &out)
+    atomic_write(&path, &out)
 }
 
 #[tauri::command]
@@ -2909,42 +5972,85 @@ pub(crate) fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), 
     let dir = path
         .parent()
         .ok_or_else(|| "target path has no parent".to_string())?;
+    let canonical_dir = ensure_directory_no_symlink(dir, "Target directory")?;
     let file_name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "data".to_string());
-    let tmp = dir.join(format!(
+        .ok_or_else(|| "target path has no file name".to_string())?;
+    let path = canonical_dir.join(file_name);
+    let dir_metadata = fs::symlink_metadata(&canonical_dir).map_err(|e| {
+        format!(
+            "Failed to inspect target directory {}: {e}",
+            canonical_dir.display()
+        )
+    })?;
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("Refusing to replace symlink {}", path.display()));
+        }
+    }
+    let file_name = file_name.to_string_lossy();
+    let tmp = canonical_dir.join(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    fs::write(&tmp, content).map_err(|e| format!("Failed to write {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| format!("Failed to finalize {}: {e}", path.display()))?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| format!("Failed to create {}: {e}", tmp.display()))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write {}: {e}", tmp.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("Failed to flush {}: {e}", tmp.display()))?;
+    let after_write_dir_metadata = fs::symlink_metadata(&canonical_dir).map_err(|e| {
+        format!(
+            "Failed to inspect target directory {}: {e}",
+            canonical_dir.display()
+        )
+    })?;
+    if after_write_dir_metadata.file_type().is_symlink()
+        || !after_write_dir_metadata.is_dir()
+        || !same_file_identity(&dir_metadata, &after_write_dir_metadata)
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!(
+            "Target directory {} changed while writing",
+            canonical_dir.display()
+        ));
+    }
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("Refusing to replace symlink {}", path.display()));
+        }
+    }
+    if let Err(e) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Failed to finalize {}: {e}", path.display()));
+    }
     Ok(())
 }
 
 fn persist_workspace(app: &AppHandle, path: &str) {
-    if let Ok(data_dir) = get_data_dir(app) {
-        let _ = fs::create_dir_all(&data_dir);
-        let _ = fs::write(data_dir.join("workspace.txt"), path);
-    }
+    let Ok(file) = local_data_file_path(app, WORKSPACE_FILE, "workspace") else {
+        return;
+    };
+    let _ = atomic_write(&file, path);
 }
 
 fn load_workspace(app: &AppHandle) -> Option<String> {
-    let data_dir = get_data_dir(app).ok()?;
-    let file = data_dir.join("workspace.txt");
-    if file.exists() {
-        fs::read_to_string(file).ok()
-    } else {
-        None
-    }
+    read_local_data_file_if_exists(app, WORKSPACE_FILE, "workspace")
+        .ok()
+        .flatten()
 }
 
 /// The user-configured default working directory override (Settings), or `None`
 /// when unset (fall back to `~/.pixie`). Stored next to `workspace.txt`.
 fn load_default_workspace_override(app: &AppHandle) -> Option<String> {
-    let data_dir = get_data_dir(app).ok()?;
-    let raw = fs::read_to_string(data_dir.join("default_workspace.txt")).ok()?;
+    let raw = read_local_data_file_if_exists(app, DEFAULT_WORKSPACE_FILE, "default workspace")
+        .ok()
+        .flatten()?;
     let trimmed = raw.trim().to_string();
     if trimmed.is_empty() {
         None
@@ -2955,14 +6061,12 @@ fn load_default_workspace_override(app: &AppHandle) -> Option<String> {
 
 /// Persist (`Some`) or clear (`None`) the default working directory override.
 fn persist_default_workspace_override(app: &AppHandle, path: &Option<String>) {
-    let Ok(data_dir) = get_data_dir(app) else {
+    let Ok(file) = local_data_file_path(app, DEFAULT_WORKSPACE_FILE, "default workspace") else {
         return;
     };
-    let _ = fs::create_dir_all(&data_dir);
-    let file = data_dir.join("default_workspace.txt");
     match path {
         Some(p) => {
-            let _ = fs::write(file, p);
+            let _ = atomic_write(&file, p);
         }
         None => {
             let _ = fs::remove_file(file);
@@ -3054,56 +6158,37 @@ fn compute_next_run(spec: &ScheduleSpec, now_utc: DateTime<Utc>) -> Option<Strin
 }
 
 fn load_scheduled_tasks(app: &AppHandle) -> Vec<ScheduledTask> {
-    let Ok(data_dir) = get_data_dir(app) else {
-        return vec![];
-    };
-    let path = data_dir.join("scheduled_tasks.json");
-    if !path.exists() {
-        return vec![];
-    }
-    fs::read_to_string(&path)
+    read_local_data_file_if_exists(app, SCHEDULED_TASKS_FILE, "scheduled tasks")
         .ok()
+        .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
 fn persist_scheduled_tasks(app: &AppHandle, tasks: &[ScheduledTask]) -> Result<(), String> {
-    let data_dir = get_data_dir(app)?;
-    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
+    let path = local_data_file_path(app, SCHEDULED_TASKS_FILE, "scheduled tasks")?;
     let json = serde_json::to_string_pretty(tasks)
         .map_err(|e| format!("Failed to serialize tasks: {}", e))?;
-    atomic_write(&data_dir.join("scheduled_tasks.json"), &json)
-        .map_err(|e| format!("Failed to write tasks: {}", e))
+    atomic_write(&path, &json).map_err(|e| format!("Failed to write tasks: {}", e))
 }
 
 fn load_task_runs(app: &AppHandle) -> Vec<TaskRunRecord> {
-    let Ok(data_dir) = get_data_dir(app) else {
-        return vec![];
-    };
-    let path = data_dir.join("task_runs.json");
-    if !path.exists() {
-        return vec![];
-    }
-    fs::read_to_string(&path)
+    read_local_data_file_if_exists(app, TASK_RUNS_FILE, "task runs")
         .ok()
+        .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
 fn record_task_run(app: &AppHandle, record: TaskRunRecord) {
-    let Ok(data_dir) = get_data_dir(app) else {
+    let Ok(path) = local_data_file_path(app, TASK_RUNS_FILE, "task runs") else {
         return;
     };
-    let _ = fs::create_dir_all(&data_dir);
-    let path = data_dir.join("task_runs.json");
-    let mut runs: Vec<TaskRunRecord> = if path.exists() {
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    } else {
-        vec![]
-    };
+    let mut runs: Vec<TaskRunRecord> = read_application_data_file_if_exists(&path, "task runs")
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     // Dedupe by id (replace) then trim to the most recent 500.
     runs.retain(|r| r.id != record.id);
     runs.push(record);
@@ -3130,7 +6215,7 @@ fn basename(path: &str) -> String {
 /// does that before spawning, and manual run-now must not advance).
 async fn run_builtin_task_headless(
     app: AppHandle,
-    task: ScheduledTask,
+    mut task: ScheduledTask,
     conversation_id: String,
     started: DateTime<Utc>,
     title: String,
@@ -3168,6 +6253,38 @@ async fn run_builtin_task_headless(
     }
 
     let base_url = engine::builtin::get_base_url();
+    let workspace = match ensure_directory_no_symlink(Path::new(&task.workspace), "Task workspace")
+    {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(e) => {
+            let _ = app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(format!("Workspace unavailable: {}", e))
+                .show();
+            record_task_run(
+                &app,
+                TaskRunRecord {
+                    id: conversation_id.clone(),
+                    task_id: task.id.clone(),
+                    task_name: task.name.clone(),
+                    workspace: task.workspace.clone(),
+                    prompt: task.prompt.clone(),
+                    result: String::new(),
+                    status: "error".into(),
+                    started_at: started.to_rfc3339(),
+                    finished_at: Utc::now().to_rfc3339(),
+                },
+            );
+            let _ = app.emit(
+                "task-run-complete",
+                serde_json::json!({ "task_id": task.id, "conversation_id": conversation_id, "status": "error" }),
+            );
+            return;
+        }
+    };
+    task.workspace = workspace;
     let mut session = BuiltinSession::new(
         &conversation_id,
         None,
@@ -3268,7 +6385,7 @@ async fn run_builtin_task_headless(
     }
 }
 
-async fn run_task_headless(app: AppHandle, task: ScheduledTask, conversation_id: String) {
+async fn run_task_headless(app: AppHandle, mut task: ScheduledTask, conversation_id: String) {
     use tauri_plugin_notification::NotificationExt;
 
     let started = Utc::now();
@@ -3283,34 +6400,39 @@ async fn run_task_headless(app: AppHandle, task: ScheduledTask, conversation_id:
         .body(format!("Running in {}…", dir_label))
         .show();
 
-    // Guard against a vanished workspace before spawning.
-    if !std::path::Path::new(&task.workspace).is_dir() {
-        let _ = app
-            .notification()
-            .builder()
-            .title(&title)
-            .body("Workspace no longer exists — skipped.")
-            .show();
-        record_task_run(
-            &app,
-            TaskRunRecord {
-                id: conversation_id.clone(),
-                task_id: task.id.clone(),
-                task_name: task.name.clone(),
-                workspace: task.workspace.clone(),
-                prompt: task.prompt.clone(),
-                result: String::new(),
-                status: "error".into(),
-                started_at: started.to_rfc3339(),
-                finished_at: Utc::now().to_rfc3339(),
-            },
-        );
-        let _ = app.emit(
+    // Guard against a vanished or symlinked workspace before spawning.
+    let workspace = match ensure_directory_no_symlink(Path::new(&task.workspace), "Task workspace")
+    {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(e) => {
+            let _ = app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(format!("Workspace unavailable: {}", e))
+                .show();
+            record_task_run(
+                &app,
+                TaskRunRecord {
+                    id: conversation_id.clone(),
+                    task_id: task.id.clone(),
+                    task_name: task.name.clone(),
+                    workspace: task.workspace.clone(),
+                    prompt: task.prompt.clone(),
+                    result: String::new(),
+                    status: "error".into(),
+                    started_at: started.to_rfc3339(),
+                    finished_at: Utc::now().to_rfc3339(),
+                },
+            );
+            let _ = app.emit(
             "task-run-complete",
             serde_json::json!({ "task_id": task.id, "conversation_id": conversation_id, "status": "error" }),
         );
-        return;
-    }
+            return;
+        }
+    };
+    task.workspace = workspace;
 
     if task.engine == "builtin" {
         run_builtin_task_headless(app, task, conversation_id, started, title).await;
@@ -3322,6 +6444,7 @@ async fn run_task_headless(app: AppHandle, task: ScheduledTask, conversation_id:
         &conversation_id,
         &task.prompt,
         Some(&task.workspace),
+        None,
     )
     .await
     {
@@ -3675,38 +6798,24 @@ fn try_register_running_loop(task_id: &str) -> Result<RunningLoopGuard, String> 
 }
 
 fn load_loop_tasks(app: &AppHandle) -> Vec<LoopTask> {
-    let Ok(data_dir) = get_data_dir(app) else {
-        return vec![];
-    };
-    let path = data_dir.join("loop_tasks.json");
-    if !path.exists() {
-        return vec![];
-    }
-    fs::read_to_string(&path)
+    read_local_data_file_if_exists(app, LOOP_TASKS_FILE, "loop tasks")
         .ok()
+        .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
 fn persist_loop_tasks(app: &AppHandle, tasks: &[LoopTask]) -> Result<(), String> {
-    let data_dir = get_data_dir(app)?;
-    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
+    let path = local_data_file_path(app, LOOP_TASKS_FILE, "loop tasks")?;
     let json = serde_json::to_string_pretty(tasks)
         .map_err(|e| format!("Failed to serialize loop tasks: {}", e))?;
-    atomic_write(&data_dir.join("loop_tasks.json"), &json)
-        .map_err(|e| format!("Failed to write loop tasks: {}", e))
+    atomic_write(&path, &json).map_err(|e| format!("Failed to write loop tasks: {}", e))
 }
 
 fn load_loop_iterations(app: &AppHandle) -> Vec<LoopIterationRecord> {
-    let Ok(data_dir) = get_data_dir(app) else {
-        return vec![];
-    };
-    let path = data_dir.join("loop_iterations.json");
-    if !path.exists() {
-        return vec![];
-    }
-    fs::read_to_string(&path)
+    read_local_data_file_if_exists(app, LOOP_ITERATIONS_FILE, "loop iterations")
         .ok()
+        .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
@@ -3740,19 +6849,15 @@ fn prune_loop_iterations(
 }
 
 fn record_loop_iteration(app: &AppHandle, record: LoopIterationRecord) {
-    let Ok(data_dir) = get_data_dir(app) else {
+    let Ok(path) = local_data_file_path(app, LOOP_ITERATIONS_FILE, "loop iterations") else {
         return;
     };
-    let _ = fs::create_dir_all(&data_dir);
-    let path = data_dir.join("loop_iterations.json");
-    let mut iterations: Vec<LoopIterationRecord> = if path.exists() {
-        fs::read_to_string(&path)
+    let mut iterations: Vec<LoopIterationRecord> =
+        read_application_data_file_if_exists(&path, "loop iterations")
             .ok()
+            .flatten()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    } else {
-        vec![]
-    };
+            .unwrap_or_default();
     let task_id = record.loop_task_id.clone();
     iterations.retain(|r| r.id != record.id);
     iterations.push(record);
@@ -4032,8 +7137,9 @@ fn ensure_loop_task_can_run(task: &LoopTask) -> Result<(), String> {
 
 /// Try to read PROGRESS.md from the workspace directory (State primitive).
 fn read_progress_md(workspace: &str) -> Option<String> {
-    let path = PathBuf::from(workspace).join("PROGRESS.md");
-    fs::read_to_string(&path).ok()
+    let workspace = ensure_directory_no_symlink(Path::new(workspace), "Workspace").ok()?;
+    let path = workspace.join("PROGRESS.md");
+    read_regular_file_no_symlink(&path, "progress").ok()
 }
 
 async fn cancel_active_loop_iteration(app: &AppHandle, task_id: &str) {
@@ -4146,11 +7252,11 @@ async fn delete_loop_task(app: AppHandle, task_id: String) -> Result<(), String>
     // Also remove iterations for this task.
     let mut iterations = load_loop_iterations(&app);
     iterations.retain(|r| r.loop_task_id != task_id);
-    let Ok(data_dir) = get_data_dir(&app) else {
+    let Ok(path) = local_data_file_path(&app, LOOP_ITERATIONS_FILE, "loop iterations") else {
         return Ok(());
     };
     if let Ok(json) = serde_json::to_string_pretty(&iterations) {
-        let _ = atomic_write(&data_dir.join("loop_iterations.json"), &json);
+        let _ = atomic_write(&path, &json);
     }
     Ok(())
 }
@@ -4244,6 +7350,43 @@ async fn run_loop_iteration(
         AgentEngineId::Builtin => "builtin",
         AgentEngineId::Codex => "codex",
     };
+    let workspace = match ensure_directory_no_symlink(Path::new(&task.workspace), "Loop workspace")
+    {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(e) => {
+            let message = format!("Workspace unavailable: {}", e);
+            log::error!("[loop] workspace check failed for '{}': {}", task.name, e);
+            let _ = app.emit(
+                "agent-error",
+                ResponseError {
+                    conversation_id: conversation_id.clone(),
+                    error: message.clone(),
+                },
+            );
+            record_loop_iteration(
+                app,
+                LoopIterationRecord {
+                    id: conversation_id,
+                    loop_task_id: task.id.clone(),
+                    iteration: task.iteration + 1,
+                    prompt: prompt.clone(),
+                    result: message,
+                    status: "error".into(),
+                    started_at: started.to_rfc3339(),
+                    finished_at: Utc::now().to_rfc3339(),
+                    exit_met: false,
+                    progress_snapshot: None,
+                },
+            );
+            return LoopIterationOutcome {
+                prompt,
+                result: String::new(),
+                status: "error".into(),
+                exit_met: false,
+                unchanged_streak: 0,
+            };
+        }
+    };
 
     if let Ok(mut active) = active_loop_conversations().lock() {
         active.insert(task.id.clone(), conversation_id.clone());
@@ -4269,18 +7412,19 @@ async fn run_loop_iteration(
             "task_name": task.name,
             "iteration": task.iteration + 1,
             "conversation_id": conversation_id,
-            "workspace": task.workspace,
+            "workspace": workspace,
             "engine": engine_id,
             "prompt": prompt,
         }),
     );
 
     if engine_id == "builtin" {
-        return run_builtin_loop_iteration(app, task, conversation_id, prompt, started).await;
+        return run_builtin_loop_iteration(app, task, &workspace, conversation_id, prompt, started)
+            .await;
     }
 
     let child =
-        match spawn_headless(engine_id, &conversation_id, &prompt, Some(&task.workspace)).await {
+        match spawn_headless(engine_id, &conversation_id, &prompt, Some(&workspace), None).await {
             Ok(child) => child,
             Err(e) => {
                 log::error!("[loop] spawn failed for '{}': {}", task.name, e);
@@ -4430,7 +7574,7 @@ async fn run_loop_iteration(
         exit_met,
         full_text.chars().take(200).collect::<String>(),
     );
-    let progress_snapshot = read_progress_md(&task.workspace);
+    let progress_snapshot = read_progress_md(&workspace);
 
     // Truncate result to 50KB for storage.
     let truncated: String = full_text.chars().take(50_000).collect();
@@ -4463,6 +7607,7 @@ async fn run_loop_iteration(
 async fn run_builtin_loop_iteration(
     app: &AppHandle,
     task: &LoopTask,
+    workspace: &str,
     conversation_id: String,
     prompt: String,
     started: DateTime<Utc>,
@@ -4514,7 +7659,7 @@ async fn run_builtin_loop_iteration(
         &conversation_id,
         None,
         None,
-        &task.workspace,
+        workspace,
         &api_key,
         base_url.as_deref(),
     );
@@ -4682,8 +7827,9 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
             break;
         }
 
-        // If the workspace no longer exists, stop with an error.
-        if !std::path::Path::new(&fresh_task.workspace).is_dir() {
+        // If the workspace no longer exists or is symlinked, stop with an error.
+        if ensure_directory_no_symlink(Path::new(&fresh_task.workspace), "Loop workspace").is_err()
+        {
             log::error!("[loop] workspace vanished for '{}'", fresh_task.name);
             let mut tasks = load_loop_tasks(&app);
             if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
@@ -5385,6 +8531,17 @@ pub fn run() {
             plugin_marketplace_remove,
             plugin_install,
             plugin_uninstall,
+            application_list,
+            application_ensure_studio_defaults,
+            application_studio_entry_path,
+            application_install_local,
+            application_install_github,
+            application_uninstall,
+            application_open,
+            application_entry_content,
+            application_run,
+            application_studio_run,
+            application_runs,
             git_status,
             git_log,
             git_diff,
@@ -5454,6 +8611,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn application_run_record_deserializes_without_model_field() {
+        // Records persisted before the model field existed must still load.
+        let legacy = serde_json::json!({
+            "id": "run-1",
+            "appId": "daily-report",
+            "appName": "Daily Report",
+            "appVersion": "0.1.0",
+            "sourceCommit": null,
+            "actionId": "run",
+            "engine": "claude",
+            "inputs": {},
+            "outputs": {},
+            "rawResult": "done",
+            "status": "ok",
+            "error": null,
+            "startedAt": "2026-08-15T10:00:00Z",
+            "finishedAt": "2026-08-15T10:00:01Z"
+        });
+        let record: PixieApplicationRunRecord =
+            serde_json::from_value(legacy).expect("legacy run record must deserialize");
+        assert_eq!(record.model, None);
+    }
+
+    #[test]
+    fn application_run_record_roundtrips_model() {
+        let record = PixieApplicationRunRecord {
+            id: "run-2".into(),
+            app_id: "daily-report".into(),
+            app_name: "Daily Report".into(),
+            app_version: Some("0.1.0".into()),
+            source_commit: None,
+            action_id: "run".into(),
+            engine: "codex".into(),
+            model: Some("gpt-5.5".into()),
+            inputs: serde_json::json!({}),
+            outputs: serde_json::json!({}),
+            raw_result: "done".into(),
+            status: "ok".into(),
+            error: None,
+            started_at: "2026-08-15T10:00:00Z".into(),
+            finished_at: "2026-08-15T10:00:01Z".into(),
+        };
+        let wire = serde_json::to_value(&record).unwrap();
+        assert_eq!(wire["model"], "gpt-5.5");
+        let back: PixieApplicationRunRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
     fn frontmatter_name_and_description() {
         let text = "---\nname: my-skill\ndescription: Does a thing.\n---\n# Body\n";
         let (name, desc, body) = parse_frontmatter(text);
@@ -5491,6 +8697,1110 @@ mod tests {
                 s
             );
         }
+    }
+
+    fn write_test_application(manifest: serde_json::Value) -> (PathBuf, impl FnOnce()) {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("ui")).unwrap();
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        std::fs::write(dir.join("ui/index.html"), "<!doctype html><html></html>").unwrap();
+        std::fs::write(dir.join("agent/instructions.md"), "# Agent\n").unwrap();
+        std::fs::write(
+            dir.join(APPLICATION_MANIFEST),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let cleanup_dir = dir.clone();
+        (dir, move || {
+            let _ = std::fs::remove_dir_all(cleanup_dir);
+        })
+    }
+
+    fn valid_application_manifest_json() -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": "0.1",
+            "id": "com.example.daily-report",
+            "name": "Daily Report",
+            "version": "0.1.0",
+            "template": {
+                "id": "single-action-form",
+                "version": "0.1"
+            },
+            "entry": "ui/index.html",
+            "agent": "agent/instructions.md",
+            "permissions": ["ai:model", "storage"],
+            "inputs": [
+                {
+                    "id": "goal",
+                    "label": "Goal",
+                    "type": "textarea",
+                    "required": true
+                }
+            ],
+            "outputs": [
+                {
+                    "id": "result",
+                    "label": "Result",
+                    "type": "markdown",
+                    "preview": true
+                }
+            ],
+            "actions": [
+                {
+                    "id": "run",
+                    "label": "Run",
+                    "inputs": ["goal"],
+                    "outputs": ["result"],
+                    "mode": "agent"
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn application_manifest_validator_accepts_valid_single_action_form() {
+        let (dir, cleanup) = write_test_application(valid_application_manifest_json());
+        let manifest = read_application_manifest(&dir).unwrap();
+        cleanup();
+        assert_eq!(manifest.id, "com.example.daily-report");
+        assert_eq!(manifest.template.unwrap().id, "single-action-form");
+    }
+
+    #[test]
+    fn application_manifest_validator_rejects_path_escape_and_bad_references() {
+        let mut path_escape = valid_application_manifest_json();
+        path_escape["entry"] = serde_json::json!("../outside.html");
+        let (dir, cleanup) = write_test_application(path_escape);
+        let err = read_application_manifest(&dir).unwrap_err();
+        cleanup();
+        assert!(err.contains("must not contain '..'"));
+
+        let mut bad_ref = valid_application_manifest_json();
+        bad_ref["actions"][0]["inputs"] = serde_json::json!(["missing"]);
+        let (dir, cleanup) = write_test_application(bad_ref);
+        let err = read_application_manifest(&dir).unwrap_err();
+        cleanup();
+        assert!(err.contains("references unknown input 'missing'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_manifest_validator_rejects_symlink_application_root() {
+        let (target, cleanup_target) = write_test_application(valid_application_manifest_json());
+        let link = std::env::temp_dir().join(format!(
+            "pixie-application-root-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = read_application_manifest(&link).unwrap_err();
+
+        let _ = std::fs::remove_file(&link);
+        cleanup_target();
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[test]
+    fn application_studio_defaults_rejects_escape_before_writing_files() {
+        let escaped_name = format!("pixie-escaped-{}.html", uuid::Uuid::new_v4());
+        let mut manifest_json = valid_application_manifest_json();
+        manifest_json["entry"] = serde_json::json!(format!("../{escaped_name}"));
+        let (dir, cleanup) = write_test_application(manifest_json);
+        let outside = dir.parent().unwrap().join(&escaped_name);
+        assert!(!outside.exists());
+
+        let err =
+            application_ensure_studio_defaults(dir.to_string_lossy().to_string()).unwrap_err();
+
+        cleanup();
+        assert!(err.contains("must not contain '..'"));
+        assert!(!outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_studio_defaults_rejects_symlink_parent_before_writing_entry() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-test-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(dir.join("agent/instructions.md"), "# Agent\n").unwrap();
+        std::fs::write(
+            dir.join(APPLICATION_MANIFEST),
+            serde_json::to_string_pretty(&valid_application_manifest_json()).unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("ui")).unwrap();
+        let outside_entry = outside.join("index.html");
+        assert!(!outside_entry.exists());
+
+        let err =
+            application_ensure_studio_defaults(dir.to_string_lossy().to_string()).unwrap_err();
+
+        assert!(!outside_entry.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_studio_defaults_rejects_broken_symlink_entry_before_writing() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-test-{}", uuid::Uuid::new_v4()));
+        let outside_entry = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(dir.join("ui")).unwrap();
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        std::fs::write(dir.join("agent/instructions.md"), "# Agent\n").unwrap();
+        std::fs::write(
+            dir.join(APPLICATION_MANIFEST),
+            serde_json::to_string_pretty(&valid_application_manifest_json()).unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_entry, dir.join("ui/index.html")).unwrap();
+        assert!(!outside_entry.exists());
+
+        let err =
+            application_ensure_studio_defaults(dir.to_string_lossy().to_string()).unwrap_err();
+
+        assert!(!outside_entry.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_studio_defaults_rejects_broken_symlink_manifest_before_writing() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-test-{}", uuid::Uuid::new_v4()));
+        let outside_manifest = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&outside_manifest, dir.join(APPLICATION_MANIFEST)).unwrap();
+        assert!(!outside_manifest.exists());
+
+        let err =
+            application_ensure_studio_defaults(dir.to_string_lossy().to_string()).unwrap_err();
+
+        assert!(!outside_manifest.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_manifest_validator_rejects_symlink_entry_inside_application() {
+        let (dir, cleanup) = write_test_application(valid_application_manifest_json());
+        std::fs::rename(dir.join("ui/index.html"), dir.join("ui/real-index.html")).unwrap();
+        std::os::unix::fs::symlink("real-index.html", dir.join("ui/index.html")).unwrap();
+
+        let err = read_application_manifest(&dir).unwrap_err();
+
+        cleanup();
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_file_reader_rejects_symlink_after_validation() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-reader-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-reader-outside-{}.md",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("instructions.md")).unwrap();
+
+        let err = read_regular_file_no_symlink(&dir.join("instructions.md"), "agent").unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_studio_defaults_rejects_symlink_parent_without_creating_external_dirs() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-test-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut manifest_json = valid_application_manifest_json();
+        manifest_json["entry"] = serde_json::json!("ui/nested/index.html");
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(dir.join("agent/instructions.md"), "# Agent\n").unwrap();
+        std::fs::write(
+            dir.join(APPLICATION_MANIFEST),
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("ui")).unwrap();
+
+        let err =
+            application_ensure_studio_defaults(dir.to_string_lossy().to_string()).unwrap_err();
+
+        assert!(!outside.join("nested").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[test]
+    fn managed_application_install_path_rejects_path_outside_install_root() {
+        let root = std::env::temp_dir().join(format!(
+            "pixie-application-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(outside.join(id)).unwrap();
+
+        let err =
+            validate_managed_application_install_path(&root, id, &outside.join(id)).unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("escapes the application install directory"));
+    }
+
+    #[test]
+    fn managed_application_install_path_rejects_unsanitized_id() {
+        let root = std::env::temp_dir().join(format!(
+            "pixie-application-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("daily-report")).unwrap();
+
+        let err = validate_managed_application_install_path(
+            &root,
+            "../daily-report",
+            &root.join("daily-report"),
+        )
+        .unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(err.contains("may only contain"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_application_install_path_rejects_symlink_install_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "pixie-application-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(id)).unwrap();
+
+        let err = validate_managed_application_install_path(&root, id, &root.join(id)).unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_application_install_path_rejects_symlink_parent_alias() {
+        let root = std::env::temp_dir().join(format!(
+            "pixie-application-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(root.join(id)).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("alias")).unwrap();
+
+        let err =
+            validate_managed_application_install_path(&root, id, &root.join("alias").join(id))
+                .unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_application_install_path_rejects_symlink_install_root() {
+        let real_root = std::env::temp_dir().join(format!(
+            "pixie-application-real-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let link_root = std::env::temp_dir().join(format!(
+            "pixie-application-link-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(real_root.join(id)).unwrap();
+        std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+
+        let err = validate_managed_application_install_path(&link_root, id, &link_root.join(id))
+            .unwrap_err();
+
+        let _ = std::fs::remove_file(&link_root);
+        let _ = std::fs::remove_dir_all(&real_root);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_subdir_rejects_symlink_data_root() {
+        let real_data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-real-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let link_data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-link-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&real_data_dir).unwrap();
+        std::os::unix::fs::symlink(&real_data_dir, &link_data_dir).unwrap();
+
+        let err =
+            ensure_application_data_subdir(&link_data_dir, "applications", "install").unwrap_err();
+
+        let _ = std::fs::remove_file(&link_data_dir);
+        let _ = std::fs::remove_dir_all(&real_data_dir);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_subdir_rejects_symlink_child_directory() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, data_dir.join("applications")).unwrap();
+
+        let err = ensure_application_data_subdir(&data_dir, "applications", "install").unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_file_rejects_symlink_data_root() {
+        let real_data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-real-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let link_data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-link-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&real_data_dir).unwrap();
+        std::os::unix::fs::symlink(&real_data_dir, &link_data_dir).unwrap();
+
+        let err =
+            ensure_application_data_file_path(&link_data_dir, APPLICATION_REGISTRY, "registry")
+                .unwrap_err();
+
+        let _ = std::fs::remove_file(&link_data_dir);
+        let _ = std::fs::remove_dir_all(&real_data_dir);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_file_rejects_symlink_registry() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(&outside, "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, data_dir.join(APPLICATION_REGISTRY)).unwrap();
+
+        let err = ensure_application_data_file_path(&data_dir, APPLICATION_REGISTRY, "registry")
+            .unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_file_reader_rejects_symlink_registry() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(&outside, "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, data_dir.join(APPLICATION_REGISTRY)).unwrap();
+
+        let path = data_dir.join(APPLICATION_REGISTRY);
+        let err = read_application_data_file_if_exists(&path, "registry").unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[test]
+    fn application_data_file_reader_returns_none_for_missing_file() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pixie-application-data-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let result =
+            read_application_data_file_if_exists(&data_dir.join(APPLICATION_RUNS), "runs").unwrap();
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+        assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_storage_dir_rejects_symlink_storage_root() {
+        let real_data_root = std::env::temp_dir().join(format!(
+            "pixie-application-real-storage-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let link_data_root = std::env::temp_dir().join(format!(
+            "pixie-application-link-storage-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(&real_data_root).unwrap();
+        std::os::unix::fs::symlink(&real_data_root, &link_data_root).unwrap();
+
+        let err = ensure_application_data_child_dir(&link_data_root, id, "storage").unwrap_err();
+
+        let _ = std::fs::remove_file(&link_data_root);
+        let _ = std::fs::remove_dir_all(&real_data_root);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_storage_dir_rejects_symlink_app_directory() {
+        let data_root = std::env::temp_dir().join(format!(
+            "pixie-application-storage-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(&data_root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, data_root.join(id)).unwrap();
+
+        let err = ensure_application_data_child_dir(&data_root, id, "storage").unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&data_root);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_install_replace_rejects_symlink_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "pixie-application-install-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let id = "com.example.daily-report";
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(id)).unwrap();
+
+        let err =
+            remove_existing_managed_application_install(&root, id, &root.join(id)).unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_copy_rejects_symlink_entries() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let dest =
+            std::env::temp_dir().join(format!("pixie-application-copy-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("ui/outside-link.txt")).unwrap();
+
+        let err = copy_dir_recursive(&source, &dest).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_dir_all(&dest);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_copy_rejects_symlink_destination_root() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let link = std::env::temp_dir().join(format!(
+            "pixie-application-copy-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-copy-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let err = copy_dir_recursive(&source, &link).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_copy_rejects_symlink_destination_file_without_overwriting_target() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let dest =
+            std::env::temp_dir().join(format!("pixie-application-copy-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-copy-outside-{}.html",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(dest.join("ui")).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("ui/index.html")).unwrap();
+
+        let err = copy_dir_recursive(&source.join("ui"), &dest.join("ui")).unwrap_err();
+
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        cleanup_source();
+        let _ = std::fs::remove_dir_all(&dest);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[test]
+    fn application_copy_rejects_regular_directory_outside_source_root() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let source_root = source.canonicalize().unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-copy-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let dest =
+            std::env::temp_dir().join(format!("pixie-application-copy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("index.html"), "outside").unwrap();
+
+        let err = copy_dir_recursive_with_root(&outside, &dest, &source_root).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dest);
+        assert!(err.contains("escapes the application directory"));
+    }
+
+    #[test]
+    fn application_copy_rejects_regular_file_outside_source_root() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let source_root = source.canonicalize().unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-copy-outside-{}.html",
+            uuid::Uuid::new_v4()
+        ));
+        let dest =
+            std::env::temp_dir().join(format!("pixie-application-copy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+
+        let err = copy_regular_file_no_symlink_with_root(
+            &outside,
+            &dest.join("index.html"),
+            &source_root,
+        )
+        .unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&dest);
+        assert!(err.contains("escapes the application directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_copy_rejects_symlink_source_root_constraint() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let source_root_link = std::env::temp_dir().join(format!(
+            "pixie-application-source-root-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let dest =
+            std::env::temp_dir().join(format!("pixie-application-copy-{}", uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(&source, &source_root_link).unwrap();
+
+        let err = copy_dir_recursive_with_root(&source, &dest, &source_root_link).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_file(&source_root_link);
+        let _ = std::fs::remove_dir_all(&dest);
+        assert!(err.contains("source root"));
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_symlink_scan_rejects_nested_symlink_entries() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-outside-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("agent/outside-link.txt")).unwrap();
+
+        let err = ensure_application_dir_has_no_symlinks(&source).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_symlink_scan_rejects_symlink_root() {
+        let (target, cleanup_target) = write_test_application(valid_application_manifest_json());
+        let link = std::env::temp_dir().join(format!(
+            "pixie-application-root-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = ensure_application_dir_has_no_symlinks(&link).unwrap_err();
+
+        let _ = std::fs::remove_file(&link);
+        cleanup_target();
+        assert!(err.contains("must not contain symlinks"));
+    }
+
+    #[test]
+    fn application_symlink_scan_rejects_regular_directory_outside_source_root() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let source_root = source.canonicalize().unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-scan-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("index.html"), "outside").unwrap();
+
+        let err =
+            ensure_application_dir_has_no_symlinks_with_root(&outside, &source_root).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("escapes the application directory"));
+    }
+
+    #[test]
+    fn application_symlink_scan_rejects_regular_file_outside_source_root() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let source_root = source.canonicalize().unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-application-scan-outside-{}.html",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&outside, "outside").unwrap();
+
+        let err =
+            ensure_application_file_has_no_symlink_with_root(&outside, &source_root).unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("escapes the application directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_symlink_scan_rejects_symlink_source_root_constraint() {
+        let (source, cleanup_source) = write_test_application(valid_application_manifest_json());
+        let source_root_link = std::env::temp_dir().join(format!(
+            "pixie-application-source-root-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::os::unix::fs::symlink(&source, &source_root_link).unwrap();
+
+        let err = ensure_application_dir_has_no_symlinks_with_root(&source, &source_root_link)
+            .unwrap_err();
+
+        cleanup_source();
+        let _ = std::fs::remove_file(&source_root_link);
+        assert!(err.contains("source root"));
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_symlink_target() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-atomic-write-test-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-atomic-write-outside-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("target.json")).unwrap();
+
+        let err = atomic_write(&dir.join("target.json"), "inside").unwrap_err();
+
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("Refusing to replace symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_symlink_parent_directory() {
+        let real_dir =
+            std::env::temp_dir().join(format!("pixie-atomic-write-real-{}", uuid::Uuid::new_v4()));
+        let link_dir =
+            std::env::temp_dir().join(format!("pixie-atomic-write-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let err = atomic_write(&link_dir.join("target.json"), "inside").unwrap_err();
+
+        assert!(!real_dir.join("target.json").exists());
+        let _ = std::fs::remove_file(&link_dir);
+        let _ = std::fs::remove_dir_all(&real_dir);
+        assert!(err.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_new_file_no_symlink_rejects_symlink_target() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-open-new-file-test-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-open-new-file-outside-{}.png",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("target.png")).unwrap();
+
+        let err = open_new_file_no_symlink(&dir.join("target.png")).unwrap_err();
+
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::Other
+            ) || err.raw_os_error() == Some(libc::ELOOP)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directory_no_symlink_rejects_symlink_directory() {
+        let real_dir =
+            std::env::temp_dir().join(format!("pixie-verified-dir-real-{}", uuid::Uuid::new_v4()));
+        let link_dir =
+            std::env::temp_dir().join(format!("pixie-verified-dir-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let err = ensure_directory_no_symlink(&link_dir, "Directory").unwrap_err();
+
+        let _ = std::fs::remove_file(&link_dir);
+        let _ = std::fs::remove_dir_all(&real_dir);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directory_no_symlink_rejects_symlink_parent_component() {
+        let real_dir = std::env::temp_dir().join(format!(
+            "pixie-verified-dir-parent-real-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let link_dir = std::env::temp_dir().join(format!(
+            "pixie-verified-dir-parent-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let err = ensure_directory_no_symlink(&link_dir.join("nested"), "Directory").unwrap_err();
+
+        assert!(!real_dir.join("nested").exists());
+        let _ = std::fs::remove_file(&link_dir);
+        let _ = std::fs::remove_dir_all(&real_dir);
+        assert!(err.contains("symlink directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_regular_text_file_limited_rejects_symlink_target() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-read-text-test-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-read-text-outside-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("target.txt")).unwrap();
+
+        let err = read_regular_text_file_no_symlink_limited(&dir.join("target.txt"), 500_000)
+            .unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_obsidian_vault_rejects_symlink_metadata_file() {
+        let vault =
+            std::env::temp_dir().join(format!("pixie-obsidian-vault-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-obsidian-outside-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let obsidian = vault.join(".obsidian");
+        std::fs::create_dir_all(&obsidian).unwrap();
+        std::fs::write(&outside, "{\"vaultName\":\"outside\"}").unwrap();
+        std::os::unix::fs::symlink(&outside, obsidian.join("app.json")).unwrap();
+
+        let err = ensure_obsidian_vault(&vault.to_string_lossy()).unwrap_err();
+
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "{\"vaultName\":\"outside\"}"
+        );
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.contains("symlink app.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_obsidian_vault_rejects_symlink_vault_root() {
+        let real_vault =
+            std::env::temp_dir().join(format!("pixie-obsidian-real-{}", uuid::Uuid::new_v4()));
+        let link_vault =
+            std::env::temp_dir().join(format!("pixie-obsidian-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&real_vault).unwrap();
+        std::os::unix::fs::symlink(&real_vault, &link_vault).unwrap();
+
+        let err = ensure_obsidian_vault(&link_vault.to_string_lossy()).unwrap_err();
+
+        assert!(!real_vault.join(".obsidian").exists());
+        let _ = std::fs::remove_file(&link_vault);
+        let _ = std::fs::remove_dir_all(&real_vault);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_vault_pixie_dir_rejects_symlink_child_directory() {
+        let vault = std::env::temp_dir().join(format!("pixie-vault-root-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("pixie-vault-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, vault.join("Pixie")).unwrap();
+
+        let err = ensure_vault_pixie_dir_no_symlink(&vault).unwrap_err();
+
+        assert!(!outside.join(".pixie_index.json").exists());
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("must not be a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_index_save_rejects_symlink_index_file() {
+        let dir = std::env::temp_dir().join(format!("pixie-index-save-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "pixie-index-save-outside-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".pixie_index.json")).unwrap();
+
+        let err = search::index::SearchIndex::default()
+            .save_to_disk(&dir.join(".pixie_index.json"))
+            .unwrap_err();
+
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+        assert!(err.to_string().contains("Refusing to replace symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_index_save_rejects_symlink_parent_component() {
+        let real_dir = std::env::temp_dir().join(format!(
+            "pixie-index-save-parent-real-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let link_dir = std::env::temp_dir().join(format!(
+            "pixie-index-save-parent-link-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let err = search::index::SearchIndex::default()
+            .save_to_disk(&link_dir.join("Pixie/.pixie_index.json"))
+            .unwrap_err();
+
+        assert!(!real_dir.join("Pixie/.pixie_index.json").exists());
+        let _ = std::fs::remove_file(&link_dir);
+        let _ = std::fs::remove_dir_all(&real_dir);
+        assert!(err.to_string().contains("symlink directory"));
+    }
+
+    #[test]
+    fn application_studio_entry_path_returns_validated_entry() {
+        let (dir, cleanup) = write_test_application(valid_application_manifest_json());
+        let entry = application_studio_entry_path(dir.to_string_lossy().to_string()).unwrap();
+        cleanup();
+        assert!(entry.ends_with("ui/index.html"));
+    }
+
+    #[test]
+    fn application_output_parser_reads_json_fenced_outputs() {
+        let manifest: PixieApplicationManifest =
+            serde_json::from_value(valid_application_manifest_json()).unwrap();
+        let action = manifest.actions[0].clone();
+        let raw = "Done\n```json\n{\"outputs\":{\"result\":\"Report ready\"}}\n```";
+        let parsed = parse_application_outputs(raw, &action, &manifest);
+        let outputs = parsed.outputs;
+        assert_eq!(parsed.status, "ok");
+        assert_eq!(outputs["result"], "Report ready");
+    }
+
+    #[test]
+    fn application_output_parser_accepts_spaced_json_fence_and_filters_unknown_outputs() {
+        let manifest: PixieApplicationManifest =
+            serde_json::from_value(valid_application_manifest_json()).unwrap();
+        let action = manifest.actions[0].clone();
+        let raw =
+            "Done\n``` JSON \n{\"outputs\":{\"result\":\"Report ready\",\"unknown\":\"ignore me\"}}\n```";
+        let outputs = parse_application_outputs(raw, &action, &manifest).outputs;
+        assert_eq!(outputs["result"], "Report ready");
+        assert!(outputs.get("unknown").is_none());
+    }
+
+    #[test]
+    fn application_output_parser_uses_last_valid_json_fence() {
+        let manifest: PixieApplicationManifest =
+            serde_json::from_value(valid_application_manifest_json()).unwrap();
+        let action = manifest.actions[0].clone();
+        let raw = "Earlier\n```json\nnot json\n```\nLater\n```json\n{\"outputs\":{\"result\":\"Final report\"}}\n```";
+        let parsed = parse_application_outputs(raw, &action, &manifest);
+        assert_eq!(parsed.status, "ok");
+        assert_eq!(parsed.outputs["result"], "Final report");
+    }
+
+    #[test]
+    fn application_output_parser_marks_missing_declared_output() {
+        let manifest: PixieApplicationManifest =
+            serde_json::from_value(valid_application_manifest_json()).unwrap();
+        let action = manifest.actions[0].clone();
+        let raw = "Done\n```json\n{\"outputs\":{}}\n```";
+        let parsed = parse_application_outputs(raw, &action, &manifest);
+        assert_eq!(parsed.status, "output_contract_failed");
+        assert!(parsed
+            .error
+            .unwrap()
+            .contains("missing output id(s) result"));
+    }
+
+    #[test]
+    fn application_output_parser_falls_back_to_first_output() {
+        let manifest: PixieApplicationManifest =
+            serde_json::from_value(valid_application_manifest_json()).unwrap();
+        let action = manifest.actions[0].clone();
+        let parsed = parse_application_outputs("plain result", &action, &manifest);
+        assert_eq!(parsed.status, "completed_with_parse_warning");
+        assert_eq!(parsed.outputs["result"], "plain result");
+    }
+
+    #[test]
+    fn application_output_parser_rejects_parse_fallback_without_text_output() {
+        let mut manifest_json = valid_application_manifest_json();
+        manifest_json["outputs"][0]["type"] = serde_json::json!("json");
+        let manifest: PixieApplicationManifest = serde_json::from_value(manifest_json).unwrap();
+        let action = manifest.actions[0].clone();
+        let parsed = parse_application_outputs("plain result", &action, &manifest);
+        assert_eq!(parsed.status, "output_contract_failed");
+        assert_eq!(parsed.outputs, serde_json::json!({}));
+        assert!(parsed
+            .error
+            .unwrap()
+            .contains("no markdown/text output is available"));
     }
 
     #[test]

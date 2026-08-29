@@ -1,14 +1,31 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { invoke } from "@tauri-apps/api/core";
-import type { MarketplaceInfo, PluginCatalog, PluginInfo } from "../types";
+import type {
+  AgentEngineId,
+  EngineModelConfigs,
+  MarketplaceInfo,
+  PixieApplicationEntry,
+  PixieApplicationField,
+  PixieApplicationRunRecord,
+  PluginCatalog,
+  PluginInfo,
+} from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
+import EngineModelPicker from "./EngineModelPicker";
 
 interface MarketplacePanelProps {
   onClose: () => void;
+  section: "skills" | "applications";
   /** Called after install/uninstall so App can refresh the ✨ skills dropdown. */
   onSkillsChanged: () => void;
+  onStartApplicationStudio: (brief: string) => void;
+  defaultEngine: AgentEngineId;
+  /** Engines that are installed + ready; limits the application run picker. */
+  readyEngineIds: AgentEngineId[];
+  engineModelConfigs: EngineModelConfigs;
+  openApplicationId?: string | null;
 }
 
 /** Seed marketplaces shown as tabs. Keyed by repo so "added" state is stable
@@ -22,6 +39,8 @@ const SUGGESTED: { repo: string; tabKey: "official" | "knowledgeWork" | "plusSki
 
 const CUSTOM_TAB = "__add_custom__";
 const INSTALLED_TAB = "__installed__";
+const APPLICATION_RUN_MESSAGE_TYPE = "pixie-application-run";
+const APPLICATION_RUN_RESULT_MESSAGE_TYPE = "pixie-application-run-result";
 
 function formatCount(n: number | undefined, t: TFunction): string {
   if (!n) return "";
@@ -32,43 +51,134 @@ function formatCount(n: number | undefined, t: TFunction): string {
   return t("marketplace.installs", { count: n });
 }
 
-export default function MarketplacePanel({ onClose, onSkillsChanged }: MarketplacePanelProps) {
+function defaultFieldValue(field: PixieApplicationField): unknown {
+  if (field.default !== undefined) return field.default;
+  if (field.type === "boolean") return false;
+  if (field.type === "number") return "";
+  return "";
+}
+
+function formatOutputValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function applicationRunStatusLabel(status: string, t: TFunction): string {
+  if (status === "ok") return t("marketplace.applications.statusOk");
+  if (status === "error") return t("marketplace.applications.statusError");
+  if (status === "output_contract_failed") return t("marketplace.applications.statusOutputContractFailed");
+  if (status === "completed_with_parse_warning") return t("marketplace.applications.statusParseWarning");
+  return status;
+}
+
+function applicationInputDefaults(app: PixieApplicationEntry): Record<string, unknown> {
+  return Object.fromEntries(app.inputs.map((field) => [field.id, defaultFieldValue(field)]));
+}
+
+function applicationActionInputs(
+  app: PixieApplicationEntry,
+  actionId: string,
+  values: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const defaults = applicationInputDefaults(app);
+  const source = values ?? defaults;
+  const action = app.actions.find((item) => item.id === actionId);
+  const allowed = new Set(action?.inputs?.length ? action.inputs : app.inputs.map((field) => field.id));
+  return Object.fromEntries(
+    Object.entries({ ...defaults, ...source }).filter(([key]) => allowed.has(key)),
+  );
+}
+
+function latestApplicationRuns(
+  runs: PixieApplicationRunRecord[],
+): Record<string, PixieApplicationRunRecord> {
+  return runs.reduce<Record<string, PixieApplicationRunRecord>>((acc, run) => {
+    const current = acc[run.appId];
+    if (!current || Date.parse(run.finishedAt) >= Date.parse(current.finishedAt)) {
+      acc[run.appId] = run;
+    }
+    return acc;
+  }, {});
+}
+
+export default function MarketplacePanel({ onClose, section, onSkillsChanged, onStartApplicationStudio, defaultEngine, readyEngineIds, engineModelConfigs, openApplicationId }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[]>([]);
   const [catalog, setCatalog] = useState<PluginCatalog>({ installed: [], available: [] });
+  const [applications, setApplications] = useState<PixieApplicationEntry[]>([]);
   const [activeRepo, setActiveRepo] = useState<string>(SUGGESTED[0].repo);
   const [query, setQuery] = useState("");
   const [customSource, setCustomSource] = useState("");
+  const [appGithubSource, setAppGithubSource] = useState("");
+  const [appGithubBranch, setAppGithubBranch] = useState("");
+  const [expandedAppId, setExpandedAppId] = useState<string | null>(null);
+  const [appInputs, setAppInputs] = useState<Record<string, Record<string, unknown>>>({});
+  const [appRunResults, setAppRunResults] = useState<Record<string, PixieApplicationRunRecord>>({});
+  // Per-app engine/model selection for runs (in-memory only). Falling back to
+  // the global default engine keeps behavior unchanged until the user picks.
+  const [appRunEngines, setAppRunEngines] = useState<Record<string, AgentEngineId>>({});
+  const [appRunModels, setAppRunModels] = useState<Record<string, string | undefined>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** Action key of the in-flight operation, to disable overlapping actions. */
   const [busy, setBusy] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [applicationBrief, setApplicationBrief] = useState("");
+  const [applicationContent, setApplicationContent] = useState<Record<string, string>>({});
+  const [pendingOpenApplicationId, setPendingOpenApplicationId] = useState<string | null>(null);
+  const applicationFrameRef = useRef<HTMLIFrameElement | null>(null);
 
   const reload = useCallback(async () => {
     setError(null);
-    try {
-      const [ml, av] = await Promise.all([
-        invoke<string>("plugin_marketplace_list"),
-        invoke<string>("plugin_available"),
-      ]);
+    let nextError: string | null = null;
+    const [marketplaceResult, pluginResult, applicationResult, applicationRunsResult] = await Promise.allSettled([
+      invoke<string>("plugin_marketplace_list"),
+      invoke<string>("plugin_available"),
+      invoke<PixieApplicationEntry[]>("application_list"),
+      invoke<PixieApplicationRunRecord[]>("application_runs"),
+    ]);
+
+    if (marketplaceResult.status === "fulfilled") {
       let parsedList: MarketplaceInfo[] = [];
-      let parsedCatalog: PluginCatalog = { installed: [], available: [] };
       try {
-        const a = JSON.parse(ml);
+        const a = JSON.parse(marketplaceResult.value);
         if (Array.isArray(a)) parsedList = a;
       } catch { /* ignore */ }
+      setMarketplaces(parsedList);
+    } else {
+      nextError = String(marketplaceResult.reason);
+      setMarketplaces([]);
+    }
+
+    if (pluginResult.status === "fulfilled") {
+      let parsedCatalog: PluginCatalog = { installed: [], available: [] };
       try {
-        const c = JSON.parse(av);
+        const c = JSON.parse(pluginResult.value);
         if (c && Array.isArray(c.available)) parsedCatalog = c;
       } catch { /* ignore */ }
-      setMarketplaces(parsedList);
       setCatalog(parsedCatalog);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
+    } else {
+      nextError = nextError ?? String(pluginResult.reason);
+      setCatalog({ installed: [], available: [] });
     }
+
+    if (applicationResult.status === "fulfilled") {
+      setApplications(applicationResult.value);
+    } else {
+      nextError = nextError ?? String(applicationResult.reason);
+      setApplications([]);
+    }
+
+    if (applicationRunsResult.status === "fulfilled") {
+      setAppRunResults(latestApplicationRuns(applicationRunsResult.value));
+    } else {
+      nextError = nextError ?? String(applicationRunsResult.reason);
+      setAppRunResults({});
+    }
+
+    setError(nextError);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -201,6 +311,256 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
     setCustomSource("");
   };
 
+  const installGithubApplication = useCallback(async () => {
+    const source = appGithubSource.trim();
+    if (!source) return;
+    setBusy(`app-github:${source}`);
+    setError(null);
+    try {
+      const entry = await invoke<PixieApplicationEntry>("application_install_github", {
+        source,
+        branch: appGithubBranch.trim() || null,
+      });
+      setAppGithubSource("");
+      setAppGithubBranch("");
+      setPendingOpenApplicationId(entry.id);
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [appGithubSource, appGithubBranch, reload]);
+
+  const installLocalApplication = useCallback(
+    async (link: boolean) => {
+      setError(null);
+      try {
+        const path = await invoke<string | null>("pick_folder");
+        if (!path) return;
+        setBusy(link ? `app-link:${path}` : `app-local:${path}`);
+        const entry = await invoke<PixieApplicationEntry>("application_install_local", { path, link });
+        setPendingOpenApplicationId(entry.id);
+        await reload();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [reload],
+  );
+
+  const openApplication = useCallback(async (id: string) => {
+    setBusy(`app-open:${id}`);
+    setError(null);
+    try {
+      const content = await invoke<string>("application_entry_content", { id });
+      setApplicationContent((prev) => ({ ...prev, [id]: content }));
+      setExpandedAppId(id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const autoOpenedApplicationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openApplicationId || autoOpenedApplicationRef.current === openApplicationId) return;
+    if (!applications.some((app) => app.id === openApplicationId)) return;
+    autoOpenedApplicationRef.current = openApplicationId;
+    const timer = window.setTimeout(() => void openApplication(openApplicationId), 0);
+    return () => window.clearTimeout(timer);
+  }, [applications, openApplication, openApplicationId]);
+
+  useEffect(() => {
+    if (!pendingOpenApplicationId) return;
+    if (!applications.some((app) => app.id === pendingOpenApplicationId)) return;
+    const id = pendingOpenApplicationId;
+    const timer = window.setTimeout(() => {
+      setPendingOpenApplicationId(null);
+      void openApplication(id);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [applications, openApplication, pendingOpenApplicationId]);
+
+  // Resolve the engine a run should use: the app's picked engine if still
+  // ready, else the global default if ready, else the first ready engine.
+  const effectiveRunEngine = useCallback(
+    (appId: string): AgentEngineId => {
+      const picked = appRunEngines[appId];
+      if (picked && readyEngineIds.includes(picked)) return picked;
+      if (readyEngineIds.includes(defaultEngine)) return defaultEngine;
+      return readyEngineIds[0] ?? defaultEngine;
+    },
+    [appRunEngines, defaultEngine, readyEngineIds],
+  );
+
+  // Keep picks readable through the handler closure without stale-state bugs.
+  const appRunEnginesRef = useRef(appRunEngines);
+  const appRunModelsRef = useRef(appRunModels);
+  useEffect(() => {
+    appRunEnginesRef.current = appRunEngines;
+  }, [appRunEngines]);
+  useEffect(() => {
+    appRunModelsRef.current = appRunModels;
+  }, [appRunModels]);
+
+  useEffect(() => {
+    const handleApplicationMessage = (event: MessageEvent) => {
+      if (event.source !== applicationFrameRef.current?.contentWindow) return;
+      const message = event.data as Record<string, unknown> | null;
+      if (!message || message.type !== APPLICATION_RUN_MESSAGE_TYPE) return;
+      if (typeof message.requestId !== "string" || typeof message.actionId !== "string") return;
+      if (!message.inputs || typeof message.inputs !== "object" || Array.isArray(message.inputs)) return;
+      const appId = expandedAppId;
+      if (!appId) return;
+      const picked = appRunEnginesRef.current[appId];
+      const engine =
+        picked && readyEngineIds.includes(picked)
+          ? picked
+          : readyEngineIds.includes(defaultEngine)
+            ? defaultEngine
+            : (readyEngineIds[0] ?? defaultEngine);
+      void invoke<PixieApplicationRunRecord>("application_run", {
+        id: appId,
+        actionId: message.actionId,
+        inputs: message.inputs,
+        engine,
+        model: appRunModelsRef.current[appId] ?? null,
+      }).then((record) => {
+        setAppRunResults((prev) => ({ ...prev, [appId]: record }));
+        applicationFrameRef.current?.contentWindow?.postMessage({
+          type: APPLICATION_RUN_RESULT_MESSAGE_TYPE,
+          requestId: message.requestId,
+          record,
+        }, "*");
+      }).catch((error) => {
+        applicationFrameRef.current?.contentWindow?.postMessage({
+          type: APPLICATION_RUN_RESULT_MESSAGE_TYPE,
+          requestId: message.requestId,
+          error: String(error),
+        }, "*");
+      });
+    };
+    window.addEventListener("message", handleApplicationMessage);
+    return () => window.removeEventListener("message", handleApplicationMessage);
+  }, [defaultEngine, expandedAppId, readyEngineIds]);
+
+  const ensureApplicationInputs = useCallback((app: PixieApplicationEntry) => {
+    setAppInputs((prev) => {
+      if (prev[app.id]) return prev;
+      return {
+        ...prev,
+        [app.id]: applicationInputDefaults(app),
+      };
+    });
+  }, []);
+
+  const updateApplicationInput = useCallback((appId: string, fieldId: string, value: unknown) => {
+    setAppInputs((prev) => ({
+      ...prev,
+      [appId]: {
+        ...(prev[appId] ?? {}),
+        [fieldId]: value,
+      },
+    }));
+  }, []);
+
+  const runApplication = useCallback(
+    async (app: PixieApplicationEntry, actionId: string) => {
+      ensureApplicationInputs(app);
+      setBusy(`app-run:${app.id}:${actionId}`);
+      setError(null);
+      try {
+        const record = await invoke<PixieApplicationRunRecord>("application_run", {
+          id: app.id,
+          actionId,
+          inputs: applicationActionInputs(app, actionId, appInputs[app.id]),
+          engine: effectiveRunEngine(app.id),
+          model: appRunModels[app.id] ?? null,
+        });
+        setAppRunResults((prev) => ({ ...prev, [app.id]: record }));
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [appInputs, appRunModels, effectiveRunEngine, ensureApplicationInputs],
+  );
+
+  const uninstallApplication = useCallback(
+    async (id: string) => {
+      if (!window.confirm(t("marketplace.applications.uninstallConfirm"))) return;
+      setBusy(`app-uninstall:${id}`);
+      setError(null);
+      try {
+        await invoke("application_uninstall", { id });
+        await reload();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [reload, t],
+  );
+
+  const renderApplicationInput = (app: PixieApplicationEntry, field: PixieApplicationField) => {
+    const value = appInputs[app.id]?.[field.id] ?? defaultFieldValue(field);
+    const label = field.label ?? field.id;
+    const baseClass = "w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)]";
+
+    if (field.type === "boolean") {
+      return (
+        <label key={field.id} className="flex items-center gap-2 text-xs text-[var(--text-primary)]">
+          <input
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(e) => updateApplicationInput(app.id, field.id, e.target.checked)}
+          />
+          <span>{label}</span>
+        </label>
+      );
+    }
+
+    return (
+      <label key={field.id} className="grid gap-1">
+        <span className="text-xs text-[var(--text-secondary)]">
+          {label}{field.required ? " *" : ""}
+        </span>
+        {field.type === "textarea" ? (
+          <textarea
+            value={String(value ?? "")}
+            onChange={(e) => updateApplicationInput(app.id, field.id, e.target.value)}
+            rows={4}
+            className={baseClass}
+          />
+        ) : field.type === "select" ? (
+          <select
+            value={String(value ?? "")}
+            onChange={(e) => updateApplicationInput(app.id, field.id, e.target.value)}
+            className={baseClass}
+          >
+            <option value="">{t("common.optional")}</option>
+            {(field.options ?? []).map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type={field.type === "number" ? "number" : "text"}
+            value={String(value ?? "")}
+            onChange={(e) => updateApplicationInput(app.id, field.id, field.type === "number" ? e.target.valueAsNumber || e.target.value : e.target.value)}
+            className={baseClass}
+          />
+        )}
+      </label>
+    );
+  };
+
   return (
     <div className="settings-enter flex flex-col flex-1 min-h-0 bg-[var(--bg-primary)] overflow-hidden">
         {/* Header — drag empty areas to move window */}
@@ -208,7 +568,9 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
           onMouseDown={handleDragRegion}
           className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)]"
         >
-          <h2 className="text-sm font-semibold text-[var(--text-primary)]">{t("marketplace.title")}</h2>
+          <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+            {section === "skills" ? t("marketplace.title") : t("marketplace.applications.title")}
+          </h2>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
@@ -222,6 +584,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
         </div>
 
         {/* Tabs */}
+        {section === "skills" && (
         <div className="shrink-0 flex items-center gap-1 px-2 border-b border-[var(--border-color)] overflow-x-auto">
           <button
             onClick={() => setActiveRepo(INSTALLED_TAB)}
@@ -271,6 +634,7 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
             +
           </button>
         </div>
+        )}
 
         {error && (
           <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-start justify-between gap-3">
@@ -283,7 +647,263 @@ export default function MarketplacePanel({ onClose, onSkillsChanged }: Marketpla
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto">
-          {activeRepo === INSTALLED_TAB ? (
+          {section === "applications" ? (
+            <div className="flex flex-col h-full">
+              <div className="shrink-0 p-4 border-b border-[var(--border-color)]">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-medium text-[var(--text-primary)]">
+                      {t("marketplace.applications.studioTitle")}
+                    </h3>
+                    <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                      {t("marketplace.applications.studioHint")}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setCreateOpen(true)}
+                    className="px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-colors"
+                  >
+                    {t("marketplace.applications.startStudio")}
+                  </button>
+                </div>
+                <h3 className="text-sm font-medium text-[var(--text-primary)] mb-2">
+                  {t("marketplace.applications.installTitle")}
+                </h3>
+                <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_auto] gap-2">
+                  <input
+                    value={appGithubSource}
+                    onChange={(e) => setAppGithubSource(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void installGithubApplication();
+                    }}
+                    placeholder={t("marketplace.applications.githubPlaceholder")}
+                    className="min-w-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)]"
+                  />
+                  <input
+                    value={appGithubBranch}
+                    onChange={(e) => setAppGithubBranch(e.target.value)}
+                    placeholder={t("marketplace.applications.branchPlaceholder")}
+                    className="min-w-32 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)]"
+                  />
+                  <button
+                    onClick={() => installGithubApplication()}
+                    disabled={!appGithubSource.trim() || busy !== null}
+                    className="px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                  >
+                    {busy?.startsWith("app-github:") ? "…" : t("marketplace.applications.installGithub")}
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <button
+                    onClick={() => installLocalApplication(false)}
+                    disabled={busy !== null}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:opacity-50 transition-colors"
+                  >
+                    {t("marketplace.applications.installLocal")}
+                  </button>
+                  <button
+                    onClick={() => installLocalApplication(true)}
+                    disabled={busy !== null}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:opacity-50 transition-colors"
+                  >
+                    {t("marketplace.applications.linkLocal")}
+                  </button>
+      </div>
+      {createOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" onMouseDown={() => setCreateOpen(false)}>
+          <div className="w-full max-w-lg rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-5 shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+            <h3 className="text-base font-semibold text-[var(--text-primary)]">{t("marketplace.applications.createTitle")}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{t("marketplace.applications.createHint")}</p>
+            <textarea
+              autoFocus
+              value={applicationBrief}
+              onChange={(event) => setApplicationBrief(event.target.value)}
+              placeholder={t("marketplace.applications.createPlaceholder")}
+              rows={6}
+              className="mt-4 w-full resize-none rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)] focus:border-[var(--accent)]"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setCreateOpen(false)} className="rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">{t("common.cancel")}</button>
+              <button
+                disabled={!applicationBrief.trim()}
+                onClick={() => {
+                  const brief = applicationBrief.trim();
+                  setCreateOpen(false);
+                  setApplicationBrief("");
+                  onStartApplicationStudio(brief);
+                }}
+                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+              >{t("marketplace.applications.chooseLocation")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+
+              <div className="flex-1 overflow-y-auto">
+                {loading ? (
+                  <div className="px-4 py-8 text-center text-xs text-[var(--text-secondary)]">
+                    {t("common.loading")}
+                  </div>
+                ) : applications.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-xs text-[var(--text-secondary)]">
+                    {t("marketplace.applications.empty")}
+                  </div>
+                ) : (
+                  applications.map((app) => {
+                    const expanded = expandedAppId === app.id;
+                    const result = appRunResults[app.id];
+                    const primaryAction = app.actions[0];
+                    return (
+                      <div key={app.id} className="px-4 py-3 border-b border-[var(--border-color)]">
+                        <div className="flex items-start gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium text-[var(--text-primary)] truncate">
+                                {app.name}
+                              </span>
+                              {app.version && (
+                                <span className="text-[10px] text-[var(--text-secondary)] opacity-70">
+                                  v{app.version}
+                                </span>
+                              )}
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                                {app.source.type}
+                              </span>
+                            </div>
+                            {app.description && (
+                              <p className="text-xs text-[var(--text-secondary)] mt-1 line-clamp-2">
+                                {app.description}
+                              </p>
+                            )}
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {app.permissions.slice(0, 5).map((permission) => (
+                                <span
+                                  key={permission}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
+                                >
+                                  {permission}
+                                </span>
+                              ))}
+                              {app.permissions.length > 5 && (
+                                <span className="text-[10px] text-[var(--text-secondary)]">
+                                  +{app.permissions.length - 5}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-[var(--text-secondary)] opacity-60 mt-1 truncate">
+                              {app.outputs.length} {t("marketplace.applications.outputs")} · {app.actions.length} {t("marketplace.applications.actions")}
+                            </p>
+                          </div>
+                          <div className="shrink-0 flex items-center gap-2">
+                            <button
+                              onClick={() => {
+                                ensureApplicationInputs(app);
+                                setExpandedAppId(expanded ? null : app.id);
+                              }}
+                              disabled={busy !== null}
+                              className="px-3 py-1.5 rounded-lg text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white transition-colors"
+                            >
+                              {expanded ? t("marketplace.applications.hide") : t("marketplace.applications.use")}
+                            </button>
+                            <button
+                              onClick={() => openApplication(app.id)}
+                              disabled={busy !== null}
+                              className="px-3 py-1.5 rounded-lg text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:opacity-50 transition-colors"
+                            >
+                              {busy === `app-open:${app.id}` ? "…" : t("marketplace.applications.open")}
+                            </button>
+                            <button
+                              onClick={() => uninstallApplication(app.id)}
+                              disabled={busy !== null}
+                              className="px-3 py-1.5 rounded-lg text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:text-red-400 disabled:opacity-50 transition-colors"
+                            >
+                              {busy === `app-uninstall:${app.id}` ? "…" : t("marketplace.uninstall")}
+                            </button>
+                          </div>
+                        </div>
+                        {expanded && (
+                          <div className="mt-3 grid gap-3">
+                            {applicationContent[app.id] && (
+                              <div className="h-[560px] overflow-hidden rounded-xl border border-[var(--border-color)] bg-white">
+                                <iframe
+                                  ref={applicationFrameRef}
+                                  title={app.name}
+                                  srcDoc={applicationContent[app.id]}
+                                  sandbox="allow-scripts"
+                                  className="h-full w-full border-0"
+                                />
+                              </div>
+                            )}
+                            {app.inputs.length > 0 && (
+                              <div className="grid gap-2">
+                                {app.inputs.map((field) => renderApplicationInput(app, field))}
+                              </div>
+                            )}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <EngineModelPicker
+                                readyEngineIds={readyEngineIds}
+                                engineModelConfigs={engineModelConfigs}
+                                engine={effectiveRunEngine(app.id)}
+                                onEngineChange={(engine) =>
+                                  setAppRunEngines((prev) => ({ ...prev, [app.id]: engine }))
+                                }
+                                model={appRunModels[app.id]}
+                                onModelChange={(model) =>
+                                  setAppRunModels((prev) => ({ ...prev, [app.id]: model }))
+                                }
+                                disabled={busy !== null}
+                              />
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {app.actions.map((action) => (
+                                <button
+                                  key={action.id}
+                                  onClick={() => runApplication(app, action.id)}
+                                  disabled={busy !== null || !primaryAction}
+                                  className="px-3 py-1.5 rounded-lg text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white transition-colors"
+                                >
+                                  {busy === `app-run:${app.id}:${action.id}` ? "…" : (action.label ?? action.id)}
+                                </button>
+                              ))}
+                            </div>
+                            {result && (
+                              <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <span className="text-xs font-medium text-[var(--text-primary)]">
+                                    {t("marketplace.applications.lastResult")}
+                                  </span>
+                                  <span className="text-[10px] text-[var(--text-secondary)]">
+                                    {applicationRunStatusLabel(result.status, t)} · {result.engine}
+                                    {result.model ? ` · ${result.model}` : ""}
+                                  </span>
+                                </div>
+                                <div className="grid gap-2">
+                                  {result.error && (
+                                    <div className={`text-xs break-words ${result.status === "completed_with_parse_warning" ? "text-yellow-300" : "text-red-300"}`}>
+                                      {result.error ?? t("marketplace.applications.runFailed")}
+                                    </div>
+                                  )}
+                                  {Object.entries(result.outputs).map(([key, value]) => (
+                                    <div key={key}>
+                                      <div className="text-[10px] uppercase text-[var(--text-secondary)]">{key}</div>
+                                      <pre className="mt-1 whitespace-pre-wrap break-words text-xs text-[var(--text-primary)] font-sans">
+                                        {formatOutputValue(value)}
+                                      </pre>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : activeRepo === INSTALLED_TAB ? (
             <div className="flex flex-col h-full">
               {catalog.installed.length === 0 ? (
                 <div className="px-4 py-8 text-center text-xs text-[var(--text-secondary)]">

@@ -218,7 +218,12 @@ pub async fn spawn_continue(
 }
 
 /// Spawn a headless Codex process for scheduled tasks.
-pub async fn spawn_headless(_session_id: &str, message: &str, cwd: Option<&str>) -> Result<Child> {
+pub async fn spawn_headless(
+    _session_id: &str,
+    message: &str,
+    cwd: Option<&str>,
+    model_override: Option<&str>,
+) -> Result<Child> {
     spawn_with_args(
         vec![
             "exec".into(),
@@ -228,7 +233,7 @@ pub async fn spawn_headless(_session_id: &str, message: &str, cwd: Option<&str>)
         ],
         message,
         cwd,
-        None,
+        model_override,
     )
     .await
 }

@@ -165,6 +165,7 @@
     "settings": "Settings",
     "tasks": "Scheduled Tasks",
     "loops": "Loop Tasks",
+    "applications": "Applications",
     "skills": "Skill Marketplace",
     "noWorkspaces": "No workspaces yet",
     "recentChats": "Recent chats",
@@ -232,6 +233,7 @@
     "kbActive": "Knowledge base active — click to disable",
     "kbInclude": "Include knowledge base context",
     "selectModel": "Select model",
+    "selectEngine": "Switch engine",
     "customModelPlaceholder": "Custom model...",
     "autoSuffix": "(auto)"
   },
@@ -438,6 +440,10 @@
   },
   "marketplace": {
     "title": "Skill Marketplace",
+    "sections": {
+      "skills": "Skills",
+      "applications": "Applications"
+    },
     "search": "Search skills...",
     "install": "Install",
     "uninstall": "Uninstall",
@@ -459,6 +465,36 @@
       "knowledgeWork": "Knowledge Work",
       "plusSkills": "Plus Skills",
       "composio": "ComposioHQ"
+    },
+    "applications": {
+      "title": "Applications",
+      "studioTitle": "Application Studio",
+      "studioHint": "Create an AI-native app with data input, in-app chat, dynamic AI state, and a live preview.",
+      "startStudio": "Build AI app",
+      "createTitle": "What would you like to build?",
+      "createHint": "Describe the users, input data, and desired result. Pixie will provide the implementation rules to the agent.",
+      "createPlaceholder": "For example: Build a contract review assistant that highlights risky clauses and suggests revisions.",
+      "chooseLocation": "Choose location",
+      "installTitle": "Install existing app",
+      "githubPlaceholder": "GitHub owner/repo or git URL",
+      "branchPlaceholder": "Branch",
+      "installGithub": "Install from GitHub",
+      "installLocal": "Install local directory",
+      "linkLocal": "Link local app",
+      "empty": "No applications installed",
+      "uninstallConfirm": "Uninstall this application? Linked source files and application data will be kept.",
+      "use": "Use",
+      "hide": "Hide",
+      "open": "Open",
+      "lastResult": "Last result",
+      "runFailed": "Application run failed",
+      "statusOk": "Completed",
+      "statusError": "Failed",
+      "statusOutputContractFailed": "Output contract failed",
+      "statusParseWarning": "Parse warning",
+      "outputs": "outputs",
+      "actions": "actions",
+      "runSettings": "Run with"
     }
   },
   "search": {
@@ -511,7 +547,12 @@
     "diffCommit": "Diff {{hash}}",
     "enterFullscreen": "Enter fullscreen",
     "exitFullscreen": "Exit fullscreen",
-    "plainTextExt": "text"
+    "plainTextExt": "text",
+    "applicationReady": "Application is valid and ready to install",
+    "applicationInvalid": "Application is not ready; hover for details",
+    "applicationChecking": "Checking application…",
+    "applicationInstalling": "Installing…",
+    "installAndUse": "Install and use"
   },
   "diffViewer": {
     "renamedNoChanges": "Renamed — no content changes",

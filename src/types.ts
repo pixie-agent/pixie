@@ -69,6 +69,12 @@ export interface Conversation {
   loopTaskId?: string;
   /** Display name of the parent loop task (for sidebar grouping header). */
   loopTaskName?: string;
+  /** Product-level mode marker. Keeps specialized sessions stable even if users rename them. */
+  mode?: "application-studio" | string;
+  /** Application Studio workspace path. */
+  applicationPath?: string;
+  /** Application Studio template id used when the session was created. */
+  templateId?: string;
 }
 
 export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex";
@@ -337,6 +343,101 @@ export interface PluginInfo {
 export interface PluginCatalog {
   installed: PluginInfo[];
   available: PluginInfo[];
+}
+
+export type PixieApplicationSourceType = "github" | "local" | "local-link";
+
+export interface PixieApplicationSource {
+  type: PixieApplicationSourceType;
+  url?: string;
+  path?: string;
+  branch?: string;
+  commit?: string;
+  linked?: boolean;
+}
+
+export interface PixieApplicationField {
+  id: string;
+  label?: string;
+  type: string;
+  required?: boolean;
+  default?: unknown;
+  options?: string[];
+  schema?: string;
+  path?: string;
+  preview?: boolean;
+  description?: string;
+}
+
+export interface PixieApplicationTemplateRef {
+  id: string;
+  version?: string;
+}
+
+export interface PixieApplicationAction {
+  id: string;
+  label?: string;
+  description?: string;
+  inputs?: string[];
+  outputs?: string[];
+  mode?: "agent" | "workflow" | "ui" | "tool" | string;
+  workflow?: string;
+}
+
+export interface PixieApplicationManifest {
+  schemaVersion?: string;
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  author?: {
+    name?: string;
+    url?: string;
+  };
+  template?: PixieApplicationTemplateRef;
+  entry: string;
+  agent?: string;
+  permissions?: string[];
+  inputs?: PixieApplicationField[];
+  outputs?: PixieApplicationField[];
+  actions?: PixieApplicationAction[];
+}
+
+export interface PixieApplicationEntry {
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  author?: PixieApplicationManifest["author"];
+  template?: PixieApplicationTemplateRef;
+  entry: string;
+  agent?: string;
+  permissions: string[];
+  inputs: PixieApplicationField[];
+  outputs: PixieApplicationField[];
+  actions: PixieApplicationAction[];
+  source: PixieApplicationSource;
+  installPath: string;
+  dataPath: string;
+  installedAt: string;
+}
+
+export interface PixieApplicationRunRecord {
+  id: string;
+  appId: string;
+  appName: string;
+  appVersion?: string;
+  sourceCommit?: string;
+  actionId: string;
+  engine: AgentEngineId | string;
+  model?: string;
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  rawResult: string;
+  status: "ok" | "error" | "output_contract_failed" | "completed_with_parse_warning" | string;
+  error?: string;
+  startedAt: string;
+  finishedAt: string;
 }
 
 /** A preview-open request (what callers pass to the handler). */

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -83,11 +83,8 @@ pub async fn summarize_with_guard(input: SummarizeInput) -> Result<()> {
         input.title_hint.trim().to_string()
     };
     let slug = slugify(&title);
-    let vault_dir = vault_path.join("Pixie");
-
-    // Ensure the Pixie/ subdirectory exists.
-    std::fs::create_dir_all(&vault_dir)
-        .with_context(|| format!("create vault dir {}", vault_dir.display()))?;
+    let vault_dir =
+        crate::ensure_vault_pixie_dir_no_symlink(&vault_path).map_err(|e| anyhow::anyhow!(e))?;
 
     let note_path = resolve_note_path(&vault_dir, &slug, &conv_id);
 

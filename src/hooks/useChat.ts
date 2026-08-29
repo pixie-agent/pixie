@@ -1009,6 +1009,19 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     return preferredWorkspaceId ?? newConversationWorkspaceId ?? defaultWorkspacePath ?? activeWorkspaceId ?? sortedWorkspaces[0]?.id ?? null;
   }, [newConversationWorkspaceId, defaultWorkspacePath, activeWorkspaceId, sortedWorkspaces]);
 
+  const addWorkspacePath = useCallback((path: string) => {
+    const trimmed = path.trim();
+    if (!trimmed) return "";
+    const name = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed;
+    setWorkspaces((prev) =>
+      prev.some((w) => w.path === trimmed) ? prev : [...prev, { id: trimmed, path: trimmed, name }]
+    );
+    setAllConversations((prev) => ({ ...prev, [trimmed]: prev[trimmed] ?? [] }));
+    setActiveWorkspaceId(trimmed);
+    setError(null);
+    return trimmed;
+  }, []);
+
   // Change the configured default working directory. Config-only: it persists
   // the choice and updates what `get_default_workspace_path` returns, but does
   // NOT move existing workspaces or conversations — the new default takes
@@ -1026,7 +1039,12 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     } catch { /* ignore */ }
   }, []);
 
-  const createConversation = useCallback((workspaceId?: string, engine?: AgentEngineId, model?: string) => {
+  const createConversation = useCallback((
+    workspaceId?: string,
+    engine?: AgentEngineId,
+    model?: string,
+    metadata?: Partial<Pick<Conversation, "mode" | "applicationPath" | "templateId">>,
+  ) => {
     const id = generateId();
     const conv: Conversation = {
       id, title: i18n.t("sidebar.newAgent"), messages: [],
@@ -1034,6 +1052,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       engine: engine ?? defaultEngine,
       model,
       pendingWorkspaceId: workspaceId ?? newConversationWorkspaceId ?? undefined,
+      ...metadata,
     };
     // Sync index immediately so `activeConversation` resolves on the next render.
     convIndexRef.current.set(id, UNBOUND_WORKSPACE_ID);
@@ -1116,6 +1135,30 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       engine: engine ?? null,
     }).catch((e) => {
       console.error("[setConversationModel] backend call failed:", e);
+    });
+  }, []);
+
+  /** Switch a conversation to a different engine. The per-conversation model
+   *  override is cleared (it belongs to the old engine's model space). The
+   *  backend call rebinds the engine and kills any persistent session so the
+   *  next send_message respawns under the new engine. */
+  const setConversationEngine = useCallback((id: string, engine: AgentEngineId) => {
+    const wsId = findWorkspaceForConversation(allConversationsRef.current, id, convIndexRef);
+    if (!wsId) return;
+
+    setAllConversations((prev) => ({
+      ...prev,
+      [wsId]: (prev[wsId] ?? []).map((c) =>
+        c.id === id ? { ...c, engine, model: undefined } : c
+      ),
+    }));
+
+    invoke("update_conversation_model", {
+      conversationId: id,
+      model: null,
+      engine,
+    }).catch((e) => {
+      console.error("[setConversationEngine] backend call failed:", e);
     });
   }, []);
 
@@ -1563,10 +1606,12 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     newConversationWorkspaceId,
     chooseActiveConversationWorkspace,
     error,
+    addWorkspacePath,
     createConversation,
     switchConversation,
     renameConversation,
     setConversationModel,
+    setConversationEngine,
     deleteConversation,
     sendMessage,
     retryFailedMessage,

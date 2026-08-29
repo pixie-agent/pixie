@@ -20,6 +20,7 @@ interface SidebarProps {
   onOpenTasks: () => void;
   onOpenLoops: () => void;
   onOpenSkills: () => void;
+  onOpenApplications: () => void;
   isOpen: boolean;
   onClose: () => void;
   defaultEngine: AgentEngineId;
@@ -357,6 +358,7 @@ export default function Sidebar({
   onOpenTasks,
   onOpenLoops,
   onOpenSkills,
+  onOpenApplications,
   isOpen,
   onClose,
   defaultEngine,
@@ -627,6 +629,18 @@ export default function Sidebar({
               <path d="M7 4v3l2 1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             {t('sidebar.tasks')}
+          </button>
+          <button
+            onClick={onOpenApplications}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <rect x="2" y="2" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.2" />
+              <rect x="8" y="2" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.2" />
+              <rect x="2" y="8" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.2" />
+              <path d="M9 10h3M10.5 8.5v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            </svg>
+            {t('sidebar.applications')}
           </button>
           <button
             onClick={onOpenSkills}

@@ -62,8 +62,14 @@ impl SearchIndex {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
 
-            let content = match std::fs::read_to_string(&path) {
+            let content = match crate::read_regular_text_file_no_symlink_limited(&path, 2_000_000) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -226,18 +232,17 @@ impl SearchIndex {
     pub fn save_to_disk(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string(self)?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            crate::ensure_directory_no_symlink(parent, "Search index directory")
+                .map_err(anyhow::Error::msg)?;
         }
-        // Atomic write: temp file + rename.
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json)?;
-        std::fs::rename(&tmp, path)?;
+        crate::atomic_write(path, &json).map_err(anyhow::Error::msg)?;
         Ok(())
     }
 
     /// Load a previously saved index from disk.
     pub fn load_from_disk(path: &Path) -> Result<Self> {
-        let json = std::fs::read_to_string(path)?;
+        let json = crate::read_regular_text_file_no_symlink_limited(path, 10_000_000)
+            .map_err(anyhow::Error::msg)?;
         let index: Self = serde_json::from_str(&json)?;
         Ok(index)
     }

@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { FileEntry, PreviewTarget, DiffViewMode } from "../types";
+import type { FileEntry, PreviewTarget, DiffViewMode, PixieApplicationEntry, AgentEngineId, EngineModelConfigs } from "../types";
 import { getExtension, PREVIEW_EXTENSIONS, IMAGE_EXTENSIONS, basename } from "../preview";
 import { languageFromExt } from "../lib/languages";
 import { segmentColor, tokenizeSource, type TokenSegment } from "../lib/highlight";
@@ -14,13 +14,20 @@ import { openExternal } from "../openExternal";
 import Terminal from "./Terminal";
 
 const DiffViewer = lazy(() => import("./DiffViewer"));
+const EngineModelPicker = lazy(() => import("./EngineModelPicker"));
 
 interface RightPanelProps {
   workspacePath: string;
   previewTarget: PreviewTarget | null;
+  applicationMode?: boolean;
+  defaultEngine?: AgentEngineId;
+  /** Engines that are installed + ready; limits the application run picker. */
+  readyEngineIds?: AgentEngineId[];
+  engineModelConfigs?: EngineModelConfigs;
+  onApplicationInstalled?: (id: string) => void;
 }
 
-type Tab = "files" | "preview" | "git" | "terminal";
+type Tab = "files" | "app" | "preview" | "git" | "terminal";
 
 const CODE_EXTENSIONS = new Set([
   "js", "jsx", "ts", "tsx", "rs", "py", "go", "java", "c", "cpp", "h", "hpp",
@@ -40,6 +47,8 @@ const RICH_PREVIEW_CHAR_LIMIT = 20_000;
 const HIGHLIGHT_BATCH_LINES = 160;
 const EXTERNAL_LINK_RE = /^(https?:\/\/|mailto:|tel:|obsidian:\/\/)/i;
 const HTML_PREVIEW_LINK_MESSAGE_TYPE = "pixie-preview-open-external";
+const APPLICATION_RUN_MESSAGE_TYPE = "pixie-application-run";
+const APPLICATION_RUN_RESULT_MESSAGE_TYPE = "pixie-application-run-result";
 
 const MD_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: "0.5rem", fontSize: "0.75rem" };
 const REMARK_PLUGINS = [remarkGfm];
@@ -53,6 +62,24 @@ function isHtmlPreviewLinkMessage(value: unknown): value is { type: typeof HTML_
   if (!value || typeof value !== "object") return false;
   const msg = value as Record<string, unknown>;
   return msg.type === HTML_PREVIEW_LINK_MESSAGE_TYPE && typeof msg.href === "string";
+}
+
+function isApplicationRunMessage(value: unknown): value is {
+  type: typeof APPLICATION_RUN_MESSAGE_TYPE;
+  requestId: string;
+  actionId: string;
+  inputs: Record<string, unknown>;
+} {
+  if (!value || typeof value !== "object") return false;
+  const msg = value as Record<string, unknown>;
+  return (
+    msg.type === APPLICATION_RUN_MESSAGE_TYPE &&
+    typeof msg.requestId === "string" &&
+    typeof msg.actionId === "string" &&
+    !!msg.inputs &&
+    typeof msg.inputs === "object" &&
+    !Array.isArray(msg.inputs)
+  );
 }
 
 function htmlPreviewSrcDoc(content: string): string {
@@ -355,6 +382,16 @@ function PanelTabIcon({ tab }: { tab: Tab }) {
       </svg>
     );
   }
+  if (tab === "app") {
+    return (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7" />
+        <rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7" />
+        <rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7" />
+        <path d="M15 16.5h4M17 14.5v4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+    );
+  }
   if (tab === "git") {
     return (
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -374,7 +411,7 @@ function PanelTabIcon({ tab }: { tab: Tab }) {
   );
 }
 
-function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
+function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false, defaultEngine, readyEngineIds, engineModelConfigs, onApplicationInstalled }: RightPanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("files");
   const [contentTab, setContentTab] = useState<Tab>("files");
@@ -398,6 +435,32 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
   const [panelFullscreen, setPanelFullscreen] = useState(false);
   const previewLoadTokenRef = useRef(0);
   const previewRenderTokenRef = useRef(0);
+  const appPreviewPathRef = useRef<string | null>(null);
+  const appModeAutoOpenRef = useRef<string | null>(null);
+
+  // Application Studio preview state. Kept separate from the normal file
+  // preview so the Preview tab preserves its original behavior.
+  const [appPreviewFile, setAppPreviewFile] = useState<FileEntry | null>(null);
+  const [appPreviewContent, setAppPreviewContent] = useState<string | null>(null);
+  const [appPreviewLoading, setAppPreviewLoading] = useState(false);
+  const appPreviewContentRef = useRef<string | null>(null);
+  const appPreviewLoadTokenRef = useRef(0);
+  const appPreviewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const [appValidation, setAppValidation] = useState<"checking" | "ready" | "invalid">("checking");
+  const [appValidationError, setAppValidationError] = useState<string | null>(null);
+  const [appInstalling, setAppInstalling] = useState(false);
+  // Engine/model selection for runs triggered inside the App preview tab.
+  // null = not picked yet; resolved against ready engines at run time.
+  const [appRunEngine, setAppRunEngine] = useState<AgentEngineId | null>(null);
+  const [appRunModel, setAppRunModel] = useState<string | undefined>(undefined);
+  const appRunEngineRef = useRef<AgentEngineId | null>(null);
+  const appRunModelRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    appRunEngineRef.current = appRunEngine;
+  }, [appRunEngine]);
+  useEffect(() => {
+    appRunModelRef.current = appRunModel;
+  }, [appRunModel]);
 
   // Git state
   const [gitStatus, setGitStatus] = useState("");
@@ -547,13 +610,45 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (!isHtmlPreviewLinkMessage(event.data)) return;
-      if (!isExternalPreviewLink(event.data.href)) return;
-      void openExternal(event.data.href);
+      if (isHtmlPreviewLinkMessage(event.data)) {
+        if (!isExternalPreviewLink(event.data.href)) return;
+        void openExternal(event.data.href);
+        return;
+      }
+      if (!applicationMode || !isApplicationRunMessage(event.data)) return;
+      if (event.source !== appPreviewFrameRef.current?.contentWindow) return;
+      const { requestId, actionId, inputs } = event.data;
+      // Resolve engine at run time: picked (if still ready) → default → builtin.
+      const picked = appRunEngineRef.current;
+      const engine =
+        picked && (readyEngineIds ?? []).includes(picked)
+          ? picked
+          : defaultEngine && (readyEngineIds ?? []).includes(defaultEngine)
+            ? defaultEngine
+            : (defaultEngine ?? null);
+      void invoke("application_studio_run", {
+        path: workspacePath,
+        actionId,
+        inputs,
+        engine,
+        model: appRunModelRef.current ?? null,
+      })
+        .then((record) => {
+          appPreviewFrameRef.current?.contentWindow?.postMessage(
+            { type: APPLICATION_RUN_RESULT_MESSAGE_TYPE, requestId, record },
+            "*",
+          );
+        })
+        .catch((error) => {
+          appPreviewFrameRef.current?.contentWindow?.postMessage(
+            { type: APPLICATION_RUN_RESULT_MESSAGE_TYPE, requestId, error: String(error) },
+            "*",
+          );
+        });
     };
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, []);
+  }, [applicationMode, defaultEngine, readyEngineIds, workspacePath]);
 
   const handleTerminalExit = useCallback(
     (ws: string, id: string) => {
@@ -644,6 +739,19 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     loadGit();
   }, [contentTab, loadGit]);
 
+  useEffect(() => {
+    if (!applicationMode) {
+      appModeAutoOpenRef.current = null;
+      if (contentTab === "app") {
+        window.setTimeout(() => activateTab("files"), 0);
+      }
+      return;
+    }
+    if (appModeAutoOpenRef.current === workspacePath) return;
+    appModeAutoOpenRef.current = workspacePath;
+    window.setTimeout(() => activateTab("app"), 0);
+  }, [activateTab, applicationMode, contentTab, workspacePath]);
+
   // Untracked files aren't covered by `git diff HEAD`; surface them separately.
   const untracked = useMemo(
     () =>
@@ -692,6 +800,102 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
       if (previewLoadTokenRef.current === token) setPreviewLoading(false);
     }
   }, [activateTab, t]);
+
+  const openAppPreview = useCallback(async (entry: FileEntry) => {
+    const token = ++appPreviewLoadTokenRef.current;
+    setAppPreviewFile(entry);
+    setAppPreviewLoading(true);
+    setAppPreviewContent(null);
+    appPreviewContentRef.current = null;
+    activateTab("app");
+    try {
+      const content = await invoke<string>("read_file_content", { path: entry.path });
+      if (appPreviewLoadTokenRef.current !== token) return;
+      appPreviewContentRef.current = content;
+      setAppPreviewContent(content);
+    } catch (e) {
+      if (appPreviewLoadTokenRef.current !== token) return;
+      const message = t("rightPanel.failedReadFile", { error: String(e) });
+      appPreviewContentRef.current = message;
+      setAppPreviewContent(message);
+    } finally {
+      if (appPreviewLoadTokenRef.current === token) setAppPreviewLoading(false);
+    }
+  }, [activateTab, t]);
+
+  useEffect(() => {
+    if (contentTab !== "app" || !appPreviewFile || appPreviewLoading) return;
+    const ext = getExtension(appPreviewFile.name);
+    if (ext !== "html" && ext !== "htm") return;
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const content = await invoke<string>("read_file_content", { path: appPreviewFile.path });
+          if (cancelled) return;
+          if (content !== appPreviewContentRef.current) {
+            appPreviewContentRef.current = content;
+            setAppPreviewContent(content);
+          }
+        } catch {
+          // Ignore transient reads while the agent is rewriting the file.
+        }
+      })();
+    }, 900);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [appPreviewFile, appPreviewLoading, contentTab]);
+
+  useEffect(() => {
+    if (!applicationMode) return;
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const tick = async () => {
+      try {
+        const entryPath = await invoke<string>("application_studio_entry_path", { path: workspacePath });
+        if (cancelled) return;
+        setAppValidation("ready");
+        setAppValidationError(null);
+        if (appPreviewPathRef.current !== entryPath) {
+          appPreviewPathRef.current = entryPath;
+          void openAppPreview({ name: basename(entryPath), path: entryPath, is_dir: false, size: 0 });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAppValidation("invalid");
+          setAppValidationError(String(error));
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(tick, 1500);
+        }
+      }
+    };
+
+    timer = window.setTimeout(tick, 500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [applicationMode, openAppPreview, workspacePath]);
+
+  const installStudioApplication = useCallback(async () => {
+    if (appValidation !== "ready" || appInstalling) return;
+    setAppInstalling(true);
+    try {
+      const entry = await invoke<PixieApplicationEntry>("application_install_local", { path: workspacePath, link: true });
+      onApplicationInstalled?.(entry.id);
+    } catch (error) {
+      setAppValidation("invalid");
+      setAppValidationError(String(error));
+    } finally {
+      setAppInstalling(false);
+    }
+  }, [appInstalling, appValidation, onApplicationInstalled, workspacePath]);
 
   const cancelPreviewLoad = useCallback(() => {
     previewLoadTokenRef.current += 1;
@@ -748,6 +952,13 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     setHistory([]);
     setPreviewFile(null);
     setPreviewContent(null);
+    appPreviewPathRef.current = null;
+    appModeAutoOpenRef.current = null;
+    setAppPreviewFile(null);
+    setAppPreviewContent(null);
+    setAppPreviewLoading(false);
+    appPreviewContentRef.current = null;
+    appPreviewLoadTokenRef.current += 1;
     setPanelFullscreen(false);
     setSelectedCommit(null);
     setGitDiff("");
@@ -923,6 +1134,58 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
     return <PlainTextPreview content={previewText} />;
   };
 
+  const renderAppPreviewContent = () => {
+    if (appPreviewLoading) return <PanelLoading />;
+    if (!appPreviewFile) {
+      return (
+        <div className="p-4 space-y-4 text-xs text-[var(--text-secondary)]">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Application Preview</h3>
+            <p className="mt-1 leading-relaxed">
+              Waiting for <code className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">pixie.application.json</code>.
+              This tab previews only the file declared by <code className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)]">manifest.entry</code>.
+            </p>
+          </div>
+          <div className="grid gap-2">
+            {[
+              "Keep all visible app UI in manifest.entry or assets imported by it",
+              "Update pixie.application.json when changing the entry file",
+              "Use Preview for ordinary files; use App for the live application surface",
+              "Use Git to review generated diffs before keeping changes",
+            ].map((item) => (
+              <div key={item} className="flex gap-2 rounded-md border border-[var(--border-color)] bg-[var(--bg-secondary)] px-3 py-2">
+                <span className="text-[var(--accent)]">•</span>
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    const appExt = getExtension(appPreviewFile.name);
+    const text = appPreviewContent ?? "";
+    if (IMAGE_EXTENSIONS.has(appExt)) {
+      return (
+        <div className="w-full h-full p-4 flex items-center justify-center">
+          <img src={convertFileSrc(appPreviewFile.path)} alt={appPreviewFile.name}
+            className="max-w-full max-h-full object-contain rounded" />
+        </div>
+      );
+    }
+    if ((appExt === "html" || appExt === "htm") && text.trim()) {
+      return (
+        <iframe
+          ref={appPreviewFrameRef}
+          srcDoc={htmlPreviewSrcDoc(text)}
+          className="w-full h-full min-h-full border-0 bg-white"
+          sandbox="allow-scripts"
+        />
+      );
+    }
+    return <PlainTextPreview content={text} />;
+  };
+
   return (
     <>
     <div
@@ -942,6 +1205,7 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
             <div className="flex gap-1 shrink-0 relative z-10">
               {([
                 ["files", t("rightPanel.files")],
+                ...(applicationMode ? [["app", "App"] as [Tab, string]] : []),
                 ["preview", t("rightPanel.preview")],
                 ["git", t("rightPanel.git")],
                 ["terminal", t("rightPanel.terminal")],
@@ -1095,6 +1359,52 @@ function RightPanelImpl({ workspacePath, previewTarget }: RightPanelProps) {
               </div>
             </div>
           </>
+        )}
+
+        {/* === APP TAB === */}
+        {!tabLoading && contentTab === "app" && applicationMode && (
+          <div className="flex-1 flex flex-col min-h-0" data-page-find-scope="app-preview">
+            <div className="flex items-center gap-2 border-b border-[var(--border-color)] px-3 py-2">
+              <span className={`h-2 w-2 rounded-full ${appValidation === "ready" ? "bg-emerald-400" : appValidation === "invalid" ? "bg-red-400" : "bg-yellow-400"}`} />
+              <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-secondary)]" title={appValidationError ?? undefined}>
+                {appValidation === "ready" ? t("rightPanel.applicationReady") : appValidation === "invalid" ? t("rightPanel.applicationInvalid") : t("rightPanel.applicationChecking")}
+              </span>
+              {readyEngineIds && readyEngineIds.length > 0 && engineModelConfigs && defaultEngine && (
+                <Suspense fallback={null}>
+                  <EngineModelPicker
+                    readyEngineIds={readyEngineIds}
+                    engineModelConfigs={engineModelConfigs}
+                    engine={
+                      appRunEngine && readyEngineIds.includes(appRunEngine)
+                        ? appRunEngine
+                        : readyEngineIds.includes(defaultEngine)
+                          ? defaultEngine
+                          : readyEngineIds[0]
+                    }
+                    onEngineChange={setAppRunEngine}
+                    model={appRunModel}
+                    onModelChange={setAppRunModel}
+                  />
+                </Suspense>
+              )}
+              <button
+                onClick={() => void installStudioApplication()}
+                disabled={appValidation !== "ready" || appInstalling}
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+              >{appInstalling ? t("rightPanel.applicationInstalling") : t("rightPanel.installAndUse")}</button>
+            </div>
+            {appPreviewFile && (
+              <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] shrink-0">
+                <span className="text-xs text-[var(--text-primary)] truncate flex-1 min-w-0">{appPreviewFile.name}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] shrink-0">
+                  manifest.entry
+                </span>
+              </div>
+            )}
+            <div className="flex-1 min-h-0 w-full h-full overflow-auto">
+              {renderAppPreviewContent()}
+            </div>
+          </div>
         )}
 
         {/* === PREVIEW TAB === */}

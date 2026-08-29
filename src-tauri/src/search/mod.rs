@@ -27,7 +27,8 @@ pub async fn ensure_index(vault_dir: &Path) -> Result<()> {
         }
     }
 
-    let pixie_dir = vault_dir.join("Pixie");
+    let pixie_dir =
+        crate::ensure_vault_pixie_dir_no_symlink(vault_dir).map_err(anyhow::Error::msg)?;
     let index_path = pixie_dir.join(INDEX_FILE);
 
     // Try loading from disk first.
@@ -64,7 +65,8 @@ pub async fn ensure_index(vault_dir: &Path) -> Result<()> {
 
 /// Force-rebuild the index (e.g. after a new note is written).
 pub async fn rebuild_index(vault_dir: &Path) -> Result<SearchIndexStats> {
-    let pixie_dir = vault_dir.join("Pixie");
+    let pixie_dir =
+        crate::ensure_vault_pixie_dir_no_symlink(vault_dir).map_err(anyhow::Error::msg)?;
     let new_index = SearchIndex::build_from_dir(&pixie_dir)?;
     let stats = SearchIndexStats {
         doc_count: new_index.doc_count(),

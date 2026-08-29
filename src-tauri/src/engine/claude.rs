@@ -256,6 +256,7 @@ pub async fn spawn_headless(
     conversation_id: &str,
     message: &str,
     cwd: Option<&str>,
+    model_override: Option<&str>,
 ) -> Result<Child> {
     spawn_with_args(
         vec![
@@ -271,7 +272,7 @@ pub async fn spawn_headless(
         ],
         message,
         cwd,
-        None,
+        model_override,
     )
     .await
 }

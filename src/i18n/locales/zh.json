@@ -165,6 +165,7 @@
     "settings": "设置",
     "tasks": "计划任务",
     "loops": "循环任务",
+    "applications": "应用",
     "skills": "技能市场",
     "noWorkspaces": "暂无工作区",
     "recentChats": "最近对话",
@@ -232,6 +233,7 @@
     "kbActive": "知识库已启用 — 点击关闭",
     "kbInclude": "包含知识库上下文",
     "selectModel": "选择模型",
+    "selectEngine": "切换引擎",
     "customModelPlaceholder": "自定义模型...",
     "autoSuffix": "（自动）"
   },
@@ -438,6 +440,10 @@
   },
   "marketplace": {
     "title": "技能市场",
+    "sections": {
+      "skills": "技能",
+      "applications": "应用"
+    },
     "search": "搜索技能...",
     "install": "安装",
     "uninstall": "卸载",
@@ -459,6 +465,36 @@
       "knowledgeWork": "Knowledge Work",
       "plusSkills": "Plus Skills",
       "composio": "ComposioHQ"
+    },
+    "applications": {
+      "title": "应用",
+      "studioTitle": "应用工作室",
+      "studioHint": "创建由数据输入、应用内聊天、动态 AI 状态和实时预览组成的 AI 原生应用。",
+      "startStudio": "构建 AI 应用",
+      "createTitle": "你想创建什么应用？",
+      "createHint": "描述目标用户、输入数据和期望结果。Pixie 会把开发规则自动交给 Agent。",
+      "createPlaceholder": "例如：创建一个合同审查助手，用户粘贴合同后，标出风险条款并给出修改建议。",
+      "chooseLocation": "选择保存位置",
+      "installTitle": "安装已有 App",
+      "githubPlaceholder": "GitHub owner/repo 或 git URL",
+      "branchPlaceholder": "分支",
+      "installGithub": "从 GitHub 安装",
+      "installLocal": "安装本地目录",
+      "linkLocal": "链接本地应用",
+      "empty": "还没有安装应用",
+      "uninstallConfirm": "确定要卸载这个应用吗？链接的源目录和应用数据会保留。",
+      "use": "使用",
+      "hide": "收起",
+      "open": "打开",
+      "lastResult": "上次结果",
+      "runFailed": "应用运行失败",
+      "statusOk": "已完成",
+      "statusError": "失败",
+      "statusOutputContractFailed": "输出契约失败",
+      "statusParseWarning": "解析警告",
+      "outputs": "个输出",
+      "actions": "个动作",
+      "runSettings": "运行引擎"
     }
   },
   "search": {
@@ -511,7 +547,12 @@
     "diffCommit": "差异 {{hash}}",
     "enterFullscreen": "进入全屏",
     "exitFullscreen": "退出全屏",
-    "plainTextExt": "text"
+    "plainTextExt": "text",
+    "applicationReady": "应用校验通过，可以安装",
+    "applicationInvalid": "应用尚未就绪，悬停查看问题",
+    "applicationChecking": "正在检查应用…",
+    "applicationInstalling": "正在安装…",
+    "installAndUse": "安装并使用"
   },
   "diffViewer": {
     "renamedNoChanges": "已重命名 — 无内容变更",

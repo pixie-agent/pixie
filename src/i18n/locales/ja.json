@@ -165,6 +165,7 @@
     "settings": "設定",
     "tasks": "スケジュールタスク",
     "loops": "ループタスク",
+    "applications": "アプリ",
     "skills": "スキルマーケットプレース",
     "noWorkspaces": "ワークスペースがありません",
     "recentChats": "最近のチャット",
@@ -232,6 +233,7 @@
     "kbActive": "ナレッジベース有効 — クリックで無効化",
     "kbInclude": "ナレッジベースコンテキストを含める",
     "selectModel": "モデルを選択",
+    "selectEngine": "エンジンを切替",
     "customModelPlaceholder": "カスタムモデル...",
     "autoSuffix": "（自動）"
   },
@@ -438,6 +440,10 @@
   },
   "marketplace": {
     "title": "スキルマーケットプレース",
+    "sections": {
+      "skills": "スキル",
+      "applications": "アプリ"
+    },
     "search": "スキルを検索...",
     "install": "インストール",
     "uninstall": "アンインストール",
@@ -459,6 +465,36 @@
       "knowledgeWork": "Knowledge Work",
       "plusSkills": "Plus Skills",
       "composio": "ComposioHQ"
+    },
+    "applications": {
+      "title": "アプリ",
+      "studioTitle": "アプリスタジオ",
+      "studioHint": "データ入力、アプリ内チャット、動的な AI 状態、ライブプレビューを備えた AI ネイティブアプリを作成します。",
+      "startStudio": "AI アプリを作成",
+      "createTitle": "どんなアプリを作りますか？",
+      "createHint": "対象ユーザー、入力データ、期待する結果を説明してください。Pixie が実装ルールを Agent に渡します。",
+      "createPlaceholder": "例：契約書のリスク条項を示し、修正案を提案するレビューアシスタント。",
+      "chooseLocation": "保存場所を選択",
+      "installTitle": "既存 App をインストール",
+      "githubPlaceholder": "GitHub owner/repo または git URL",
+      "branchPlaceholder": "ブランチ",
+      "installGithub": "GitHub からインストール",
+      "installLocal": "ローカルディレクトリをインストール",
+      "linkLocal": "ローカルアプリをリンク",
+      "empty": "インストール済みアプリはありません",
+      "uninstallConfirm": "このアプリをアンインストールしますか？リンク元とアプリデータは保持されます。",
+      "use": "使う",
+      "hide": "閉じる",
+      "open": "開く",
+      "lastResult": "前回の結果",
+      "runFailed": "アプリの実行に失敗しました",
+      "statusOk": "完了",
+      "statusError": "失敗",
+      "statusOutputContractFailed": "出力契約エラー",
+      "statusParseWarning": "解析警告",
+      "outputs": "出力",
+      "actions": "アクション",
+      "runSettings": "実行エンジン"
     }
   },
   "search": {
@@ -511,7 +547,12 @@
     "diffCommit": "差分 {{hash}}",
     "enterFullscreen": "全画面にする",
     "exitFullscreen": "全画面を終了",
-    "plainTextExt": "text"
+    "plainTextExt": "text",
+    "applicationReady": "検証済み。インストールできます",
+    "applicationInvalid": "アプリはまだ準備できていません。詳細はホバーしてください",
+    "applicationChecking": "アプリを確認中…",
+    "applicationInstalling": "インストール中…",
+    "installAndUse": "インストールして使う"
   },
   "diffViewer": {
     "renamedNoChanges": "リネーム — コンテンツ変更なし",

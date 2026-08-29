@@ -6,7 +6,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import SkillsDropdown from "./SkillsDropdown";
 import type { SkillEntry, AgentEngineId, EngineModelConfigs, ModelEntry } from "../types";
-import { ENGINE_MODEL_ENV_KEY } from "../types";
+import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
+import { engineLabel } from "../lib/i18nFormat";
 import { getExtension, IMAGE_EXTENSIONS } from "../preview";
 
 interface InputBarProps {
@@ -28,6 +29,10 @@ interface InputBarProps {
   onPickWorkspace: () => void;
   /** Engine of the active conversation. */
   engine?: AgentEngineId;
+  /** Called when the user switches the conversation to another engine. */
+  onEngineChange: (engine: AgentEngineId) => void;
+  /** Engines that are installed + ready; the engine switcher is limited to these. */
+  readyEngineIds: AgentEngineId[];
   /** Current model override for the active conversation. */
   model?: string;
   /** Called when the user picks a different model. */
@@ -111,6 +116,8 @@ export default function InputBar({
   workspaceLocked,
   onPickWorkspace,
   engine,
+  onEngineChange,
+  readyEngineIds,
   model,
   onModelChange,
   engineModelConfigs,
@@ -603,6 +610,27 @@ export default function InputBar({
               <path d="M4 12v6c0 1.5 3.5 3 8 3s8-1.5 8-3v-6" />
             </svg>
           </button>
+          {engine && readyEngineIds.length > 0 && (
+            <select
+              value={engine}
+              onChange={(e) => {
+                if (isGenerating) return;
+                onEngineChange(e.target.value as AgentEngineId);
+              }}
+              disabled={isGenerating}
+              title={t('inputBar.selectEngine')}
+              aria-label={t('inputBar.selectEngine')}
+              className={`flex items-center h-6 rounded-md bg-transparent px-1 text-[11px] text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] ${
+                isGenerating ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+              }`}
+            >
+              {AGENT_ENGINES.filter((e) => readyEngineIds.includes(e.id)).map((e) => (
+                <option key={e.id} value={e.id}>
+                  {engineLabel(e.id, t)}
+                </option>
+              ))}
+            </select>
+          )}
           {engine && (
             <div ref={modelWrapperRef} className="relative">
               <button

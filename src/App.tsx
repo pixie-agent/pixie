@@ -39,10 +39,37 @@ import { AGENT_ENGINES } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
 import { bootstrap, getConfig, getHistory, updateConfig, UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "./lib/storage";
 
-type MainView = "chat" | "tasks" | "loops" | "skills" | "settings";
+type MainView = "chat" | "tasks" | "loops" | "skills" | "applications" | "settings";
 
 const ABSOLUTE_PATH_RE = /^(\/|\\\\|[a-zA-Z]:[\\/])/;
 const MAIN_VIEW_MOUNT_DELAY_MS = 45;
+const APPLICATION_STUDIO_TITLE = "Application Studio";
+const applicationStudioPrompt = (brief: string) => `Build an AI-native Pixie Application in this workspace.
+
+User request:
+${brief.trim()}
+
+This is an Application Studio session. The right panel's App tab previews only the entry declared by pixie.application.json. Keep the user-visible application UI in that entry file and assets it imports.
+
+Create or update these files at the application root:
+- pixie.application.json
+- ui/index.html
+- agent/instructions.md
+
+Product definition:
+- This must be an AI application, not a static page.
+- The application must contain an in-app chat box.
+- The user should provide data, describe what they want to do with it, and let AI generate or reshape the page content.
+- Treat the application as data + intent + AI-generated state + dynamic UI.
+- Keep the visible page flexible: sections, cards, summaries, scripts, layouts, and next actions should be driven by AI output.
+
+Rules:
+- Use pixie.application.json as the source of truth.
+- Do not create alternate preview entry files unless you also update manifest.entry.
+- Keep manifest.entry immediately previewable.
+- Make visible UI changes in manifest.entry so the user can see what changed in the App tab.
+- Keep inputs, outputs, actions, and permissions explicit.
+- Before finishing, summarize changed files and what the user should inspect in the preview and git diff.`;
 
 function resolvePreviewFilePath(path: string, workspacePath: string | null | undefined): string {
   if (!workspacePath || ABSOLUTE_PATH_RE.test(path)) return path;
@@ -389,6 +416,7 @@ function AppShell() {
   const { t, currentLanguage } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
+  const [applicationToOpen, setApplicationToOpen] = useState<string | null>(null);
   const [headerEditing, setHeaderEditing] = useState(false);
   const [headerEditValue, setHeaderEditValue] = useState("");
   const headerEditRef = useRef<HTMLInputElement>(null);
@@ -454,10 +482,12 @@ function AppShell() {
     newConversationWorkspaceId,
     chooseActiveConversationWorkspace,
     error,
+    addWorkspacePath,
     createConversation,
     switchConversation,
     renameConversation,
     setConversationModel,
+    setConversationEngine,
     deleteConversation,
     sendMessage,
     retryFailedMessage,
@@ -533,6 +563,28 @@ function AppShell() {
     (value: string) => setDrafts((prev) => ({ ...prev, [draftKey]: value })),
     [draftKey]
   );
+
+  const isApplicationStudioSession =
+    activeConversation?.mode === "application-studio" ||
+    activeConversation?.title === APPLICATION_STUDIO_TITLE;
+
+  const startApplicationStudio = useCallback(async (brief: string) => {
+    const path = await invoke<string | null>("pick_folder");
+    if (!path) return;
+    await invoke("application_ensure_studio_defaults", { path });
+    const workspaceId = addWorkspacePath(path);
+    if (!workspaceId) return;
+    const id = createConversation(workspaceId, defaultEngine, undefined, {
+      mode: "application-studio",
+      applicationPath: path,
+      templateId: "single-action-form",
+    });
+    if (!id) return;
+    renameConversation(id, APPLICATION_STUDIO_TITLE);
+    setDrafts((prev) => ({ ...prev, [id]: applicationStudioPrompt(brief) }));
+    setFileExplorerOpen(true);
+    setMainView("chat");
+  }, [addWorkspacePath, createConversation, defaultEngine, renameConversation]);
 
   const commitHeaderEdit = useCallback(() => {
     const trimmed = headerEditValue.trim();
@@ -727,6 +779,10 @@ function AppShell() {
   const handleModelChange = useCallback((model: string | undefined) => {
     if (activeConversation) setConversationModel(activeConversation.id, model);
   }, [activeConversation, setConversationModel]);
+
+  const handleEngineChange = useCallback((engine: AgentEngineId) => {
+    if (activeConversation) setConversationEngine(activeConversation.id, engine);
+  }, [activeConversation, setConversationEngine]);
 
   const handlePickDefaultWorkspace = useCallback(async () => {
     try {
@@ -953,6 +1009,7 @@ ${entries}
         onOpenTasks={() => setMainView("tasks")}
         onOpenLoops={() => setMainView("loops")}
         onOpenSkills={() => setMainView("skills")}
+        onOpenApplications={() => setMainView("applications")}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         loopTasks={loopTasks}
@@ -1147,6 +1204,8 @@ ${entries}
               }
               onPickWorkspace={chooseActiveConversationWorkspace}
               engine={activeConversation?.engine}
+              onEngineChange={handleEngineChange}
+              readyEngineIds={readyEngineIds}
               model={activeConversation?.model}
               onModelChange={handleModelChange}
               engineModelConfigs={engineModelConfigs}
@@ -1215,7 +1274,27 @@ ${entries}
           <Suspense fallback={<LoadingPanel />}>
           <MarketplacePanel
             onClose={() => setMainView("chat")}
+            section="skills"
             onSkillsChanged={() => reloadSkills({ force: true })}
+            onStartApplicationStudio={startApplicationStudio}
+            defaultEngine={defaultEngine}
+            readyEngineIds={readyEngineIds}
+            engineModelConfigs={engineModelConfigs}
+          />
+          </Suspense>
+        )}
+
+        {!mainViewLoading && displayMainView === "applications" && (
+          <Suspense fallback={<LoadingPanel />}>
+          <MarketplacePanel
+            onClose={() => setMainView("chat")}
+            section="applications"
+            onSkillsChanged={() => reloadSkills({ force: true })}
+            onStartApplicationStudio={startApplicationStudio}
+            defaultEngine={defaultEngine}
+            readyEngineIds={readyEngineIds}
+            engineModelConfigs={engineModelConfigs}
+            openApplicationId={applicationToOpen}
           />
           </Suspense>
         )}
@@ -1264,6 +1343,15 @@ ${entries}
           <FileExplorer
             workspacePath={activeWorkspace.path}
             previewTarget={previewTarget}
+            applicationMode={isApplicationStudioSession}
+            defaultEngine={defaultEngine}
+            readyEngineIds={readyEngineIds}
+            engineModelConfigs={engineModelConfigs}
+            onApplicationInstalled={(id) => {
+              setApplicationToOpen(id);
+              setMainView("applications");
+              setFileExplorerOpen(false);
+            }}
           />
           </Suspense>
         </div>
