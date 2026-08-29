@@ -1126,15 +1126,22 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
 
     // Notify the backend so it can update the model override and kill any
     // existing persistent session (the next send_message will respawn with
-    // the new model).
+    // the new model). Roll back the optimistic state if the backend rejects.
     const conv = allConversationsRef.current[wsId]?.find((c) => c.id === id);
     const engine = conv?.engine;
+    const prevModel = conv?.model;
     invoke("update_conversation_model", {
       conversationId: id,
       model: model ?? null,
       engine: engine ?? null,
     }).catch((e) => {
       console.error("[setConversationModel] backend call failed:", e);
+      setAllConversations((prev) => ({
+        ...prev,
+        [wsId]: (prev[wsId] ?? []).map((c) =>
+          c.id === id ? { ...c, model: prevModel } : c
+        ),
+      }));
     });
   }, []);
 
@@ -1146,6 +1153,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     const wsId = findWorkspaceForConversation(allConversationsRef.current, id, convIndexRef);
     if (!wsId) return;
 
+    const prevConv = allConversationsRef.current[wsId]?.find((c) => c.id === id);
+    const prevEngine = prevConv?.engine;
+    const prevModel = prevConv?.model;
     setAllConversations((prev) => ({
       ...prev,
       [wsId]: (prev[wsId] ?? []).map((c) =>
@@ -1153,12 +1163,21 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       ),
     }));
 
+    // Roll back the optimistic switch if the backend rejects, otherwise the
+    // UI would show the new engine while send_message still uses the old one.
     invoke("update_conversation_model", {
       conversationId: id,
       model: null,
       engine,
     }).catch((e) => {
       console.error("[setConversationEngine] backend call failed:", e);
+      if (!prevConv || !prevEngine) return;
+      setAllConversations((prev) => ({
+        ...prev,
+        [wsId]: (prev[wsId] ?? []).map((c) =>
+          c.id === id ? { ...c, engine: prevEngine, model: prevModel } : c
+        ),
+      }));
     });
   }, []);
 

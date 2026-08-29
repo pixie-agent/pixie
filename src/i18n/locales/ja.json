@@ -693,6 +693,7 @@
     "cursor": "Cursor Agent",
     "codebuddy": "CodeBuddy",
     "builtin": "組み込み",
-    "codex": "OpenAI Codex"
+    "codex": "OpenAI Codex",
+    "notReady": "未準備"
   }
 }

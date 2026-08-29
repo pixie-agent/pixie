@@ -25,7 +25,10 @@ interface MarketplacePanelProps {
   /** Engines that are installed + ready; limits the application run picker. */
   readyEngineIds: AgentEngineId[];
   engineModelConfigs: EngineModelConfigs;
+  /** One-shot: auto-expand this application once listed, then report back so
+   *  the caller can clear it (otherwise reopening the view re-expands it). */
   openApplicationId?: string | null;
+  onOpenedApplication?: () => void;
 }
 
 /** Seed marketplaces shown as tabs. Keyed by repo so "added" state is stable
@@ -54,8 +57,22 @@ function formatCount(n: number | undefined, t: TFunction): string {
 function defaultFieldValue(field: PixieApplicationField): unknown {
   if (field.default !== undefined) return field.default;
   if (field.type === "boolean") return false;
-  if (field.type === "number") return "";
   return "";
+}
+
+/** Coerce a stored input value to the field's declared type at the submission
+ *  boundary. Values are edited as strings; a number field that is empty or
+ *  non-numeric must not reach the backend as `""` or `NaN`. */
+function coerceApplicationInputValue(field: PixieApplicationField, value: unknown): unknown {
+  if (field.type !== "number") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return field.default ?? null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return value;
 }
 
 function formatOutputValue(value: unknown): string {
@@ -84,8 +101,12 @@ function applicationActionInputs(
   const source = values ?? defaults;
   const action = app.actions.find((item) => item.id === actionId);
   const allowed = new Set(action?.inputs?.length ? action.inputs : app.inputs.map((field) => field.id));
+  const merged = Object.entries({ ...defaults, ...source }).filter(([key]) => allowed.has(key));
   return Object.fromEntries(
-    Object.entries({ ...defaults, ...source }).filter(([key]) => allowed.has(key)),
+    merged.map(([key, value]) => {
+      const field = app.inputs.find((item) => item.id === key);
+      return [key, field ? coerceApplicationInputValue(field, value) : value];
+    }),
   );
 }
 
@@ -101,7 +122,7 @@ function latestApplicationRuns(
   }, {});
 }
 
-export default function MarketplacePanel({ onClose, section, onSkillsChanged, onStartApplicationStudio, defaultEngine, readyEngineIds, engineModelConfigs, openApplicationId }: MarketplacePanelProps) {
+export default function MarketplacePanel({ onClose, section, onSkillsChanged, onStartApplicationStudio, defaultEngine, readyEngineIds, engineModelConfigs, openApplicationId, onOpenedApplication }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[]>([]);
@@ -370,9 +391,12 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
     if (!openApplicationId || autoOpenedApplicationRef.current === openApplicationId) return;
     if (!applications.some((app) => app.id === openApplicationId)) return;
     autoOpenedApplicationRef.current = openApplicationId;
-    const timer = window.setTimeout(() => void openApplication(openApplicationId), 0);
+    const timer = window.setTimeout(() => {
+      void openApplication(openApplicationId);
+      onOpenedApplication?.();
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [applications, openApplication, openApplicationId]);
+  }, [applications, openApplication, openApplicationId, onOpenedApplication]);
 
   useEffect(() => {
     if (!pendingOpenApplicationId) return;
@@ -553,7 +577,7 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
           <input
             type={field.type === "number" ? "number" : "text"}
             value={String(value ?? "")}
-            onChange={(e) => updateApplicationInput(app.id, field.id, field.type === "number" ? e.target.valueAsNumber || e.target.value : e.target.value)}
+            onChange={(e) => updateApplicationInput(app.id, field.id, e.target.value)}
             className={baseClass}
           />
         )}

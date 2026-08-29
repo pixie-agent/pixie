@@ -6746,6 +6746,41 @@ static ACTIVE_LOOP_BUILTIN_CANCELS: std::sync::OnceLock<
     StdMutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 > = std::sync::OnceLock::new();
 const MAX_CONCURRENT_LOOPS: usize = 3;
+/// Hard cap on iterations within a single cycle, independent of the task's own
+/// exit conditions. `validate_exit_conditions` already requires a
+/// `MaxIterations` guardrail (1-100) for new tasks, but tasks created before
+/// that rule or hand-edited `loop_tasks.json` may lack one — this backstop
+/// guarantees a cycle always terminates.
+const MAX_LOOP_ITERATIONS: u32 = 200;
+
+/// Serializes read-modify-write blocks on loop_tasks.json. Every mutation of
+/// the task list must happen inside `with_loop_tasks` so a running cycle and
+/// user commands (update/pause/stop) can never clobber each other's writes.
+static LOOP_TASKS_MUTEX: std::sync::OnceLock<StdMutex<()>> = std::sync::OnceLock::new();
+
+fn loop_tasks_mutex() -> &'static StdMutex<()> {
+    LOOP_TASKS_MUTEX.get_or_init(|| StdMutex::new(()))
+}
+
+/// Run `f` with exclusive access to the loop-task store. `f` receives the
+/// freshly loaded tasks and returns its result; if it reports changes (Ok(true)
+/// or a value to persist), the mutated list is persisted before the lock is
+/// released. Keep the closure free of `.await`s — the lock is a sync mutex and
+/// must not be held across await points.
+fn with_loop_tasks<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&mut Vec<LoopTask>) -> Result<(T, bool), String>,
+) -> Result<T, String> {
+    let _guard = loop_tasks_mutex()
+        .lock()
+        .map_err(|_| "Loop task store is unavailable".to_string())?;
+    let mut tasks = load_loop_tasks(app);
+    let (value, changed) = f(&mut tasks)?;
+    if changed {
+        persist_loop_tasks(app, &tasks)?;
+    }
+    Ok(value)
+}
 
 fn running_loops() -> &'static StdMutex<HashSet<String>> {
     RUNNING_LOOPS.get_or_init(|| StdMutex::new(HashSet::new()))
@@ -7212,33 +7247,34 @@ async fn create_loop_task(app: AppHandle, mut task: LoopTask) -> Result<LoopTask
             task.next_run = compute_next_run(sched, Utc::now());
         }
     }
-    let mut tasks = load_loop_tasks(&app);
-    tasks.push(task.clone());
-    persist_loop_tasks(&app, &tasks)?;
+    let created = task.clone();
+    with_loop_tasks(&app, |tasks| {
+        tasks.push(created.clone());
+        Ok(((), true))
+    })?;
     Ok(task)
 }
 
 #[tauri::command]
 async fn update_loop_task(app: AppHandle, task: LoopTask) -> Result<(), String> {
     validate_loop_task(&task)?;
-    let mut tasks = load_loop_tasks(&app);
-    let idx = tasks.iter().position(|t| t.id == task.id);
-    if let Some(idx) = idx {
+    let cancel_id = with_loop_tasks(&app, |tasks| {
+        let Some(idx) = tasks.iter().position(|t| t.id == task.id) else {
+            return Err("Loop task not found".to_string());
+        };
         let should_cancel = matches!(tasks[idx].status, LoopTaskStatus::Running) && !task.enabled;
         tasks[idx] = merge_loop_task_update(&tasks[idx], task);
         if should_cancel {
             tasks[idx].status = LoopTaskStatus::Aborted;
         }
-        persist_loop_tasks(&app, &tasks)?;
-        if should_cancel {
-            let _ = app.emit(
-                "loop-cycle-complete",
-                serde_json::json!({ "task_id": tasks[idx].id.clone(), "status": "aborted" }),
-            );
-            cancel_active_loop_iteration(&app, &tasks[idx].id).await;
-        }
-    } else {
-        return Err("Loop task not found".into());
+        Ok((should_cancel.then(|| tasks[idx].id.clone()), true))
+    })?;
+    if let Some(task_id) = cancel_id {
+        let _ = app.emit(
+            "loop-cycle-complete",
+            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted" }),
+        );
+        cancel_active_loop_iteration(&app, &task_id).await;
     }
     Ok(())
 }
@@ -7263,11 +7299,11 @@ async fn delete_loop_task(app: AppHandle, task_id: String) -> Result<(), String>
 
 #[tauri::command]
 async fn toggle_loop_task(app: AppHandle, task_id: String, enabled: bool) -> Result<(), String> {
-    let mut tasks = load_loop_tasks(&app);
-    let task = tasks.iter_mut().find(|t| t.id == task_id);
-    let should_cancel;
-    if let Some(task) = task {
-        should_cancel = !enabled && matches!(task.status, LoopTaskStatus::Running);
+    let should_cancel = with_loop_tasks(&app, |tasks| {
+        let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
+        let should_cancel = !enabled && matches!(task.status, LoopTaskStatus::Running);
         task.enabled = enabled;
         if should_cancel {
             task.status = LoopTaskStatus::Aborted;
@@ -7276,10 +7312,8 @@ async fn toggle_loop_task(app: AppHandle, task_id: String, enabled: bool) -> Res
             (true, Some(sched)) => compute_next_run(sched, Utc::now()),
             _ => None,
         };
-        persist_loop_tasks(&app, &tasks)?;
-    } else {
-        return Err("Loop task not found".into());
-    }
+        Ok((should_cancel, true))
+    })?;
     if should_cancel {
         let _ = app.emit(
             "loop-cycle-complete",
@@ -7760,43 +7794,57 @@ async fn run_builtin_loop_iteration(
 async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuard) {
     // Set initial status to Running and send a notification.
     {
-        let mut tasks = load_loop_tasks(&app);
-        let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) else {
-            log::error!("[loop] task {} disappeared before cycle start", task_id);
-            return;
-        };
-        if !task.enabled
-            || matches!(
-                task.status,
-                LoopTaskStatus::Paused
-                    | LoopTaskStatus::Aborted
-                    | LoopTaskStatus::Completed
-                    | LoopTaskStatus::Error
-            )
-        {
-            return;
-        }
-        task.status = LoopTaskStatus::Running;
-        // Capture name/workspace before persisting (they won't change).
-        let task_name = task.name.clone();
-        let dir_label = basename(&task.workspace);
-        log::info!(
-            "[loop] '{}' cycle started: workspace={}, engine={:?}, {} exit condition(s)",
-            task_name,
-            task.workspace,
-            task.engine,
-            task.exit_conditions.len()
-        );
-        let _ = persist_loop_tasks(&app, &tasks);
+        let header = with_loop_tasks(&app, |tasks| {
+            let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) else {
+                return Err("disappeared before cycle start".to_string());
+            };
+            if !task.enabled
+                || matches!(
+                    task.status,
+                    LoopTaskStatus::Paused
+                        | LoopTaskStatus::Aborted
+                        | LoopTaskStatus::Completed
+                        | LoopTaskStatus::Error
+                )
+            {
+                return Err("not startable (disabled or in a terminal state)".to_string());
+            }
+            task.status = LoopTaskStatus::Running;
+            let header = (
+                task.name.clone(),
+                task.workspace.clone(),
+                task.engine.clone(),
+                task.exit_conditions.len(),
+            );
+            let _ = persist_loop_tasks(&app, tasks);
+            Ok((header, true))
+        });
+        match header {
+            Ok((task_name, workspace, engine, exit_count)) => {
+                let dir_label = basename(&workspace);
+                log::info!(
+                    "[loop] '{}' cycle started: workspace={}, engine={:?}, {} exit condition(s), hard cap {} iterations",
+                    task_name,
+                    workspace,
+                    engine,
+                    exit_count,
+                    MAX_LOOP_ITERATIONS
+                );
 
-        use tauri_plugin_notification::NotificationExt;
-        let title = format!("🔄 {}", task_name);
-        let _ = app
-            .notification()
-            .builder()
-            .title(&title)
-            .body(format!("Loop starting in {}…", dir_label))
-            .show();
+                use tauri_plugin_notification::NotificationExt;
+                let title = format!("🔄 {}", task_name);
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(&title)
+                    .body(format!("Loop starting in {}…", dir_label))
+                    .show();
+            }
+            Err(e) => {
+                log::error!("[loop] task {} {}", task_id, e);
+                return;
+            }
+        }
     }
 
     let _ = app.emit(
@@ -7827,15 +7875,51 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
             break;
         }
 
+        // Backstop: even if the task's exit conditions never fire (legacy data
+        // without a MaxIterations guardrail, or outputs that keep changing
+        // slightly), a cycle must not run forever.
+        if fresh_task.iteration >= MAX_LOOP_ITERATIONS {
+            log::warn!(
+                "[loop] '{}' hit the hard iteration cap ({}) — completing",
+                fresh_task.name,
+                MAX_LOOP_ITERATIONS
+            );
+            let cap_reason = format!(
+                "Reached hard iteration cap ({} iterations) before an exit condition fired",
+                MAX_LOOP_ITERATIONS
+            );
+            with_loop_tasks(&app, |tasks| {
+                if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                    if matches!(t.status, LoopTaskStatus::Running) {
+                        t.status = LoopTaskStatus::Completed;
+                        t.completion_reason = Some(cap_reason.clone());
+                    }
+                }
+                Ok(((), true))
+            })
+            .ok();
+            let _ = app.emit(
+                "loop-cycle-complete",
+                serde_json::json!({
+                    "task_id": task_id.clone(),
+                    "status": "completed",
+                    "reason": cap_reason,
+                }),
+            );
+            break;
+        }
+
         // If the workspace no longer exists or is symlinked, stop with an error.
         if ensure_directory_no_symlink(Path::new(&fresh_task.workspace), "Loop workspace").is_err()
         {
             log::error!("[loop] workspace vanished for '{}'", fresh_task.name);
-            let mut tasks = load_loop_tasks(&app);
-            if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
-                t.status = LoopTaskStatus::Error;
-                let _ = persist_loop_tasks(&app, &tasks);
-            }
+            with_loop_tasks(&app, |tasks| {
+                if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                    t.status = LoopTaskStatus::Error;
+                }
+                Ok(((), true))
+            })
+            .ok();
             break;
         }
 
@@ -7843,19 +7927,19 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
         let outcome = run_loop_iteration(&app, &fresh_task, conversation_id.clone()).await;
 
         // Update the task's iteration count, last_result, and convergence streak.
-        let mut outcome_applied = false;
-        {
-            let mut tasks = load_loop_tasks(&app);
+        let outcome_applied = with_loop_tasks(&app, |tasks| {
+            let mut applied = false;
             if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
                 if matches!(t.status, LoopTaskStatus::Running | LoopTaskStatus::Idle) && t.enabled {
                     t.iteration += 1;
                     t.last_result = Some(outcome.result.clone());
                     t.unchanged_streak = outcome.unchanged_streak;
-                    outcome_applied = true;
-                    let _ = persist_loop_tasks(&app, &tasks);
+                    applied = true;
                 }
             }
-        }
+            Ok((applied, applied))
+        })
+        .unwrap_or(false);
 
         let _ = app.emit(
             "loop-iteration-complete",
@@ -7874,22 +7958,22 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
         );
 
         if outcome.status != "ok" {
-            let mut should_emit_error = false;
             let error_reason = format!(
                 "Iteration failed: {}",
                 outcome.result.chars().take(200).collect::<String>()
             );
-            {
-                let mut tasks = load_loop_tasks(&app);
+            let should_emit_error = with_loop_tasks(&app, |tasks| {
+                let mut emit = false;
                 if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
                     if outcome_applied {
                         t.status = LoopTaskStatus::Error;
                         t.completion_reason = Some(error_reason.clone());
-                        should_emit_error = true;
-                        let _ = persist_loop_tasks(&app, &tasks);
+                        emit = true;
                     }
                 }
-            }
+                Ok((emit, emit))
+            })
+            .unwrap_or(false);
             if should_emit_error {
                 let _ = app.emit(
                     "loop-cycle-complete",
@@ -7915,13 +7999,15 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
                 outcome.unchanged_streak,
             );
             {
-                let mut tasks = load_loop_tasks(&app);
-                if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
-                    t.status = LoopTaskStatus::Completed;
-                    t.completion_reason = Some(exit_reason.clone());
-                    t.changes_summary = extract_changes_summary(&outcome.result);
-                    let _ = persist_loop_tasks(&app, &tasks);
-                }
+                with_loop_tasks(&app, |tasks| {
+                    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+                        t.status = LoopTaskStatus::Completed;
+                        t.completion_reason = Some(exit_reason.clone());
+                        t.changes_summary = extract_changes_summary(&outcome.result);
+                    }
+                    Ok(((), true))
+                })
+                .ok();
             }
             let _ = app
                 .notification()
@@ -7957,8 +8043,10 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
     // overwrite them.  Only fix up the Running→Aborted case where no explicit
     // stop command was received (e.g. scheduler killed the process).
     {
-        let mut tasks = load_loop_tasks(&app);
-        if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+        let end = with_loop_tasks(&app, |tasks| {
+            let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+                return Ok((None, false));
+            };
             if matches!(t.status, LoopTaskStatus::Running) {
                 // The async task exited without an explicit pause/stop —
                 // this can happen if the app was shutting down. Mark as
@@ -7975,10 +8063,10 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
                 }
             }
             // Snapshot fields before the immutable borrow in persist_loop_tasks.
-            let end_name = t.name.clone();
-            let end_status = t.status.clone();
-            let end_iters = t.iteration;
-            let _ = persist_loop_tasks(&app, &tasks);
+            let end = (t.name.clone(), t.status.clone(), t.iteration);
+            Ok((Some(end), true))
+        });
+        if let Ok(Some((end_name, end_status, end_iters))) = end {
             log::info!(
                 "[loop] '{}' cycle ended: final_status={:?}, iterations={}",
                 end_name,
@@ -7991,26 +8079,29 @@ async fn run_loop_cycle(app: AppHandle, task_id: String, _guard: RunningLoopGuar
 
 #[tauri::command]
 async fn start_loop_task(app: AppHandle, task_id: String) -> Result<String, String> {
-    let tasks = load_loop_tasks(&app);
-    let task = tasks.iter().find(|t| t.id == task_id).cloned();
-    let Some(task) = task else {
-        return Err("Loop task not found".into());
-    };
-    if matches!(task.status, LoopTaskStatus::Running) {
-        return Err("Loop task is already running".into());
-    }
-    ensure_loop_task_can_run(&task)?;
-
     let guard = try_register_running_loop(&task_id)?;
 
-    // Reset task state for a fresh cycle.
-    let mut tasks = load_loop_tasks(&app);
-    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+    // Validate + reset task state for a fresh cycle under the store lock, so
+    // the status check and the write cannot race with another starter.
+    let result = with_loop_tasks(&app, |tasks| {
+        let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
+        let snapshot = t.clone();
+        if matches!(snapshot.status, LoopTaskStatus::Running) {
+            return Err("Loop task is already running".to_string());
+        }
+        ensure_loop_task_can_run(&snapshot)?;
         t.iteration = 0;
         t.last_result = None;
         t.unchanged_streak = 0;
         t.status = LoopTaskStatus::Idle; // run_loop_cycle will set Running
-        let _ = persist_loop_tasks(&app, &tasks);
+        Ok(((), true))
+    });
+    if let Err(e) = result {
+        // Validation failed — releasing the guard unregisters the loop slot.
+        drop(guard);
+        return Err(e);
     }
 
     let app_for_run = app.clone();
@@ -8024,39 +8115,41 @@ async fn start_loop_task(app: AppHandle, task_id: String) -> Result<String, Stri
 
 #[tauri::command]
 async fn pause_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let mut tasks = load_loop_tasks(&app);
-    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+    with_loop_tasks(&app, |tasks| {
+        let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
         if !matches!(t.status, LoopTaskStatus::Running) {
-            return Err("Loop task is not running".into());
+            return Err("Loop task is not running".to_string());
         }
         t.status = LoopTaskStatus::Paused;
-        persist_loop_tasks(&app, &tasks)?;
-    } else {
-        return Err("Loop task not found".into());
-    }
+        Ok(((), true))
+    })?;
     cancel_active_loop_iteration(&app, &task_id).await;
     Ok(())
 }
 
 #[tauri::command]
 async fn resume_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let tasks = load_loop_tasks(&app);
-    let task = tasks.iter().find(|t| t.id == task_id).cloned();
-    let Some(task) = task else {
-        return Err("Loop task not found".into());
-    };
-    if !matches!(task.status, LoopTaskStatus::Paused) {
-        return Err("Loop task is not paused".into());
-    }
-    ensure_loop_task_can_run(&task)?;
-
     let guard = try_register_running_loop(&task_id)?;
 
-    // Set back to Idle (run_loop_cycle will immediately set Running).
-    let mut tasks = load_loop_tasks(&app);
-    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+    // Validate and flip back to Idle under the store lock (run_loop_cycle
+    // will immediately set Running).
+    let result = with_loop_tasks(&app, |tasks| {
+        let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
+        let snapshot = t.clone();
+        if !matches!(snapshot.status, LoopTaskStatus::Paused) {
+            return Err("Loop task is not paused".to_string());
+        }
+        ensure_loop_task_can_run(&snapshot)?;
         t.status = LoopTaskStatus::Idle;
-        let _ = persist_loop_tasks(&app, &tasks);
+        Ok(((), true))
+    });
+    if let Err(e) = result {
+        drop(guard);
+        return Err(e);
     }
 
     let app_for_run = app.clone();
@@ -8070,21 +8163,21 @@ async fn resume_loop_task(app: AppHandle, task_id: String) -> Result<(), String>
 
 #[tauri::command]
 async fn stop_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let mut tasks = load_loop_tasks(&app);
-    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+    with_loop_tasks(&app, |tasks| {
+        let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
         t.status = LoopTaskStatus::Aborted;
         t.completion_reason = Some("Stopped by user".to_string());
         // Keep enabled so the user can restart if desired.
         // next_run is cleared because the current cycle is cancelled.
         t.next_run = None;
-        persist_loop_tasks(&app, &tasks)?;
-        let _ = app.emit(
-            "loop-cycle-complete",
-            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted", "reason": "Stopped by user" }),
-        );
-    } else {
-        return Err("Loop task not found".into());
-    }
+        Ok(((), true))
+    })?;
+    let _ = app.emit(
+        "loop-cycle-complete",
+        serde_json::json!({ "task_id": task_id.clone(), "status": "aborted", "reason": "Stopped by user" }),
+    );
     cancel_active_loop_iteration(&app, &task_id).await;
     Ok(())
 }
@@ -8098,40 +8191,32 @@ async fn resume_loop_task_with_prompt(
     task_id: String,
     user_prompt: String,
 ) -> Result<(), String> {
-    let tasks = load_loop_tasks(&app);
-    let task = tasks.iter().find(|t| t.id == task_id).cloned();
-    let Some(task) = task else {
-        return Err("Loop task not found".into());
-    };
-    if !matches!(task.status, LoopTaskStatus::Paused) {
-        return Err("Loop task is not paused".into());
-    }
-    ensure_loop_task_can_run(&task)?;
-
-    // Inject the user's prompt by appending it to last_result.
-    // The next iteration will use result_template with this enriched context.
-    let enriched_result = match task.last_result {
-        Some(prev) => format!("{}\n\n---\nHuman note:\n{}", prev, user_prompt),
-        None => format!("Human note:\n{}", user_prompt),
-    };
-
-    {
-        let mut tasks = load_loop_tasks(&app);
-        if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
-            t.last_result = Some(enriched_result);
-            let _ = persist_loop_tasks(&app, &tasks);
-        }
-    }
-
     let guard = try_register_running_loop(&task_id)?;
 
-    // Set back to Idle (run_loop_cycle will immediately set Running).
-    {
-        let mut tasks = load_loop_tasks(&app);
-        if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
-            t.status = LoopTaskStatus::Idle;
-            let _ = persist_loop_tasks(&app, &tasks);
+    // Validate, inject the user's prompt (appended to last_result so the next
+    // iteration's result_template sees both the previous result and the human
+    // note), and flip back to Idle — all under the store lock.
+    let result = with_loop_tasks(&app, |tasks| {
+        let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
+        let snapshot = t.clone();
+        if !matches!(snapshot.status, LoopTaskStatus::Paused) {
+            return Err("Loop task is not paused".to_string());
         }
+        ensure_loop_task_can_run(&snapshot)?;
+
+        let enriched_result = match snapshot.last_result {
+            Some(prev) => format!("{}\n\n---\nHuman note:\n{}", prev, user_prompt),
+            None => format!("Human note:\n{}", user_prompt),
+        };
+        t.last_result = Some(enriched_result);
+        t.status = LoopTaskStatus::Idle; // run_loop_cycle will set Running
+        Ok(((), true))
+    });
+    if let Err(e) = result {
+        drop(guard);
+        return Err(e);
     }
 
     let app_for_run = app.clone();
@@ -8146,20 +8231,20 @@ async fn resume_loop_task_with_prompt(
 /// Discard a loop task entirely — mark as Aborted + disabled, no restart.
 #[tauri::command]
 async fn discard_loop_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let mut tasks = load_loop_tasks(&app);
-    if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
+    with_loop_tasks(&app, |tasks| {
+        let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("Loop task not found".to_string());
+        };
         t.status = LoopTaskStatus::Aborted;
         t.enabled = false;
         t.completion_reason = Some("Discarded by user".to_string());
         t.next_run = None;
-        persist_loop_tasks(&app, &tasks)?;
-        let _ = app.emit(
-            "loop-cycle-complete",
-            serde_json::json!({ "task_id": task_id.clone(), "status": "aborted", "reason": "Discarded by user" }),
-        );
-    } else {
-        return Err("Loop task not found".into());
-    }
+        Ok(((), true))
+    })?;
+    let _ = app.emit(
+        "loop-cycle-complete",
+        serde_json::json!({ "task_id": task_id.clone(), "status": "aborted", "reason": "Discarded by user" }),
+    );
     cancel_active_loop_iteration(&app, &task_id).await;
     Ok(())
 }
@@ -8167,76 +8252,78 @@ async fn discard_loop_task(app: AppHandle, task_id: String) -> Result<(), String
 /// Check scheduled loop tasks whose next_run is due and fire them.
 async fn check_and_run_due_loops(app: &AppHandle) {
     let now = Utc::now();
-    let mut tasks = load_loop_tasks(app);
-    let mut changed = false;
-    let mut starts: Vec<(String, RunningLoopGuard)> = Vec::new();
+    let starts = with_loop_tasks(app, |tasks| {
+        let mut starts: Vec<(String, RunningLoopGuard)> = Vec::new();
+        let mut changed = false;
 
-    for task in tasks.iter_mut() {
-        if !task.enabled {
-            continue;
-        }
-        // Owned copy so later `task` mutations don't conflict with the borrow.
-        let Some(sched) = task.schedule.clone() else {
-            continue;
-        };
-        // Only fire idle or completed tasks.
-        if !matches!(
-            task.status,
-            LoopTaskStatus::Idle | LoopTaskStatus::Completed
-        ) {
-            continue;
-        }
-
-        let next: Option<DateTime<Utc>> = task
-            .next_run
-            .as_ref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&Utc))
-            .or_else(|| {
-                compute_next_run(&sched, now)
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc))
-            });
-
-        let Some(next) = next else { continue };
-
-        if next > now {
-            if task.next_run.is_none() {
-                task.next_run = Some(next.to_rfc3339());
-                changed = true;
+        for task in tasks.iter_mut() {
+            if !task.enabled {
+                continue;
             }
-            continue;
-        }
+            // Owned copy so later `task` mutations don't conflict with the borrow.
+            let Some(sched) = task.schedule.clone() else {
+                continue;
+            };
+            // Only fire idle or completed tasks.
+            if !matches!(
+                task.status,
+                LoopTaskStatus::Idle | LoopTaskStatus::Completed
+            ) {
+                continue;
+            }
 
-        // Stale by >5 min — advance without firing (skip catch-up).
-        let stale = now.signed_duration_since(next);
-        if stale.num_minutes() > 5 {
-            task.next_run = compute_next_run(&sched, now);
+            let next: Option<DateTime<Utc>> = task
+                .next_run
+                .as_ref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.with_timezone(&Utc))
+                .or_else(|| {
+                    compute_next_run(&sched, now)
+                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|d| d.with_timezone(&Utc))
+                });
+
+            let Some(next) = next else { continue };
+
+            if next > now {
+                if task.next_run.is_none() {
+                    task.next_run = Some(next.to_rfc3339());
+                    changed = true;
+                }
+                continue;
+            }
+
+            // Stale by >5 min — advance without firing (skip catch-up).
+            let stale = now.signed_duration_since(next);
+            if stale.num_minutes() > 5 {
+                task.next_run = compute_next_run(&sched, now);
+                changed = true;
+                continue;
+            }
+
+            let Ok(guard) = try_register_running_loop(&task.id) else {
+                continue;
+            };
+
+            // Reset for a fresh cycle and advance schedule.
+            task.iteration = 0;
+            task.last_result = None;
+            task.unchanged_streak = 0;
+            task.status = LoopTaskStatus::Idle;
+            task.next_run = None;
             changed = true;
-            continue;
+
+            starts.push((task.id.clone(), guard));
         }
 
-        let Ok(guard) = try_register_running_loop(&task.id) else {
-            continue;
-        };
-
-        // Reset for a fresh cycle and advance schedule.
-        task.iteration = 0;
-        task.last_result = None;
-        task.unchanged_streak = 0;
-        task.status = LoopTaskStatus::Idle;
-        task.next_run = None;
-        changed = true;
-
-        starts.push((task.id.clone(), guard));
-    }
-
-    if changed {
-        if let Err(e) = persist_loop_tasks(app, &tasks) {
-            log::error!("[loop scheduler] persist failed: {}", e);
-            return;
-        }
-    }
+        Ok((starts, changed))
+    })
+    .unwrap_or_else(|e| {
+        // Persist failed (or the store is unavailable) — don't fire anything,
+        // matching the pre-mutex behavior of bailing out on persist errors.
+        log::error!("[loop scheduler] failed to update tasks: {}", e);
+        Vec::new()
+    });
 
     for (task_id, guard) in starts {
         let app_for_run = app.clone();

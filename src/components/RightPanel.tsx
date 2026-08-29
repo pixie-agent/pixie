@@ -618,14 +618,17 @@ function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false,
       if (!applicationMode || !isApplicationRunMessage(event.data)) return;
       if (event.source !== appPreviewFrameRef.current?.contentWindow) return;
       const { requestId, actionId, inputs } = event.data;
-      // Resolve engine at run time: picked (if still ready) → default → builtin.
+      // Resolve engine at run time: picked (if still ready) → default (if
+      // ready) → builtin. Falling back to an unready engine would just fail
+      // at spawn time; builtin always works (it needs ANTHROPIC_API_KEY).
+      const ready = readyEngineIds ?? [];
       const picked = appRunEngineRef.current;
       const engine =
-        picked && (readyEngineIds ?? []).includes(picked)
+        picked && ready.includes(picked)
           ? picked
-          : defaultEngine && (readyEngineIds ?? []).includes(defaultEngine)
+          : defaultEngine && ready.includes(defaultEngine)
             ? defaultEngine
-            : (defaultEngine ?? null);
+            : "builtin";
       void invoke("application_studio_run", {
         path: workspacePath,
         actionId,

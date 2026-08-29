@@ -624,9 +624,12 @@ export default function InputBar({
                 isGenerating ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
               }`}
             >
-              {AGENT_ENGINES.filter((e) => readyEngineIds.includes(e.id)).map((e) => (
+              {AGENT_ENGINES.filter(
+                (e) => readyEngineIds.includes(e.id) || e.id === engine,
+              ).map((e) => (
                 <option key={e.id} value={e.id}>
                   {engineLabel(e.id, t)}
+                  {readyEngineIds.includes(e.id) ? "" : ` (${t("engines.notReady")})`}
                 </option>
               ))}
             </select>

@@ -1295,6 +1295,7 @@ ${entries}
             readyEngineIds={readyEngineIds}
             engineModelConfigs={engineModelConfigs}
             openApplicationId={applicationToOpen}
+            onOpenedApplication={() => setApplicationToOpen(null)}
           />
           </Suspense>
         )}
