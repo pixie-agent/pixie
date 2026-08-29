@@ -71,6 +71,8 @@
     "shiftEnter": "Shift+Enter",
     "cmd": "Cmd",
     "ctrl": "Ctrl",
+    "shift": "Shift",
+    "alt": "Alt",
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
@@ -217,7 +219,9 @@
       "agentNetwork": "エージェントがモデルサービスへの接続を失いました。ネットワークを確認し、続行するにはメッセージを再送信してください。",
       "agentCrashed": "エージェントが予期せず停止しました。会話履歴は保持されています。続行するにはメッセージを再送信してください。",
       "agentStartup": "エージェントの起動に失敗しました。会話履歴は保持されています。もう一度メッセージを送信してお試しください。"
-    }
+    },
+    "retry": "再試行",
+    "errorOccurred": "エラーが発生しました"
   },
   "inputBar": {
     "removeAttachment": "削除",
@@ -291,7 +295,20 @@
       "toggleSearch": "ナレッジベースを検索",
       "zoomIn": "拡大",
       "zoomOut": "縮小",
-      "resetZoom": "ズームをリセット"
+      "resetZoom": "ズームをリセット",
+      "findInPage": "ページ内検索"
+    },
+    "shortcutsEditor": {
+      "clickToChange": "クリックして変更",
+      "cancel": "録音をキャンセル",
+      "recording": "キーを押してください…",
+      "recordingHint": "新しいキーの組み合わせを押してください（Esc でキャンセル）",
+      "pressEscAgain": "Esc を割り当てるにもう一度 Esc を押してください",
+      "invalid": "無効なショートカットです",
+      "conflict": "「{{action}}」で既に使用されています",
+      "resetOne": "デフォルトに戻す",
+      "resetAll": "すべてリセット",
+      "hint": "ショートカットをクリックして再登録できます。組み合わせには Cmd/Ctrl が必要です。入力欄の Enter と Shift+Enter は固定です。"
     },
     "backfill": {
       "scanning": "スキャン中…",

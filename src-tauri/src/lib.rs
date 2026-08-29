@@ -59,6 +59,10 @@ pub struct AppConfig {
     /// are skipped silently (no fallback to a hidden data-dir folder).
     #[serde(default)]
     pub vault_path: Option<String>,
+    /// User-customizable keyboard shortcuts (action id → combo string). The
+    /// frontend owns the schema; stored opaquely so it round-trips untouched.
+    #[serde(default)]
+    pub keyboard_shortcuts: serde_json::Value,
 }
 
 /// One line of `history.jsonl`: a conversation (full, with messages) and the

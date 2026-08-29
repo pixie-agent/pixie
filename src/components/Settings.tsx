@@ -1,10 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTranslation } from "../hooks/useTranslation";
 import type { EngineStatus, AgentEngineId, EngineModelConfigs } from "../types";
 import { AGENT_ENGINES, ENGINE_MODEL_FIELDS } from "../types";
-import { engineLabel, modelFieldLabel, formatModShortcut } from "../lib/i18nFormat";
+import { engineLabel, modelFieldLabel } from "../lib/i18nFormat";
+import {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_ACTIONS,
+  canonicalShortcut,
+  eventToShortcut,
+  formatShortcut,
+  isBareModifierKey,
+  type ShortcutAction,
+  type ShortcutsConfig,
+} from "../lib/shortcuts";
 import { useUpdater } from "../hooks/useUpdater";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "../lib/storage";
@@ -12,6 +22,157 @@ import LanguageSelector from "./LanguageSelector";
 
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("../assets/icon.svg", import.meta.url).href;
+
+/** One editable shortcut row: click the combo to re-record it. Captures the next
+ *  valid key press (window-level, capture phase), validates it (Cmd/Ctrl combos,
+ * Esc, F-keys), rejects conflicts with other actions, and commits atomically.
+ *  Escape is special: the first press arms a hint, the second assigns Escape. */
+function ShortcutRow({
+  action,
+  shortcuts,
+  onChange,
+  conflictWith,
+  recording,
+  setRecording,
+}: {
+  action: ShortcutAction;
+  shortcuts: ShortcutsConfig;
+  onChange: (next: ShortcutsConfig) => void;
+  /** Another action already bound to this row's combo, if any. */
+  conflictWith: ShortcutAction | null;
+  recording: boolean;
+  setRecording: (action: ShortcutAction | null) => void;
+}) {
+  const { t } = useTranslation();
+  const [escArmed, setEscArmed] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flashNote = (msg: string) => {
+    setNote(msg);
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    noteTimerRef.current = setTimeout(() => setNote(null), 2600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    };
+  }, []);
+
+  const commit = (combo: string) => {
+    onChange({ ...shortcuts, [action]: combo });
+    setRecording(null);
+    setEscArmed(false);
+    setNote(null);
+  };
+
+  useEffect(() => {
+    if (!recording) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isBareModifierKey(e.key)) return; // wait for the full combo
+      if (e.key === "Escape") {
+        if (escArmed) {
+          commit("Escape");
+        } else {
+          setEscArmed(true);
+          flashNote(t("settings.shortcutsEditor.pressEscAgain"));
+        }
+        return;
+      }
+      setEscArmed(false);
+      const combo = eventToShortcut(e);
+      if (!combo) {
+        flashNote(t("settings.shortcutsEditor.invalid"));
+        return;
+      }
+      const canon = canonicalShortcut(combo);
+      const other = (Object.entries(shortcuts) as [ShortcutAction, string][]).find(
+        ([a, s]) => a !== action && canonicalShortcut(s) === canon,
+      );
+      if (other) {
+        flashNote(
+          t("settings.shortcutsEditor.conflict", {
+            action: t(`settings.shortcuts.${other[0]}`),
+          }),
+        );
+        return;
+      }
+      commit(combo);
+    };
+    // Capture phase so the recorder sees the key before any app shortcut does.
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording, escArmed, shortcuts, action, t]);
+
+  const isDefault = shortcuts[action] === DEFAULT_SHORTCUTS[action];
+  const isConflict = conflictWith !== null;
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-[var(--text-secondary)] truncate">
+          {t(`settings.shortcuts.${action}`)}
+        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setEscArmed(false);
+              setNote(null);
+              setRecording(recording ? null : action);
+            }}
+            className={`px-2 py-0.5 rounded border text-[11px] font-mono transition-colors ${
+              recording
+                ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)] animate-pulse"
+                : isConflict
+                  ? "border-red-500/50 bg-red-500/10 text-red-300"
+                  : "border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-primary)] hover:border-[var(--accent)]"
+            }`}
+            title={recording ? t("settings.shortcutsEditor.cancel") : t("settings.shortcutsEditor.clickToChange")}
+          >
+            {recording ? t("settings.shortcutsEditor.recording") : formatShortcut(shortcuts[action], t)}
+          </button>
+          {!isDefault && (
+            <button
+              type="button"
+              onClick={() => commit(DEFAULT_SHORTCUTS[action])}
+              className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title={t("settings.shortcutsEditor.resetOne")}
+              aria-label={t("settings.shortcutsEditor.resetOne")}
+            >
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                <path
+                  d="M12 7a5 5 0 1 1-1.6-3.67M12 1.5V4h-2.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+      {(recording || note || isConflict) && (
+        <p className={`text-[10px] ${isConflict && !recording ? "text-red-400" : "text-[var(--text-secondary)]"}`}>
+          {recording
+            ? escArmed
+              ? t("settings.shortcutsEditor.pressEscAgain")
+              : t("settings.shortcutsEditor.recordingHint")
+            : isConflict
+              ? t("settings.shortcutsEditor.conflict", {
+                  action: t(`settings.shortcuts.${conflictWith}`),
+                })
+              : note}
+        </p>
+      )}
+    </div>
+  );
+}
 const THEME_OPTIONS: { id: AppTheme; labelKey: string }[] = [
   { id: "dark", labelKey: "settings.dark" },
   { id: "light", labelKey: "settings.light" },
@@ -49,6 +210,10 @@ interface SettingsProps {
   defaultVaultPath: string | null;
   onBackfill: () => void;
   backfillStatus: string | null;
+  /** User-customizable keyboard shortcuts (action id → combo). */
+  shortcuts: ShortcutsConfig;
+  /** Replace the shortcuts config (persisted via config.json). */
+  onShortcutsChange: (next: ShortcutsConfig) => void;
 }
 
 export default function Settings({
@@ -76,6 +241,8 @@ export default function Settings({
   defaultVaultPath,
   onBackfill,
   backfillStatus,
+  shortcuts,
+  onShortcutsChange,
 }: SettingsProps) {
   const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
@@ -89,6 +256,28 @@ export default function Settings({
   });
   const updater = useUpdater();
   const [appVersion, setAppVersion] = useState("");
+  /** Which shortcut row is currently recording a new combo (null = none). */
+  const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | null>(null);
+
+  // Standing conflicts between two actions bound to the same combo (possible
+  // via the per-row reset). action → the other action it collides with.
+  const conflicts = useMemo(() => {
+    const byCanon = new Map<string, ShortcutAction[]>();
+    for (const action of SHORTCUT_ACTIONS) {
+      const canon = canonicalShortcut(shortcuts[action]);
+      if (!canon) continue;
+      byCanon.set(canon, [...(byCanon.get(canon) ?? []), action]);
+    }
+    const out = new Map<ShortcutAction, ShortcutAction>();
+    for (const actions of byCanon.values()) {
+      if (actions.length < 2) continue;
+      for (const a of actions) {
+        const other = actions.find((x) => x !== a);
+        if (other) out.set(a, other);
+      }
+    }
+    return out;
+  }, [shortcuts]);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
@@ -569,25 +758,38 @@ export default function Settings({
             </div>
           </section>
 
-          {/* Keyboard shortcuts */}
+          {/* Keyboard shortcuts — user-customizable. Click a combo to re-record
+              it; conflicts with other actions are rejected and flagged. */}
           <section>
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              {t('settings.keyboardShortcuts')}
-            </h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                {t('settings.keyboardShortcuts')}
+              </h3>
+              <button
+                onClick={() => {
+                  setRecordingShortcut(null);
+                  onShortcutsChange({ ...DEFAULT_SHORTCUTS });
+                }}
+                className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-[var(--text-primary)] text-xs font-medium transition-colors"
+              >
+                {t('settings.shortcutsEditor.resetAll')}
+              </button>
+            </div>
             <div className="space-y-2 text-xs text-[var(--text-secondary)]">
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.newChat')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, 'N')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.stopGeneration')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {t('keys.escape')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
+              {SHORTCUT_ACTIONS.map((action) => (
+                <ShortcutRow
+                  key={action}
+                  action={action}
+                  shortcuts={shortcuts}
+                  onChange={onShortcutsChange}
+                  conflictWith={conflicts.get(action) ?? null}
+                  recording={recordingShortcut === action}
+                  setRecording={setRecordingShortcut}
+                />
+              ))}
+              {/* Fixed composer bindings — not remappable (standard text-entry
+                  behavior), listed for discoverability. */}
+              <div className="flex justify-between pt-1 border-t border-[var(--border-color)]">
                 <span>{t('settings.shortcuts.sendMessage')}</span>
                 <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
                   {t('keys.enter')}
@@ -599,43 +801,10 @@ export default function Settings({
                   {t('keys.shiftEnter')}
                 </kbd>
               </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.toggleSidebar')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, 'B')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.toggleSearch')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, 'K')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.toggleSettings')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, ',')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.zoomIn')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, '+')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.zoomOut')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, '-')}
-                </kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>{t('settings.shortcuts.resetZoom')}</span>
-                <kbd className="px-2 py-0.5 rounded bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]">
-                  {formatModShortcut(t, '0')}
-                </kbd>
-              </div>
             </div>
+            <p className="text-xs text-[var(--text-secondary)] mt-2">
+              {t('settings.shortcutsEditor.hint')}
+            </p>
           </section>
         </div>
     </div>

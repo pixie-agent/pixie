@@ -38,6 +38,8 @@ interface InputBarProps {
   kbEnabled: boolean;
   /** Toggle knowledge base context on/off. */
   onToggleKb: () => void;
+  /** Localized label of the customizable stop-generation shortcut. */
+  stopShortcutLabel?: string;
 }
 
 const MAX_CHARS = 8000;
@@ -114,6 +116,7 @@ export default function InputBar({
   engineModelConfigs,
   kbEnabled,
   onToggleKb,
+  stopShortcutLabel,
 }: InputBarProps) {
   const { t, currentLanguage } = useTranslation();
   const numberLocale = appLocale(currentLanguage);
@@ -500,7 +503,7 @@ export default function InputBar({
             <button
               onClick={onStop}
               className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors mr-2 self-end mb-2"
-              title={t('inputBar.stopTitle', { key: t('keys.escape') })}
+              title={t('inputBar.stopTitle', { key: stopShortcutLabel ?? t('keys.escape') })}
               aria-label={t('chat.stop')}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">

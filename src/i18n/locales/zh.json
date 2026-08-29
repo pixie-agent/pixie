@@ -71,6 +71,8 @@
     "shiftEnter": "Shift+Enter",
     "cmd": "Cmd",
     "ctrl": "Ctrl",
+    "shift": "Shift",
+    "alt": "Alt",
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
@@ -217,7 +219,9 @@
       "agentNetwork": "智能体与模型服务的连接已断开。请检查网络后重新发送消息以继续。",
       "agentCrashed": "智能体意外停止。对话历史已保留，请重新发送消息以继续。",
       "agentStartup": "智能体启动失败。对话历史已保留，请重新发送消息以重试。"
-    }
+    },
+    "retry": "重试",
+    "errorOccurred": "出错了"
   },
   "inputBar": {
     "removeAttachment": "移除",
@@ -291,7 +295,20 @@
       "toggleSearch": "搜索知识库",
       "zoomIn": "放大",
       "zoomOut": "缩小",
-      "resetZoom": "重置缩放"
+      "resetZoom": "重置缩放",
+      "findInPage": "页面内查找"
+    },
+    "shortcutsEditor": {
+      "clickToChange": "点击修改",
+      "cancel": "取消录制",
+      "recording": "请按键…",
+      "recordingHint": "按下新的组合键（Esc 取消）",
+      "pressEscAgain": "再按一次 Esc 以指定 Esc 键",
+      "invalid": "无效的快捷键",
+      "conflict": "已用于「{{action}}」",
+      "resetOne": "恢复默认",
+      "resetAll": "全部重置",
+      "hint": "点击快捷键可重新录制。组合键需包含 Cmd/Ctrl；输入框内的 Enter 和 Shift+Enter 为固定按键。"
     },
     "backfill": {
       "scanning": "扫描中…",

@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { useDragRegion } from "./hooks/useDragRegion";
 import { useTranslation } from "./hooks/useTranslation";
-import { formatShortDate, formatModShortcut } from "./lib/i18nFormat";
+import { formatShortDate } from "./lib/i18nFormat";
+import { formatShortcut, shortcutMatches, type ShortcutsConfig } from "./lib/shortcuts";
 import Sidebar from "./components/Sidebar";
 import InputBar from "./components/InputBar";
 import { openExternal } from "./openExternal";
@@ -403,6 +404,9 @@ function AppShell() {
   const [theme, setTheme] = useState<AppTheme>(() => getConfig().theme);
   const [uiScale, setUiScale] = useState<UiScale>(() => getConfig().uiScale);
   const [systemPrompt, setSystemPrompt] = useState(() => getConfig().systemPrompt);
+  const [shortcuts, setShortcuts] = useState<ShortcutsConfig>(
+    () => getConfig().keyboardShortcuts,
+  );
   const [engineModelConfigs, setEngineModelConfigs] = useState<EngineModelConfigs>(
     () => getConfig().engineModelConfigs,
   );
@@ -456,6 +460,7 @@ function AppShell() {
     setConversationModel,
     deleteConversation,
     sendMessage,
+    retryFailedMessage,
     stopGeneration,
     respondPermission,
     refreshEngineStatuses,
@@ -598,6 +603,10 @@ function AppShell() {
   }, [systemPrompt]);
 
   useEffect(() => {
+    updateConfig({ keyboardShortcuts: shortcuts });
+  }, [shortcuts]);
+
+  useEffect(() => {
     updateConfig({ engineModelConfigs });
   }, [engineModelConfigs]);
 
@@ -643,47 +652,64 @@ function AppShell() {
     reloadSkills();
   }, [reloadSkills]);
 
+  // Global shortcuts — driven by the user-customizable config (Settings →
+  // Keyboard shortcuts). Each combo is matched against the live KeyboardEvent;
+  // unknown/invalid stored combos simply never match.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "n") {
+      if (shortcutMatches(shortcuts.newChat, e)) {
         e.preventDefault();
         setMainView("chat");
         createConversation(undefined, defaultEngine);
+        return;
       }
-      if (e.key === "Escape" && isGenerating) {
+      if (shortcutMatches(shortcuts.toggleSidebar, e)) {
         e.preventDefault();
-        stopGeneration();
+        setSidebarOpen((prev) => !prev);
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+      if (shortcutMatches(shortcuts.toggleSettings, e)) {
         e.preventDefault();
         setMainView((prev) => (prev === "settings" ? "chat" : "settings"));
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      if (shortcutMatches(shortcuts.toggleSearch, e)) {
         e.preventDefault();
         setSearchOpen((prev) => !prev);
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+      if (shortcutMatches(shortcuts.zoomIn, e)) {
         e.preventDefault();
         setUiScale((current) => {
           const index = UI_SCALE_OPTIONS.indexOf(current);
           return UI_SCALE_OPTIONS[Math.min(index + 1, UI_SCALE_OPTIONS.length - 1)];
         });
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "-") {
+      if (shortcutMatches(shortcuts.zoomOut, e)) {
         e.preventDefault();
         setUiScale((current) => {
           const index = UI_SCALE_OPTIONS.indexOf(current);
           return UI_SCALE_OPTIONS[Math.max(index - 1, 0)];
         });
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "0") {
+      if (shortcutMatches(shortcuts.resetZoom, e)) {
         e.preventDefault();
         setUiScale(1);
+        return;
+      }
+      // Stop generation (default: Escape). Skipped while the search palette is
+      // open — its own handler consumes Escape to close, and stopping a running
+      // agent just because the user dismissed a dialog would be surprising.
+      if (shortcutMatches(shortcuts.stopGeneration, e) && isGenerating && !searchOpen) {
+        e.preventDefault();
+        stopGeneration();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [createConversation, defaultEngine, isGenerating, stopGeneration]);
+  }, [createConversation, defaultEngine, isGenerating, stopGeneration, shortcuts, searchOpen]);
 
   const handleThemeChange = useCallback((t: AppTheme) => setTheme(t), []);
   const handleUiScaleChange = useCallback((scale: UiScale) => setUiScale(scale), []);
@@ -935,6 +961,17 @@ ${entries}
       <div className="flex-1 flex flex-col min-w-[420px]" data-page-find-scope="main">
         {mainViewLoading && <LoadingPanel onCancel={cancelMainViewLoad} />}
 
+        {/* Global error banner — rendered in EVERY main view (chat, tasks,
+            loops, skills, settings), not just the chat column. An engine
+            failure while the user is on another screen must still be visible
+            instead of silently interrupting with no feedback anywhere. */}
+        {!mainViewLoading && error && (
+          <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-center justify-between">
+            <span className="break-all">{error}</span>
+            <button onClick={clearError} className="shrink-0 ml-2 text-red-400 hover:text-red-200 transition-colors">{t('common.dismiss')}</button>
+          </div>
+        )}
+
         {!mainViewLoading && displayMainView === "chat" && (
           <>
             {/* Header — drag empty areas to move window */}
@@ -950,8 +987,8 @@ ${entries}
                       createConversation(undefined, defaultEngine);
                     }}
                     className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-                    title={t('header.newSession', { shortcut: formatModShortcut(t, 'N') })}
-                    aria-label={t('header.newSession', { shortcut: formatModShortcut(t, 'N') })}
+                    title={t('header.newSession', { shortcut: formatShortcut(shortcuts.newChat, t) })}
+                    aria-label={t('header.newSession', { shortcut: formatShortcut(shortcuts.newChat, t) })}
                   >
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                       <path d="M10 4v12M4 10h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -1023,8 +1060,8 @@ ${entries}
               <button
                 onClick={() => setSearchOpen(true)}
                 className="shrink-0 ml-2 p-1.5 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-                title={t('header.searchKb', { shortcut: formatModShortcut(t, 'K') })}
-                aria-label={t('header.searchKb', { shortcut: formatModShortcut(t, 'K') })}
+                title={t('header.searchKb', { shortcut: formatShortcut(shortcuts.toggleSearch, t) })}
+                aria-label={t('header.searchKb', { shortcut: formatShortcut(shortcuts.toggleSearch, t) })}
               >
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                   <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="1.5" />
@@ -1062,15 +1099,8 @@ ${entries}
               </button>
             </header>
 
-            {error && (
-              <div className="shrink-0 px-4 py-2 bg-red-900/30 border-b border-red-800/50 text-red-300 text-xs flex items-center justify-between">
-                <span>{error}</span>
-                <button onClick={clearError} className="text-red-400 hover:text-red-200 transition-colors">{t('common.dismiss')}</button>
-              </div>
-            )}
-
             <Suspense fallback={<LoadingPanel />}>
-              <ChatView conversation={activeConversation} isGenerating={isGenerating} onOpenPreview={handleOpenPreview} onRespondPermission={respondPermission} />
+              <ChatView conversation={activeConversation} isGenerating={isGenerating} onOpenPreview={handleOpenPreview} onRespondPermission={respondPermission} onRetry={retryFailedMessage} />
             </Suspense>
 
             <InputBar
@@ -1105,6 +1135,7 @@ ${entries}
               value={draft}
               onChange={handleDraftChange}
               textareaRef={composerRef}
+              stopShortcutLabel={formatShortcut(shortcuts.stopGeneration, t)}
               skills={skills}
               workspacePath={composerWorkspacePath}
               selectedWorkspaceId={composerWorkspaceId}
@@ -1216,6 +1247,8 @@ ${entries}
             defaultVaultPath={defaultVaultPath}
             onBackfill={handleBackfill}
             backfillStatus={backfillStatus}
+            shortcuts={shortcuts}
+            onShortcutsChange={setShortcuts}
           />
           </Suspense>
         )}

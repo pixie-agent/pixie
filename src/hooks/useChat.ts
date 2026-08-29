@@ -842,7 +842,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
             const msgs = [...conv.messages];
             const last = msgs[msgs.length - 1];
             if (last && last.role === "assistant") {
-              msgs[msgs.length - 1] = { ...last, status: "error" };
+              // Attach the explanation to the message itself so the failure is
+              // visible inline in the conversation (with a retry button), not
+              // only in the transient global banner.
+              msgs[msgs.length - 1] = { ...last, status: "error", errorText: message };
             }
             return { ...conv, messages: msgs };
           }, convIndexRef),
@@ -876,6 +879,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
                 thinking: undefined,
                 thinkingTokens: undefined,
                 usage: undefined,
+                errorText: undefined,
                 status: "streaming",
               };
             }
@@ -1244,7 +1248,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           ...(images && images.length > 0 ? { images } : {}),
         });
       } catch (e) {
-        setError(String(e));
+        const failMsg = typeof e === "string" ? e : String(e);
+        setError(failMsg);
         setGeneratingIds((prev) => {
           const next = new Set(prev);
           next.delete(convId!);
@@ -1255,7 +1260,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
             const msgs = [...conv.messages];
             const last = msgs[msgs.length - 1];
             if (last && last.role === "assistant") {
-              msgs[msgs.length - 1] = { ...last, status: "error" };
+              msgs[msgs.length - 1] = { ...last, status: "error", errorText: failMsg };
             }
             return { ...conv, messages: msgs };
           }, convIndexRef),
@@ -1263,6 +1268,51 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       }
     },
     [activeId, resolveTargetWorkspace, defaultEngine],
+  );
+
+  /** Retry after a failed turn: drops the failed assistant reply and the user
+ *  message that triggered it, then resends the same content + images through
+ *  sendMessage (which appends fresh messages and clears the error banner).
+ *  No-op unless the conversation actually ends in a failed assistant turn. */
+  const retryFailedMessage = useCallback(
+    async (convId: string) => {
+      const wsId = findWorkspaceForConversation(allConversationsRef.current, convId, convIndexRef);
+      if (!wsId) return;
+      const conv = allConversationsRef.current[wsId]?.find((c) => c.id === convId);
+      if (!conv) return;
+      const msgs = conv.messages;
+      const last = msgs[msgs.length - 1];
+      if (!last || last.role !== "assistant" || last.status !== "error") return;
+
+      // Find the user message that triggered the failed reply.
+      let userIdx = -1;
+      for (let i = msgs.length - 2; i >= 0; i--) {
+        if (msgs[i].role === "user") {
+          userIdx = i;
+          break;
+        }
+      }
+      if (userIdx < 0) return;
+      const userMsg = msgs[userIdx];
+
+      // Trim the failed turn; sendMessage re-appends a fresh user + assistant
+      // pair. Functional updaters queue in order, so the append lands on the
+      // trimmed state even though allConversationsRef is still stale here.
+      setAllConversations((prev) => ({
+        ...prev,
+        [wsId]: (prev[wsId] ?? []).map((c) =>
+          c.id === convId ? { ...c, messages: msgs.slice(0, userIdx) } : c,
+        ),
+      }));
+      setGeneratingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(convId);
+        return next;
+      });
+
+      await sendMessage(userMsg.content, convId, userMsg.images);
+    },
+    [sendMessage],
   );
 
   const stopGeneration = useCallback(async (convId?: string) => {
@@ -1519,6 +1569,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     setConversationModel,
     deleteConversation,
     sendMessage,
+    retryFailedMessage,
     stopGeneration,
     respondPermission,
     refreshEngineStatuses,

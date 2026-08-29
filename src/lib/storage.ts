@@ -21,6 +21,7 @@ import type {
   WorkspaceState,
 } from "../types";
 import { DEFAULT_ENGINE_MODEL_CONFIGS } from "../types";
+import { DEFAULT_SHORTCUTS, normalizeShortcuts, type ShortcutsConfig } from "./shortcuts";
 
 export type AppTheme = "dark" | "light" | "cyber-teal" | "paper-mint";
 export const UI_SCALE_OPTIONS = [0.9, 1, 1.1, 1.25] as const;
@@ -39,6 +40,9 @@ export interface AppConfig {
   knownReadyEngines: AgentEngineId[];
   /** Path to the Obsidian vault directory. If null, conversation summaries are skipped. */
   vaultPath: string | null;
+  /** User-customizable keyboard shortcuts (action id → combo string).
+ *  Always complete: invalid/missing entries fall back to DEFAULT_SHORTCUTS. */
+  keyboardShortcuts: ShortcutsConfig;
 }
 
 export interface HistoryEntry {
@@ -62,6 +66,7 @@ const EMPTY_CONFIG: AppConfig = {
   activeWorkspaceId: null,
   knownReadyEngines: ["builtin"],
   vaultPath: null,
+  keyboardShortcuts: { ...DEFAULT_SHORTCUTS },
 };
 
 let config: AppConfig = EMPTY_CONFIG;
@@ -144,6 +149,7 @@ interface ConfigWire {
   active_workspace_id?: string | null;
   known_ready_engines?: unknown;
   vault_path?: string | null;
+  keyboard_shortcuts?: unknown;
 }
 
 function isValidEngine(v: unknown): v is AgentEngineId {
@@ -214,6 +220,7 @@ function wireToConfig(w: ConfigWire | null): AppConfig {
       typeof w.active_workspace_id === "string" ? w.active_workspace_id : null,
     knownReadyEngines: coerceEngineIds(w.known_ready_engines),
     vaultPath: typeof w.vault_path === "string" ? w.vault_path : null,
+    keyboardShortcuts: normalizeShortcuts(w.keyboard_shortcuts),
   };
 }
 
@@ -228,6 +235,7 @@ function configToWire(c: AppConfig): ConfigWire {
     active_workspace_id: c.activeWorkspaceId,
     known_ready_engines: c.knownReadyEngines,
     vault_path: c.vaultPath,
+    keyboard_shortcuts: c.keyboardShortcuts,
   };
 }
 
@@ -324,6 +332,7 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
     activeWorkspaceId: typeof data.activeWorkspaceId === "string" ? data.activeWorkspaceId : null,
     knownReadyEngines: [],
     vaultPath: null,
+    keyboardShortcuts: { ...DEFAULT_SHORTCUTS },
   };
 
   return { config, history };

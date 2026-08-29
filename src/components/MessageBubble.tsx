@@ -15,6 +15,8 @@ interface MessageBubbleProps {
   message: Message;
   onOpenPreview: (t: PreviewRequest) => void;
   onRespondPermission?: (convId: string, requestId: string, allow: boolean) => void;
+  /** Retry the failed turn that ends this conversation (dropped + resent). */
+  onRetry?: (convId: string) => void;
   conversationId?: string;
 }
 
@@ -791,7 +793,7 @@ function UsageStats({ usage }: { usage: MessageUsage }) {
   );
 }
 
-function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, conversationId }: MessageBubbleProps) {
+function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, onRetry, conversationId }: MessageBubbleProps) {
   const { t, currentLanguage } = useTranslation();
   const isUser = message.role === "user";
   const isStreamingAssistant = !isUser && message.status === "streaming";
@@ -990,6 +992,53 @@ function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, conver
             <span className="text-[10px] text-[var(--accent)]">{t("chat.streaming")}</span>
           )}
         </div>
+
+        {/* Inline failure card — the error must be visible in the conversation
+            itself (with a retry affordance), not only in the transient global
+            banner. Otherwise a crashed turn just looks like it silently stopped. */}
+        {!isUser && message.status === "error" && (
+          <div className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2.5 flex items-start gap-2.5">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              className="shrink-0 mt-0.5 text-red-400"
+            >
+              <path
+                d="M8 5.5v3.5M8 11h.01M6.86 2.86a1.3 1.3 0 0 1 2.28 0l5.08 8.8A1.3 1.3 0 0 1 12.1 13.6H3.9a1.3 1.3 0 0 1-1.13-1.94l5.09-8.8z"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-red-300">{t("chat.errorOccurred")}</p>
+              <p className="text-xs text-red-300/80 whitespace-pre-wrap break-words mt-0.5">
+                {message.errorText || t("chat.errors.agentCrashed")}
+              </p>
+              {onRetry && conversationId && (
+                <button
+                  type="button"
+                  onClick={() => onRetry(conversationId)}
+                  className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-400/40 text-[11px] text-red-300 hover:bg-red-500/20 hover:text-red-200 transition-colors"
+                >
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                    <path
+                      d="M12 7a5 5 0 1 1-1.6-3.67M12 1.5V4h-2.5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  {t("chat.retry")}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {!isUser && message.usage && <UsageStats usage={message.usage} />}
       </div>

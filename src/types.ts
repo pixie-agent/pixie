@@ -30,6 +30,11 @@ export interface Message {
   images?: string[];
   timestamp: number;
   status?: "sending" | "streaming" | "done" | "error";
+  /** Friendly, localized failure explanation shown inline when status is "error".
+ *  Set by the agent-error listener / send_message catch so the failure is
+ *  visible in the conversation itself (with a retry affordance), not just in
+ *  the transient global error banner. */
+  errorText?: string;
   tools?: ToolStep[];
   usage?: MessageUsage;
   thinkingTokens?: number;

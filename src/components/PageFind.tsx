@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatModShortcut } from "../lib/i18nFormat";
+import { formatShortcut, shortcutMatches } from "../lib/shortcuts";
+import { getConfig } from "../lib/storage";
 import { useTranslation } from "../hooks/useTranslation";
 
 const FIND_MARK_SELECTOR = "mark[data-page-find='true']";
@@ -157,7 +159,10 @@ export default function PageFind() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      // Configurable find-in-page combo (Settings → Keyboard shortcuts; default
+      // Mod+F). Read live from the storage singleton so edits apply immediately.
+      const findCombo = getConfig().keyboardShortcuts.findInPage;
+      if (findCombo && shortcutMatches(findCombo, event)) {
         event.preventDefault();
         activeScopeRef.current = closestScope(document.activeElement) ?? activeScopeRef.current;
         setOpen(true);
@@ -226,7 +231,9 @@ export default function PageFind() {
         className="w-56 rounded-md border border-[var(--border-color)] bg-[var(--bg-primary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
       />
       <span className="w-16 text-right text-xs text-[var(--text-secondary)]">
-        {query.trim() ? t("pageFind.count", { current: matchCount ? activeIndex + 1 : 0, total: matchCount }) : formatModShortcut(t, "F")}
+        {query.trim()
+          ? t("pageFind.count", { current: matchCount ? activeIndex + 1 : 0, total: matchCount })
+          : formatShortcut(getConfig().keyboardShortcuts.findInPage, t) || formatModShortcut(t, "F")}
       </span>
       <button
         type="button"

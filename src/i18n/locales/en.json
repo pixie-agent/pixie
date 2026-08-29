@@ -71,6 +71,8 @@
     "shiftEnter": "Shift+Enter",
     "cmd": "Cmd",
     "ctrl": "Ctrl",
+    "shift": "Shift",
+    "alt": "Alt",
     "arrowUpDown": "↑↓",
     "arrowDown": "↓"
   },
@@ -217,7 +219,9 @@
       "agentNetwork": "The agent lost its connection to the model service. Please check your network and resend your message to continue.",
       "agentCrashed": "The agent stopped unexpectedly. Your conversation history is preserved — resend your message to continue.",
       "agentStartup": "The agent failed to start. Your conversation history is preserved — please resend your message to try again."
-    }
+    },
+    "retry": "Retry",
+    "errorOccurred": "Something went wrong"
   },
   "inputBar": {
     "removeAttachment": "Remove",
@@ -291,7 +295,20 @@
       "toggleSearch": "Search knowledge base",
       "zoomIn": "Zoom in",
       "zoomOut": "Zoom out",
-      "resetZoom": "Reset zoom"
+      "resetZoom": "Reset zoom",
+      "findInPage": "Find in page"
+    },
+    "shortcutsEditor": {
+      "clickToChange": "Click to change",
+      "cancel": "Cancel recording",
+      "recording": "Press keys…",
+      "recordingHint": "Press the new key combination (Esc to cancel)",
+      "pressEscAgain": "Press Esc again to assign Esc",
+      "invalid": "Not a valid shortcut",
+      "conflict": "Already used by \"{{action}}\"",
+      "resetOne": "Reset to default",
+      "resetAll": "Reset all",
+      "hint": "Click a shortcut to re-record it. Combos must include Cmd/Ctrl; Enter and Shift+Enter in the composer are fixed."
     },
     "backfill": {
       "scanning": "Scanning…",

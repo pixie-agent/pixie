@@ -11,6 +11,8 @@ interface ChatViewProps {
   isGenerating: boolean;
   onOpenPreview: (t: PreviewRequest) => void;
   onRespondPermission?: (convId: string, requestId: string, allow: boolean) => void;
+  /** Retry the failed turn that ends the given conversation. */
+  onRetry?: (convId: string) => void;
 }
 
 const INITIAL_MESSAGE_RENDER_COUNT = 48;
@@ -90,7 +92,7 @@ function WelcomeScreen() {
   );
 }
 
-export default function ChatView({ conversation, isGenerating, onOpenPreview, onRespondPermission }: ChatViewProps) {
+export default function ChatView({ conversation, isGenerating, onOpenPreview, onRespondPermission, onRetry }: ChatViewProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const loadTokenRef = useRef(0);
@@ -240,7 +242,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
           )}
 
           {visibleMessages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} conversationId={displayConversation.id} />
+            <MessageBubble key={msg.id} message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} onRetry={onRetry} conversationId={displayConversation.id} />
           ))}
 
           {/* Show typing indicator when the last message is a user message and we're generating */}
