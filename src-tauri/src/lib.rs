@@ -926,6 +926,11 @@ async fn send_message(
             let stopped_for_read = stopped_set.clone();
             let conv_id_for_stop_check = conv_id.clone();
 
+            // Whether ANY stdout event was received during this turn. A crash
+            // with this still false means the CLI died at startup (before the
+            // first line), which is deterministic and not worth blind retries.
+            let received_any_output = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
             let mut attempt = 0usize;
             let mut current_stdout = stdout;
             let outcome: TurnOutcome = loop {
@@ -941,11 +946,21 @@ async fn send_message(
                 let conv_inner = conv_id.clone();
                 let eng_inner = engine_id_owned.clone();
                 let app_inner = app_handle.clone();
+                // Shared activity timestamp: every stdout line refreshes it, so
+                // the idle reaper sees a streaming turn as active and doesn't
+                // kill it IDLE_TIMEOUT after the turn started.
+                let activity = {
+                    let sm = state_sessions_ref(&app_handle);
+                    let sm = sm.lock().await;
+                    sm.get(&conv_id).map(|s| s.activity())
+                };
+                let got_output = Arc::clone(&received_any_output);
 
                 let result = read_persistent_turn(
                     &engine_for_stream,
                     current_stdout.clone(),
                     |events: &[NormalizedEvent]| {
+                        got_output.store(true, std::sync::atomic::Ordering::Relaxed);
                         for evt in events {
                             if let Some(sid) = evt.session_id() {
                                 let engines = engines_inner.clone();
@@ -963,6 +978,13 @@ async fn send_message(
                             .try_lock()
                             .map(|g| g.contains(&conv_for_closure))
                             .unwrap_or(false)
+                    },
+                    move || {
+                        if let Some(act) = activity.as_ref() {
+                            if let Ok(mut t) = act.lock() {
+                                *t = std::time::Instant::now();
+                            }
+                        }
                     },
                 )
                 .await;
@@ -1020,6 +1042,25 @@ async fn send_message(
                                 reason: format!(
                                     "Agent stopped unexpectedly: {diagnosis}. {reason}."
                                 ),
+                            };
+                        }
+
+                        // A spawn that died before producing a SINGLE stdout
+                        // line failed at startup — deterministic, not
+                        // transient (e.g. invalid flag, bad session id). The
+                        // one exception worth retrying is "already in use"
+                        // (handled below); everything else just burns the
+                        // retry budget re-dying identically.
+                        let died_instantly =
+                            !received_any_output.load(std::sync::atomic::Ordering::Relaxed);
+                        if died_instantly && !diagnosis.contains("already in use") {
+                            log::error!(
+                                "[send_message] session died at startup without any output ({}); not retrying",
+                                diagnosis
+                            );
+                            break TurnOutcome::Crashed {
+                                partial: String::new(),
+                                reason: format!("Agent failed to start: {diagnosis}. {reason}."),
                             };
                         }
 
@@ -5208,27 +5249,23 @@ pub fn run() {
                     loop {
                         interval.tick().await;
                         let mut sessions = sessions.lock().await;
-                        // Shut down idle sessions.
-                        sessions.retain(|conv_id, session| {
-                            if session.last_active.elapsed() > IDLE_TIMEOUT {
-                                log::info!(
-                                    "[cleanup] idle timeout: closing persistent session for {}",
-                                    conv_id
-                                );
-                                // Can't call async shutdown here (retain is sync),
-                                // so just kill. Drop will also send SIGTERM.
-                                true // will remove below
-                            } else {
-                                true
-                            }
-                        });
-                        // Actually remove and kill the idle ones.
+                        // Snapshot each session's activity (an Arc refreshed by
+                        // the stream reader on every stdout line — a session
+                        // actively streaming a long turn must NOT look idle).
                         let idle_keys: Vec<String> = sessions
                             .iter()
-                            .filter(|(_, s)| s.last_active.elapsed() > IDLE_TIMEOUT)
+                            .filter(|(_, s)| {
+                                let active = s
+                                    .activity()
+                                    .lock()
+                                    .map(|t| *t)
+                                    .unwrap_or_else(|_| std::time::Instant::now());
+                                active.elapsed() > IDLE_TIMEOUT
+                            })
                             .map(|(k, _)| k.clone())
                             .collect();
                         for key in idle_keys {
+                            log::info!("[cleanup] idle timeout: closing persistent session for {key}");
                             if let Some(mut s) = sessions.remove(&key) {
                                 s.kill().await;
                             }
@@ -5237,7 +5274,14 @@ pub fn run() {
                         if sessions.len() > MAX_SESSIONS {
                             let mut entries: Vec<(String, std::time::Instant)> = sessions
                                 .iter()
-                                .map(|(k, s)| (k.clone(), s.last_active))
+                                .map(|(k, s)| {
+                                    let active = s
+                                        .activity()
+                                        .lock()
+                                        .map(|t| *t)
+                                        .unwrap_or_else(|_| std::time::Instant::now());
+                                    (k.clone(), active)
+                                })
                                 .collect();
                             entries.sort_by_key(|(_, t)| *t);
                             while sessions.len() > MAX_SESSIONS {

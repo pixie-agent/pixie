@@ -82,6 +82,9 @@ pub enum TurnOutcome {
 /// Idle sessions are shut down after this duration.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(1800); // 30 minutes
 
+/// Cap on the retained stderr tail per session (see `PersistentSession::stderr_tail`).
+const MAX_STDERR_TAIL: usize = 8 * 1024;
+
 /// Maximum number of persistent sessions kept alive simultaneously.
 pub const MAX_SESSIONS: usize = 10;
 
@@ -94,7 +97,11 @@ pub const MAX_SESSIONS: usize = 10;
 pub struct PersistentSession {
     pub session_id: String,
     pub engine_id: String,
-    pub last_active: Instant,
+    /// Last evidence of activity (stdin write OR stdout line). Shared with the
+    /// stream reader so a long turn that continuously produces output keeps
+    /// refreshing this — without that, the idle-reaper would kill a healthy
+    /// mid-turn session exactly `IDLE_TIMEOUT` after the turn started.
+    pub last_active: Arc<std::sync::Mutex<Instant>>,
     /// The model override used when spawning this session. Used to detect when
     /// the per-conversation model has changed and the session must be respawned.
     pub model_override: Option<String>,
@@ -105,6 +112,20 @@ pub struct PersistentSession {
     /// (which reads lines) can run independently of `send_message` (which
     /// writes to stdin).
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
+    /// Tail of the child's stderr, used to diagnose why it died. The CLI
+    /// writes its startup failures ("Session ID already in use", flag errors,
+    /// version mismatches) to stderr with NOTHING on stdout — without this we
+    /// can only see an opaque EOF.
+    stderr_tail: Arc<std::sync::Mutex<String>>,
+}
+
+impl PersistentSession {
+    /// Refresh `last_active` (called on every stdin write and stdout line).
+    fn touch(&self) {
+        if let Ok(mut t) = self.last_active.lock() {
+            *t = Instant::now();
+        }
+    }
 }
 
 /// Lowercase extension of `path` ("" when none).
@@ -214,7 +235,10 @@ impl PersistentSession {
         cmd.args(&args)
             .stdin(std::process::Stdio::piped()) // stdin stays open
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            // stderr is drained into a bounded tail buffer instead of /dev/null:
+            // startup failures (e.g. "Session ID already in use") are ONLY
+            // reported there, with stdout closing immediately after.
+            .stderr(std::process::Stdio::piped());
 
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -233,15 +257,42 @@ impl PersistentSession {
         let stdin = child.stdin.take().context("stdin not captured")?;
         let stdout = child.stdout.take().context("stdout not captured")?;
         let stdout = Arc::new(Mutex::new(BufReader::new(stdout)));
+        let stderr_tail = Arc::new(std::sync::Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let tail = Arc::clone(&stderr_tail);
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                use tokio::io::AsyncBufReadExt;
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            if let Ok(mut t) = tail.lock() {
+                                t.push_str(line.trim_end());
+                                t.push('\n');
+                                // Bound the tail so a chatty process can't grow it forever.
+                                let len = t.len();
+                                if len > MAX_STDERR_TAIL {
+                                    t.drain(..len - MAX_STDERR_TAIL);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         Ok(Self {
             session_id: session_id.to_string(),
             engine_id: engine_id.to_string(),
-            last_active: Instant::now(),
+            last_active: Arc::new(std::sync::Mutex::new(Instant::now())),
             model_override: model_override.map(|s| s.to_string()),
             child,
             stdin,
             stdout,
+            stderr_tail,
         })
     }
 
@@ -262,7 +313,7 @@ impl PersistentSession {
             .flush()
             .await
             .with_context(|| "failed to flush stdin")?;
-        self.last_active = Instant::now();
+        self.touch();
         Ok(())
     }
 
@@ -287,7 +338,7 @@ impl PersistentSession {
             .flush()
             .await
             .with_context(|| "failed to flush stdin")?;
-        self.last_active = Instant::now();
+        self.touch();
         Ok(())
     }
 
@@ -303,9 +354,11 @@ impl PersistentSession {
     /// Produce a human-readable diagnosis of *why* the child is no longer
     /// producing output. Reaps the child if it has exited so we can read its
     /// exit status. Safe to call repeatedly (returns the same status once
-    /// reaped).
+    /// reaped). When the child wrote anything to stderr before dying (startup
+    /// errors like "Session ID already in use" are ONLY reported there), the
+    /// tail is appended — that's usually the actual cause.
     pub async fn diagnose_exit(&mut self) -> String {
-        match self.child.try_wait() {
+        let base = match self.child.try_wait() {
             Ok(Some(status)) => {
                 if status.success() {
                     "process exited cleanly (stdout closed before final event)".to_string()
@@ -314,15 +367,23 @@ impl PersistentSession {
                     {
                         use std::os::unix::process::ExitStatusExt;
                         if let Some(sig) = status.signal() {
-                            return format!(
+                            format!(
                                 "process killed by signal {sig} (likely OOM, manual kill, or crash)"
-                            );
+                            )
+                        } else {
+                            format!(
+                                "process exited with status {} (crashed)",
+                                status.code().unwrap_or(-1)
+                            )
                         }
                     }
-                    format!(
-                        "process exited with status {} (crashed)",
-                        status.code().unwrap_or(-1)
-                    )
+                    #[cfg(not(unix))]
+                    {
+                        format!(
+                            "process exited with status {} (crashed)",
+                            status.code().unwrap_or(-1)
+                        )
+                    }
                 }
             }
             Ok(None) => {
@@ -334,6 +395,17 @@ impl PersistentSession {
                     .to_string()
             }
             Err(e) => format!("failed to query process status: {e}"),
+        };
+        // Give the stderr drainer a moment to catch up with a just-exited
+        // child, then fold whatever it captured into the diagnosis.
+        if !self.is_alive() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        let tail = self.stderr_tail();
+        if tail.is_empty() {
+            base
+        } else {
+            format!("{base}; stderr: {tail}")
         }
     }
 
@@ -369,6 +441,20 @@ impl PersistentSession {
     /// Get a reference to the shared stdout reader for streaming reads.
     pub fn stdout(&self) -> Arc<Mutex<BufReader<ChildStdout>>> {
         Arc::clone(&self.stdout)
+    }
+
+    /// Get the shared activity timestamp (refreshed on stdin writes and on
+    /// every stdout line read) used by the idle reaper.
+    pub fn activity(&self) -> Arc<std::sync::Mutex<Instant>> {
+        Arc::clone(&self.last_active)
+    }
+
+    /// Snapshot of the child's stderr tail (bounded), for crash diagnosis.
+    pub fn stderr_tail(&self) -> String {
+        self.stderr_tail
+            .lock()
+            .map(|t| t.trim().to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -489,15 +575,21 @@ async fn build_persistent_command(
 /// opaque "persistent session stdout closed unexpectedly" to users), this now
 /// returns [`TurnOutcome::Crashed`] with a diagnosis, letting the caller retry
 /// the turn transparently with `--resume`.
-pub async fn read_persistent_turn<F, S>(
+///
+/// `on_activity` is invoked on every line read, so the caller can refresh the
+/// session's activity timestamp (protecting an actively-streaming turn from
+/// the idle reaper).
+pub async fn read_persistent_turn<F, S, A>(
     engine_id: &str,
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
     mut on_events: F,
     is_stopped: S,
+    mut on_activity: A,
 ) -> TurnOutcome
 where
     F: FnMut(&[NormalizedEvent]),
     S: Fn() -> bool,
+    A: FnMut(),
 {
     let mut guard = stdout.lock().await;
     let mut final_text = String::new();
@@ -564,8 +656,11 @@ where
                 };
             }
             Ok(Ok(_)) => {
-                // We got a line — the stream is alive. Reset the stall counter.
+                // We got a line — the stream is alive. Reset the stall counter
+                // and mark the session active so the idle reaper leaves a
+                // healthy mid-turn session alone.
                 consecutive_heartbeat_timeouts = 0;
+                on_activity();
             }
             Ok(Err(e)) => {
                 return TurnOutcome::Crashed {

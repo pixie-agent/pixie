@@ -816,6 +816,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         // friendly message regardless of how the backend phrases the failure.
         const friendly = (raw: string): string => {
           const s = raw.toLowerCase();
+          // Startup failure: the CLI process exited before producing any
+          // output (bad flags, session-id collision, version mismatch...).
+          if (s.includes("failed to start") || s.includes("agent failed to start"))
+            return i18n.t('chat.errors.agentStartup') || raw;
           // OOM / forced kill (signal 9 is the classic OOM-killer signature).
           if (s.includes("oom") || s.includes("signal 9") || s.includes("killed by signal"))
             return i18n.t('chat.errors.agentOOM') || raw;
