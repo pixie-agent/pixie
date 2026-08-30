@@ -640,7 +640,10 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
             applicationFrameRef wired to a single live iframe. */}
         {fullscreenAppId && applications.some((app) => app.id === fullscreenAppId) && (
           <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-primary)]">
-            <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-color)] px-4 py-2.5">
+            <div
+              onMouseDown={handleDragRegion}
+              className="flex shrink-0 items-center gap-2 border-b border-[var(--border-color)] px-4 pb-2.5 pt-8"
+            >
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">
                 {applications.find((app) => app.id === fullscreenAppId)?.name}
               </span>
