@@ -15,6 +15,7 @@ import {
   APPLICATION_STATE_UPDATE_MESSAGE_TYPE,
   isApplicationStateMessage,
 } from "../lib/applicationMessages";
+import { lookupApplicationChatWindow } from "../lib/applicationChatWindow";
 
 /**
  * System-level floating chat for running AI Applications.
@@ -38,7 +39,6 @@ export type ApplicationChatTarget = {
   appName: string;
   actions: PixieApplicationAction[];
   inputs: PixieApplicationField[];
-  frameWindow: Window | null;
 } | {
   /** Application Studio preview (RightPanel App tab). The manifest isn't
    *  loaded on this side — the backend resolves the chat action from the
@@ -46,7 +46,6 @@ export type ApplicationChatTarget = {
   kind: "studio";
   appPath: string;
   appName: string;
-  frameWindow: Window | null;
 };
 
 interface ChatMessage {
@@ -240,10 +239,11 @@ function ChatPanel({
   const listRef = useRef<HTMLDivElement | null>(null);
   const stateRef = useRef<unknown>(null);
 
-  // Cache the app's last-reported state so the agent gets continuity.
+  // Cache the app's last-reported state so the agent gets continuity. The
+  // iframe window is looked up from the registry (never held in props/state).
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.source !== target.frameWindow) return;
+      if (event.source !== lookupApplicationChatWindow(target)) return;
       if (!isApplicationStateMessage(event.data)) return;
       stateRef.current = event.data.state;
     };
@@ -359,7 +359,7 @@ function ChatPanel({
         followups,
       });
       // Push the fresh outputs to the app so it can re-render itself.
-      target.frameWindow?.postMessage(
+      lookupApplicationChatWindow(target)?.postMessage(
         {
           type: APPLICATION_STATE_UPDATE_MESSAGE_TYPE,
           outputs: record.outputs,

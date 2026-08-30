@@ -15,6 +15,7 @@ import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
 import EngineModelPicker from "./EngineModelPicker";
 import type { ApplicationChatTarget } from "./ApplicationChat";
+import { registerApplicationChatWindow } from "../lib/applicationChatWindow";
 import {
   APPLICATION_RUN_MESSAGE_TYPE,
   APPLICATION_RUN_RESULT_MESSAGE_TYPE,
@@ -455,7 +456,9 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
 
   // Report the running app to the system floating chat. The fullscreen app
   // wins over the inline one when both are set (only one iframe is live at a
-  // time anyway — the inline copy is not rendered while fullscreen).
+  // time anyway — the inline copy is not rendered while fullscreen). The
+  // iframe window is registered out-of-band — Window objects must not travel
+  // through React props/state (cross-origin diff throws).
   useEffect(() => {
     if (section !== "applications") return;
     const activeId = fullscreenAppId ?? expandedAppId;
@@ -464,14 +467,15 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
       onAppChatTargetChange?.(null);
       return;
     }
-    onAppChatTargetChange?.({
+    const target: ApplicationChatTarget = {
       kind: "marketplace",
       appId: app.id,
       appName: app.name,
       actions: app.actions,
       inputs: app.inputs,
-      frameWindow: applicationFrameRef.current?.contentWindow ?? null,
-    });
+    };
+    registerApplicationChatWindow(target, applicationFrameRef.current?.contentWindow ?? null);
+    onAppChatTargetChange?.(target);
   }, [appFrameReadyTick, applications, expandedAppId, fullscreenAppId, applicationContent, onAppChatTargetChange, section]);
 
   useEffect(() => {

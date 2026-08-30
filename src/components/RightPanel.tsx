@@ -17,6 +17,7 @@ import { useTranslation } from "../hooks/useTranslation";
 import { openExternal } from "../openExternal";
 import Terminal from "./Terminal";
 import type { ApplicationChatTarget } from "./ApplicationChat";
+import { registerApplicationChatWindow } from "../lib/applicationChatWindow";
 
 const DiffViewer = lazy(() => import("./DiffViewer"));
 const EngineModelPicker = lazy(() => import("./EngineModelPicker"));
@@ -747,18 +748,21 @@ function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false,
   }, [activateTab, applicationMode, contentTab, workspacePath]);
 
   // Report the live studio preview to the system floating chat. The manifest
-  // isn't loaded on this side — the backend resolves the chat action.
+  // isn't loaded on this side — the backend resolves the chat action. The
+  // iframe window is registered out-of-band (Window objects must not travel
+  // through React props/state — cross-origin diff throws).
   useEffect(() => {
     if (!applicationMode || contentTab !== "app" || !appPreviewFile || appPreviewLoading) {
       onAppChatTargetChange?.(null);
       return;
     }
-    onAppChatTargetChange?.({
+    const target: ApplicationChatTarget = {
       kind: "studio",
       appPath: workspacePath,
       appName: workspaceLabel,
-      frameWindow: appPreviewFrameRef.current?.contentWindow ?? null,
-    });
+    };
+    registerApplicationChatWindow(target, appPreviewFrameRef.current?.contentWindow ?? null);
+    onAppChatTargetChange?.(target);
   }, [appPreviewFile, appPreviewFrameTick, appPreviewLoading, applicationMode, contentTab, onAppChatTargetChange, workspaceLabel, workspacePath]);
 
   // Untracked files aren't covered by `git diff HEAD`; surface them separately.
