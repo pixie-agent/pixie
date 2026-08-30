@@ -77,21 +77,13 @@ function chatActionAvailable(target: ApplicationChatTarget): boolean {
   );
 }
 
-/** Filler values for required inputs the chat doesn't naturally supply, so
- *  backend validation (application input '{}' is required) doesn't reject. */
-function buildChatInputs(
-  target: ApplicationChatTarget,
-  text: string,
-  currentState: unknown,
-): Record<string, unknown> {
-  const inputs = target.kind === "marketplace" ? target.inputs : [];
+/** Chat runs only supply the message and the app's last state. Other required
+ *  string inputs declared by the app are satisfied server-side by the chat
+ *  message itself (see `run_application_action`'s chat-run handling). */
+function buildChatInputs(text: string, currentState: unknown): Record<string, unknown> {
   const values: Record<string, unknown> = { chatMessage: text };
   if (currentState !== undefined && currentState !== null) {
     values.currentState = currentState;
-  }
-  for (const field of inputs) {
-    if (field.id in values || !field.required) continue;
-    values[field.id] = field.type === "boolean" ? false : "";
   }
   return values;
 }
@@ -203,7 +195,7 @@ function ChatPanel({
     setSending(true);
     appendMessage({ role: "user", text, at: Date.now() });
     try {
-      const inputs = buildChatInputs(target, text, stateRef.current);
+      const inputs = buildChatInputs(text, stateRef.current);
       const record: PixieApplicationRunRecord =
         target.kind === "marketplace"
           ? await invoke("application_run", {

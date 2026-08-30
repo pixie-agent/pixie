@@ -4778,6 +4778,38 @@ fn application_entry_content(id: String, app: AppHandle) -> Result<String, Strin
 }
 
 #[allow(clippy::too_many_arguments)] // engine + model overrides keep the two call sites uniform
+/// A chat message is the user's complete instruction. Other required string
+/// inputs the app declares (e.g. the default template's `userIntent`) have no
+/// separate chat-side source, so the chat message stands in for any that are
+/// missing or empty rather than failing validation on an empty filler.
+fn satisfy_chat_required_inputs(
+    action: &PixieApplicationAction,
+    input_obj: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(chat_message) = input_obj
+        .get("chatMessage")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    for input_id in &action.inputs {
+        if input_id == "chatMessage" || input_id == "currentState" {
+            continue;
+        }
+        let is_empty_string = match input_obj.get(input_id) {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+            _ => false,
+        };
+        if is_empty_string {
+            input_obj.insert(input_id.clone(), serde_json::json!(chat_message));
+        }
+    }
+}
+
 /// Resolve an action id to a manifest action. The reserved id "chat" picks
 /// the action the system-level floating chat should drive: an explicit `chat`
 /// action if declared, else the first action accepting a `chatMessage` input,
@@ -4827,9 +4859,13 @@ async fn run_application_action(
 ) -> Result<PixieApplicationRunRecord, String> {
     let id = sanitize_application_id(&id)?;
     let action = resolve_application_action(&manifest, &action_id)?;
-    let input_obj = inputs
+    let mut input_obj = inputs
         .as_object()
-        .ok_or_else(|| "Application inputs must be an object".to_string())?;
+        .ok_or_else(|| "Application inputs must be an object".to_string())?
+        .clone();
+    if action_id == "chat" {
+        satisfy_chat_required_inputs(&action, &mut input_obj);
+    }
     for input_id in &action.inputs {
         let field = manifest
             .inputs
@@ -4867,8 +4903,13 @@ async fn run_application_action(
     let model_override = model.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let data_path =
         ensure_application_data_child_dir(&application_data_root(&app)?, &id, "storage")?;
-    let prompt =
-        build_application_run_prompt(&manifest, &action, &agent_instructions, &inputs, &data_path)?;
+    let prompt = build_application_run_prompt(
+        &manifest,
+        &action,
+        &agent_instructions,
+        &serde_json::Value::Object(input_obj.clone()),
+        &data_path,
+    )?;
     let started = Utc::now();
     let install_path_string = install_path.to_string_lossy().to_string();
 
@@ -4933,7 +4974,7 @@ async fn run_application_action(
         action_id: action.id,
         engine: engine_id,
         model: model_override.map(str::to_string),
-        inputs,
+        inputs: serde_json::Value::Object(input_obj),
         outputs,
         raw_result,
         status,
@@ -8975,6 +9016,47 @@ mod tests {
         assert!(html.contains("pixie-application-state"));
         assert!(html.contains("pixie-application-state-update"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The chat message stands in for required string inputs the chat can't
+    /// source separately, so chatting to an app never trips "input is
+    /// required" validation.
+    #[test]
+    fn chat_run_satisfies_required_inputs_with_the_message() {
+        let action = PixieApplicationAction {
+            id: "design".into(),
+            label: None,
+            description: None,
+            inputs: vec![
+                "sourceData".into(),
+                "userIntent".into(),
+                "chatMessage".into(),
+                "currentState".into(),
+            ],
+            outputs: vec![],
+            mode: None,
+            workflow: None,
+        };
+        let mut inputs = serde_json::Map::new();
+        inputs.insert("chatMessage".into(), serde_json::json!("你好"));
+
+        satisfy_chat_required_inputs(&action, &mut inputs);
+
+        assert_eq!(inputs["chatMessage"], serde_json::json!("你好"));
+        assert_eq!(
+            inputs["userIntent"],
+            serde_json::json!("你好"),
+            "required userIntent falls back to the chat message"
+        );
+        assert_eq!(
+            inputs["sourceData"],
+            serde_json::json!("你好"),
+            "missing optional string also falls back so the agent has context"
+        );
+        assert!(
+            !inputs.contains_key("currentState"),
+            "state is never fabricated"
+        );
     }
 
     #[cfg(unix)]
