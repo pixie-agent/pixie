@@ -148,6 +148,8 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
   const [applicationBrief, setApplicationBrief] = useState("");
   const [applicationContent, setApplicationContent] = useState<Record<string, string>>({});
   const [pendingOpenApplicationId, setPendingOpenApplicationId] = useState<string | null>(null);
+  /** App id whose run view is expanded to a full-window overlay (Esc exits). */
+  const [fullscreenAppId, setFullscreenAppId] = useState<string | null>(null);
   const applicationFrameRef = useRef<HTMLIFrameElement | null>(null);
 
   const reload = useCallback(async () => {
@@ -431,6 +433,17 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
     appRunModelsRef.current = appRunModels;
   }, [appRunModels]);
 
+  // Esc exits the application fullscreen overlay (same interaction as the
+  // right panel's fullscreen mode).
+  useEffect(() => {
+    if (!fullscreenAppId) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreenAppId(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [fullscreenAppId]);
+
   useEffect(() => {
     const handleApplicationMessage = (event: MessageEvent) => {
       if (event.source !== applicationFrameRef.current?.contentWindow) return;
@@ -522,6 +535,7 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
       setError(null);
       try {
         await invoke("application_uninstall", { id });
+        setFullscreenAppId(null);
         await reload();
       } catch (e) {
         setError(String(e));
@@ -587,6 +601,38 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
 
   return (
     <div className="settings-enter flex flex-col flex-1 min-h-0 bg-[var(--bg-primary)] overflow-hidden">
+        {/* Fullscreen application overlay — the run iframe moves here (the
+            inline copy is not rendered), keeping the postMessage channel and
+            applicationFrameRef wired to a single live iframe. */}
+        {fullscreenAppId && applications.some((app) => app.id === fullscreenAppId) && (
+          <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-primary)]">
+            <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-color)] px-4 py-2.5">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">
+                {applications.find((app) => app.id === fullscreenAppId)?.name}
+              </span>
+              <button
+                onClick={() => setFullscreenAppId(null)}
+                title={t("rightPanel.exitFullscreen")}
+                aria-label={t("rightPanel.exitFullscreen")}
+                className="rounded-md p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5.5 1.5v3a1 1 0 0 1-1 1h-3M8.5 12.5v-3a1 1 0 0 1 1-1h3M12.5 5.5h-3a1 1 0 0 1-1-1v-3M1.5 8.5h3a1 1 0 0 1 1 1v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 bg-white">
+              <iframe
+                ref={applicationFrameRef}
+                title={applications.find((app) => app.id === fullscreenAppId)?.name ?? "Application"}
+                srcDoc={applicationContent[fullscreenAppId] ?? ""}
+                sandbox="allow-scripts"
+                className="h-full w-full border-0"
+              />
+            </div>
+          </div>
+        )}
+
         {/* Header — drag empty areas to move window */}
         <div
           onMouseDown={handleDragRegion}
@@ -823,6 +869,7 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
                             <button
                               onClick={() => {
                                 ensureApplicationInputs(app);
+                                if (expanded) setFullscreenAppId(null);
                                 setExpandedAppId(expanded ? null : app.id);
                               }}
                               disabled={busy !== null}
@@ -849,14 +896,26 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
                         {expanded && (
                           <div className="mt-3 grid gap-3">
                             {applicationContent[app.id] && (
-                              <div className="h-[560px] overflow-hidden rounded-xl border border-[var(--border-color)] bg-white">
-                                <iframe
-                                  ref={applicationFrameRef}
-                                  title={app.name}
-                                  srcDoc={applicationContent[app.id]}
-                                  sandbox="allow-scripts"
-                                  className="h-full w-full border-0"
-                                />
+                              <div className="relative h-[560px] overflow-hidden rounded-xl border border-[var(--border-color)] bg-white">
+                                {fullscreenAppId !== app.id && (
+                                  <iframe
+                                    ref={applicationFrameRef}
+                                    title={app.name}
+                                    srcDoc={applicationContent[app.id]}
+                                    sandbox="allow-scripts"
+                                    className="h-full w-full border-0"
+                                  />
+                                )}
+                                <button
+                                  onClick={() => setFullscreenAppId(app.id)}
+                                  title={t("rightPanel.enterFullscreen")}
+                                  aria-label={t("rightPanel.enterFullscreen")}
+                                  className="absolute right-2 top-2 z-10 rounded-md bg-black/40 p-1.5 text-white/90 transition-colors hover:bg-black/60"
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                    <path d="M5.5 1.5h-4v4M8.5 12.5h4v-4M12.5 5.5v-4h-4M1.5 8.5v4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                </button>
                               </div>
                             )}
                             {app.inputs.length > 0 && (
