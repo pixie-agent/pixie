@@ -54,6 +54,8 @@ interface ChatMessage {
   text: string;
   at: number;
   error?: boolean;
+  /** Clickable quick replies suggested by the app's last run. */
+  followups?: string[];
 }
 
 interface ApplicationChatProps {
@@ -115,6 +117,46 @@ function buildChatInputs(text: string, currentState: unknown): Record<string, un
     values.currentState = currentState;
   }
   return values;
+}
+
+/** Human-readable summary of a use-mode run. The raw appState JSON is for
+ *  the app iframe, not the chat bubble — surface the semantic fields
+ *  (brief/title/cards/followups) and fall back to the raw text only when
+ *  there is nothing structured to show. */
+function summarizeRunOutputs(outputs: Record<string, unknown>): { text: string; followups: string[] } {
+  const lines: string[] = [];
+  let followups: string[] = [];
+  for (const [key, value] of Object.entries(outputs)) {
+    let parsed: unknown = value;
+    if (typeof value === "string") {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        parsed = value;
+      }
+    }
+    if (!parsed || typeof parsed !== "object") {
+      lines.push(`${key}: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`);
+      continue;
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (typeof obj.title === "string" && obj.title) lines.push(String(obj.title));
+    if (typeof obj.brief === "string" && obj.brief) lines.push(String(obj.brief));
+    if (Array.isArray(obj.cards)) {
+      for (const card of obj.cards.slice(0, 4)) {
+        if (card && typeof card === "object") {
+          const c = card as Record<string, unknown>;
+          const title = typeof c.title === "string" ? c.title : "";
+          const body = typeof c.body === "string" ? c.body : "";
+          if (title || body) lines.push(`• ${title}${body ? `：${body}` : ""}`);
+        }
+      }
+    }
+    if (Array.isArray(obj.followups)) {
+      followups = obj.followups.filter((f): f is string => typeof f === "string").slice(0, 6);
+    }
+  }
+  return { text: lines.join("\n").slice(0, 2000), followups };
 }
 
 function historyKey(target: ApplicationChatTarget): string {
@@ -309,12 +351,13 @@ function ChatPanel({
         engine: effectiveEngine,
         model: null,
       });
-      const summary =
-        Object.entries(record.outputs)
-          .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
-          .join("\n")
-          .slice(0, 2000) || record.rawResult.slice(0, 2000);
-      appendMessage({ role: "assistant", text: summary || t("applicationChat.done"), at: Date.now() });
+      const { text: summary, followups } = summarizeRunOutputs(record.outputs);
+      appendMessage({
+        role: "assistant",
+        text: summary || record.rawResult.slice(0, 2000) || t("applicationChat.done"),
+        at: Date.now(),
+        followups,
+      });
       // Push the fresh outputs to the app so it can re-render itself.
       target.frameWindow?.postMessage(
         {
@@ -379,17 +422,32 @@ function ChatPanel({
           </p>
         )}
         {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-xs leading-relaxed whitespace-pre-wrap break-words ${
-              message.role === "user"
-                ? "ml-auto bg-[var(--accent)] text-white"
-                : message.error
-                  ? "bg-red-500/10 text-red-300"
-                  : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-            }`}
-          >
-            {message.text}
+          <div key={index} className={message.role === "user" ? "flex flex-col items-end" : ""}>
+            <div
+              className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-xs leading-relaxed whitespace-pre-wrap break-words ${
+                message.role === "user"
+                  ? "bg-[var(--accent)] text-white"
+                  : message.error
+                    ? "bg-red-500/10 text-red-300"
+                    : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+              }`}
+            >
+              {message.text}
+            </div>
+            {!!message.followups?.length && (
+              <div className="mt-1 flex max-w-[85%] flex-wrap justify-end gap-1">
+                {message.followups.map((followup) => (
+                  <button
+                    key={followup}
+                    type="button"
+                    onClick={() => setDraft(followup)}
+                    className="rounded-full border border-[var(--border-color)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                  >
+                    {followup}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ))}
         {sending && (
