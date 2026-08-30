@@ -639,19 +639,34 @@ pub async fn spawn_single(
 
 /// Spawn a headless (auto-approved) agent process for scheduled tasks.
 /// Uses `--dangerously-skip-permissions` because there is no user to approve.
+///
+/// `readonly` restricts the run to read-only tools (tool allowlist / native
+/// sandbox) — used when running an application for its user. Note: engines
+/// without a CLI allowlist mechanism (CodeBuddy, Cursor) fall back to their
+/// regular spawn and do NOT enforce read-only; callers relying on the
+/// guarantee must confine the cwd accordingly.
 pub async fn spawn_headless(
     engine_id: &str,
     session_id: &str,
     message: &str,
     cwd: Option<&str>,
     model: Option<&str>,
+    readonly: bool,
 ) -> Result<Child> {
     match engine_id {
-        "claude" => claude::spawn_headless(session_id, message, cwd, model).await,
-        "codex" => codex::spawn_headless(session_id, message, cwd, model).await,
+        "claude" => claude::spawn_headless(session_id, message, cwd, model, readonly).await,
+        "codex" => codex::spawn_headless(session_id, message, cwd, model, readonly).await,
         // CodeBuddy/Cursor fall back to their regular spawn_single for now.
         // Builtin engine doesn't spawn child processes (handled separately)
-        other => spawn_single(other, session_id, message, cwd, model).await,
+        other => {
+            if readonly {
+                log::warn!(
+                    "[engine] {other} does not support read-only headless runs; \
+                     spawning with default permissions"
+                );
+            }
+            spawn_single(other, session_id, message, cwd, model).await
+        }
     }
 }
 

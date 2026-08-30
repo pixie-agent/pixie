@@ -44,6 +44,51 @@ impl BuiltinSession {
         api_key: &str,
         base_url: Option<&str>,
     ) -> Self {
+        Self::with_tools(
+            session_id,
+            model,
+            system_prompt,
+            cwd,
+            api_key,
+            base_url,
+            pixie_pi::tools::coding_tools(PathBuf::from(cwd)),
+        )
+    }
+
+    /// Read-only variant for running an application for its user: the agent
+    /// may inspect the app's files but never modify them. The full coding
+    /// tool set (bash/edit/write) is withheld entirely.
+    pub fn new_readonly(
+        session_id: &str,
+        model: Option<&str>,
+        cwd: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+    ) -> Self {
+        Self::with_tools(
+            session_id,
+            model,
+            Some(
+                "You are running an application for its user. The application's files are \
+                 read-only; use the provided read-only tools (read, grep, find, ls) to \
+                 inspect them when needed and produce the requested output directly.",
+            ),
+            cwd,
+            api_key,
+            base_url,
+            pixie_pi::tools::read_only_tools(PathBuf::from(cwd)),
+        )
+    }
+
+    fn with_tools(
+        session_id: &str,
+        model: Option<&str>,
+        system_prompt: Option<&str>,
+        cwd: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        tools: Vec<Arc<dyn pixie_pi::agent::tool::AgentTool>>,
+    ) -> Self {
         // A caller-provided model wins; otherwise fall back to the configured
         // (ANTHROPIC_MODEL) or default model.
         let model_pattern = model.map(str::to_string).unwrap_or_else(get_model);
@@ -55,7 +100,6 @@ impl BuiltinSession {
             cwd
         );
 
-        let tools = pixie_pi::tools::coding_tools(PathBuf::from(cwd));
         let system = system_prompt
             .unwrap_or(
                 "You are a helpful coding assistant working in the user's workspace. \

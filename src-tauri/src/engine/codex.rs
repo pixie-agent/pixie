@@ -218,24 +218,25 @@ pub async fn spawn_continue(
 }
 
 /// Spawn a headless Codex process for scheduled tasks.
+///
+/// `readonly` switches to Codex's native read-only sandbox — used when
+/// running an application for its user, where the app's files must not be
+/// modified.
 pub async fn spawn_headless(
     _session_id: &str,
     message: &str,
     cwd: Option<&str>,
     model_override: Option<&str>,
+    readonly: bool,
 ) -> Result<Child> {
-    spawn_with_args(
-        vec![
-            "exec".into(),
-            "--json".into(),
-            "--ephemeral".into(),
-            "--dangerously-bypass-approvals-and-sandbox".into(),
-        ],
-        message,
-        cwd,
-        model_override,
-    )
-    .await
+    let sandbox_arg = if readonly {
+        vec!["--sandbox".into(), "read-only".into()]
+    } else {
+        vec!["--dangerously-bypass-approvals-and-sandbox".into()]
+    };
+    let mut args = vec!["exec".into(), "--json".into(), "--ephemeral".into()];
+    args.extend(sandbox_arg);
+    spawn_with_args(args, message, cwd, model_override).await
 }
 
 // ---------------------------------------------------------------------------

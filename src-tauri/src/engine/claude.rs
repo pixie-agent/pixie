@@ -252,13 +252,33 @@ pub async fn spawn_continue(
 
 /// Spawn a headless (auto-approved) Claude process for scheduled tasks.
 /// Uses `--dangerously-skip-permissions` because there is no user to approve.
+///
+/// `readonly` restricts the run to a read-only tool allowlist under the
+/// default permission mode instead — used when running an application for
+/// its user, where the app's files must not be modified.
 pub async fn spawn_headless(
     conversation_id: &str,
     message: &str,
     cwd: Option<&str>,
     model_override: Option<&str>,
+    readonly: bool,
 ) -> Result<Child> {
-    spawn_with_args(
+    let args = if readonly {
+        vec![
+            "--session-id".into(),
+            conversation_id.into(),
+            "--allowedTools".into(),
+            "Read,Grep,Glob,LS,WebFetch,WebSearch".into(),
+            "--disallowedTools".into(),
+            "AskUserQuestion".into(),
+            "--print".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--permission-mode".into(),
+            "default".into(),
+        ]
+    } else {
         vec![
             "--session-id".into(),
             conversation_id.into(),
@@ -269,12 +289,9 @@ pub async fn spawn_headless(
             "stream-json".into(),
             "--verbose".into(),
             "--dangerously-skip-permissions".into(),
-        ],
-        message,
-        cwd,
-        model_override,
-    )
-    .await
+        ]
+    };
+    spawn_with_args(args, message, cwd, model_override).await
 }
 
 // ---------------------------------------------------------------------------

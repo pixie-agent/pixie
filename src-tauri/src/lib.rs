@@ -4133,6 +4133,7 @@ fn build_application_run_prompt(
     agent_instructions: &str,
     inputs: &serde_json::Value,
     data_path: &std::path::Path,
+    install_path: &std::path::Path,
 ) -> Result<String, String> {
     let manifest_json = serde_json::to_string_pretty(manifest)
         .map_err(|e| format!("Failed to serialize application manifest: {e}"))?;
@@ -4146,11 +4147,16 @@ fn build_application_run_prompt(
 Application manifest:\n```json\n{manifest_json}\n```\n\n\
 Application agent instructions:\n{agent_instructions}\n\n\
 User inputs:\n```json\n{inputs_json}\n```\n\n\
-Application data path: {data_path}\n\n\
+Your working directory (application data path): {data_path}\n\
+Application files (read-only reference): {install_path}\n\n\
+The application's files are read-only while it is running for its user. \
+Inspect them by absolute path if needed, but do not modify them; if you \
+need to persist working data, write it under the data path.\n\n\
 Return the final answer as exactly one JSON fenced block with this shape:\n```json\n{{\"outputs\": {{}}}}\n```\n\
 The outputs object must include these output ids: {outputs_json}.",
         action_id = action.id,
-        data_path = data_path.display()
+        data_path = data_path.display(),
+        install_path = install_path.display()
     ))
 }
 
@@ -4909,9 +4915,14 @@ async fn run_application_action(
         &agent_instructions,
         &serde_json::Value::Object(input_obj.clone()),
         &data_path,
+        &install_path,
     )?;
     let started = Utc::now();
     let install_path_string = install_path.to_string_lossy().to_string();
+    // Use-mode runs are read-only: the agent works from the app's data
+    // directory, never the install directory, so even an engine without a
+    // read-only tool enforcement cannot rewrite the app itself.
+    let data_path_string = data_path.to_string_lossy().to_string();
 
     let run_result: Result<String, String> = if engine_id == "builtin" {
         let api_key = engine::builtin::get_api_key();
@@ -4919,11 +4930,10 @@ async fn run_application_action(
             Err("No ANTHROPIC_API_KEY configured for builtin engine".to_string())
         } else {
             let base_url = engine::builtin::get_base_url();
-            let mut session = BuiltinSession::new(
+            let mut session = BuiltinSession::new_readonly(
                 &run_id,
                 model_override,
-                None,
-                &install_path_string,
+                &data_path_string,
                 &api_key,
                 base_url.as_deref(),
             );
@@ -4942,8 +4952,9 @@ async fn run_application_action(
             &engine_id,
             &run_id,
             &prompt,
-            Some(&install_path_string),
+            Some(&data_path_string),
             model_override,
+            true,
         )
         .await
         .map_err(|e| format!("Failed to start application agent: {e}"))?;
@@ -6539,6 +6550,7 @@ async fn run_task_headless(app: AppHandle, mut task: ScheduledTask, conversation
         &task.prompt,
         Some(&task.workspace),
         None,
+        false,
     )
     .await
     {
@@ -7551,47 +7563,55 @@ async fn run_loop_iteration(
             .await;
     }
 
-    let child =
-        match spawn_headless(engine_id, &conversation_id, &prompt, Some(&workspace), None).await {
-            Ok(child) => child,
-            Err(e) => {
-                log::error!("[loop] spawn failed for '{}': {}", task.name, e);
-                // Finalize the conversation so it isn't stuck "generating" and
-                // unclickable in the sidebar.
-                let _ = app.emit(
-                    "agent-error",
-                    ResponseError {
-                        conversation_id: conversation_id.clone(),
-                        error: format!("Failed to start agent: {}", e),
-                    },
-                );
-                record_loop_iteration(
-                    app,
-                    LoopIterationRecord {
-                        id: conversation_id,
-                        loop_task_id: task.id.clone(),
-                        iteration: task.iteration + 1,
-                        prompt: prompt.clone(),
-                        result: String::new(),
-                        status: "error".into(),
-                        started_at: started.to_rfc3339(),
-                        finished_at: Utc::now().to_rfc3339(),
-                        exit_met: false,
-                        progress_snapshot: None,
-                    },
-                );
-                if let Ok(mut active) = active_loop_conversations().lock() {
-                    active.remove(&task.id);
-                }
-                return LoopIterationOutcome {
-                    prompt,
+    let child = match spawn_headless(
+        engine_id,
+        &conversation_id,
+        &prompt,
+        Some(&workspace),
+        None,
+        false,
+    )
+    .await
+    {
+        Ok(child) => child,
+        Err(e) => {
+            log::error!("[loop] spawn failed for '{}': {}", task.name, e);
+            // Finalize the conversation so it isn't stuck "generating" and
+            // unclickable in the sidebar.
+            let _ = app.emit(
+                "agent-error",
+                ResponseError {
+                    conversation_id: conversation_id.clone(),
+                    error: format!("Failed to start agent: {}", e),
+                },
+            );
+            record_loop_iteration(
+                app,
+                LoopIterationRecord {
+                    id: conversation_id,
+                    loop_task_id: task.id.clone(),
+                    iteration: task.iteration + 1,
+                    prompt: prompt.clone(),
                     result: String::new(),
                     status: "error".into(),
+                    started_at: started.to_rfc3339(),
+                    finished_at: Utc::now().to_rfc3339(),
                     exit_met: false,
-                    unchanged_streak: 0,
-                };
+                    progress_snapshot: None,
+                },
+            );
+            if let Ok(mut active) = active_loop_conversations().lock() {
+                active.remove(&task.id);
             }
-        };
+            return LoopIterationOutcome {
+                prompt,
+                result: String::new(),
+                status: "error".into(),
+                exit_met: false,
+                unchanged_streak: 0,
+            };
+        }
+    };
 
     if let Some(pid) = child.id() {
         log::info!(
@@ -9057,6 +9077,27 @@ mod tests {
             !inputs.contains_key("currentState"),
             "state is never fabricated"
         );
+    }
+
+    /// Use-mode runs tell the agent the app files are read-only and point its
+    /// working directory at the data path, not the install path.
+    #[test]
+    fn application_run_prompt_marks_app_files_read_only() {
+        let manifest: PixieApplicationManifest =
+            serde_json::from_value(valid_application_manifest_json()).unwrap();
+        let action = manifest.actions[0].clone();
+        let prompt = build_application_run_prompt(
+            &manifest,
+            &action,
+            "# Agent\n",
+            &serde_json::json!({"goal": "hi"}),
+            std::path::Path::new("/data/storage"),
+            std::path::Path::new("/apps/demo"),
+        )
+        .unwrap();
+        assert!(prompt.contains("read-only reference): /apps/demo"));
+        assert!(prompt.contains("data path): /data/storage"));
+        assert!(prompt.contains("files are read-only while it is running"));
     }
 
     #[cfg(unix)]
