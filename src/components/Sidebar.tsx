@@ -1,11 +1,11 @@
-import { useState, useMemo, useRef, memo } from "react";
+import { useState, useMemo, useRef, useEffect, memo } from "react";
 import { useTranslation } from "../hooks/useTranslation";
-import { relativeTime as formatRelativeTime } from "../lib/i18nFormat";
+import { relativeTime as formatRelativeTime, engineLabel } from "../lib/i18nFormat";
 import type { ConversationEntry } from "../hooks/useChat";
-import type { WorkspaceState, AgentEngineId, EngineModelConfigs, LoopTask } from "../types";
+import type { WorkspaceState, AgentEngineId, LoopTask } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
-import NewAgentModal from "./NewAgentModal";
 import EngineBadge from "./EngineBadge";
+import WorkspaceFilterDropdown from "./WorkspaceFilterDropdown";
 
 interface SidebarProps {
   entries: ConversationEntry[];
@@ -24,9 +24,7 @@ interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
   defaultEngine: AgentEngineId;
-  onDefaultEngineChange: (engine: AgentEngineId) => void;
-  engineModelConfigs: EngineModelConfigs;
-  /** Engine ids that are installed + ready; the New Agent picker is limited to these. */
+  /** Engine ids that are installed + ready; the New Agent button falls back to these. */
   readyEngineIds: AgentEngineId[];
   defaultWorkspacePath: string;
   /** Active loop tasks — used to group loop-iteration conversations in the sidebar. */
@@ -131,6 +129,11 @@ const ConversationRow = memo(function ConversationRow({
             >
               {conv.title}
             </p>
+          )}
+          {conv.messages.length === 0 && (
+            <span className="shrink-0 text-[9px] uppercase px-1 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/30">
+              {t('sidebar.draftBadge')}
+            </span>
           )}
         </div>
         <p className="text-[10px] mt-0.5 opacity-60 truncate flex items-center gap-1.5">
@@ -362,8 +365,6 @@ export default function Sidebar({
   isOpen,
   onClose,
   defaultEngine,
-  onDefaultEngineChange,
-  engineModelConfigs,
   readyEngineIds,
   defaultWorkspacePath,
   loopTasks,
@@ -374,7 +375,28 @@ export default function Sidebar({
 
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [loopsExpanded, setLoopsExpanded] = useState(true);
-  const [newAgentModalOpen, setNewAgentModalOpen] = useState(false);
+  /** Manual workspace filter for the conversation list: null = all. */
+  const [filterWorkspaceId, setFilterWorkspaceId] = useState<string | null>(null);
+  const [wsFilterOpen, setWsFilterOpen] = useState(false);
+  const wsFilterWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Close the workspace-filter dropdown when clicking outside of it.
+  useEffect(() => {
+    if (!wsFilterOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (wsFilterWrapperRef.current && !wsFilterWrapperRef.current.contains(target)) {
+        setWsFilterOpen(false);
+      }
+    };
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("pointerdown", onDown);
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [wsFilterOpen]);
 
   // The default engine may not be ready (e.g. the user logged it out since). The
   // quick "New Agent" button must use a ready engine, otherwise it would create
@@ -383,8 +405,32 @@ export default function Sidebar({
     ? defaultEngine
     : (readyEngineIds[0] ?? defaultEngine);
 
+  // Workspaces offered in the filter dropdown: known workspaces plus any
+  // workspace that still has conversations (e.g. evicted from the recent list).
+  const filterableWorkspaces = useMemo(() => {
+    const withConvs = new Set(entries.map((e) => e.workspaceId));
+    const seen = new Set<string>();
+    const out: WorkspaceState[] = [];
+    for (const w of workspaces) {
+      if (withConvs.has(w.id) && !seen.has(w.id)) {
+        seen.add(w.id);
+        out.push(w);
+      }
+    }
+    for (const id of withConvs) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        out.push({ id, path: id, name: id.split("/").pop() ?? id });
+      }
+    }
+    return out;
+  }, [entries, workspaces]);
+
   const filtered = useMemo(() => {
     let list = entries;
+    if (filterWorkspaceId) {
+      list = list.filter((e) => e.workspaceId === filterWorkspaceId);
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -394,7 +440,7 @@ export default function Sidebar({
       );
     }
     return list;
-  }, [entries, search, workspaces]);
+  }, [entries, search, workspaces, filterWorkspaceId]);
 
   const { activeEntries, historyEntries, loopGroups } = useMemo(() => {
     const active: ConversationEntry[] = [];
@@ -478,15 +524,54 @@ export default function Sidebar({
         {navigator.platform?.includes("Mac") && (
           <div className="shrink-0 h-[38px]" onMouseDown={handleDragRegion} />
         )}
-        {/* Search */}
+        {/* Search + workspace filter */}
         <div className="px-3 py-2 border-b border-[var(--border-color)]">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('sidebar.searchAgents')}
-            className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors"
-          />
+          <div className="flex items-stretch">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('sidebar.searchAgents')}
+              className="flex-1 min-w-0 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-l-lg px-3 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors"
+            />
+            <div ref={wsFilterWrapperRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setWsFilterOpen((v) => !v)}
+                title={
+                  filterWorkspaceId
+                    ? t('sidebar.filterSelected', { name: workspaceName(workspaces, filterWorkspaceId) })
+                    : t('sidebar.filterAllHover')
+                }
+                aria-label={t('sidebar.filterAll')}
+                className={`flex items-center justify-center gap-0.5 w-9 h-full rounded-r-lg border border-l-0 border-[var(--border-color)] transition-colors ${
+                  filterWorkspaceId
+                    ? "text-[var(--accent)] bg-[var(--accent)]/10"
+                    : "text-[var(--text-secondary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                }`}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
+                </svg>
+                {filterWorkspaceId && (
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                )}
+              </button>
+              {wsFilterOpen && (
+                <WorkspaceFilterDropdown
+                  workspaces={filterableWorkspaces}
+                  selectedId={filterWorkspaceId}
+                  onSelect={(id) => {
+                    setFilterWorkspaceId(id);
+                    setWsFilterOpen(false);
+                  }}
+                  onClose={() => setWsFilterOpen(false)}
+                />
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Conversation list: Active + Loops groups + collapsible History */}
@@ -495,7 +580,9 @@ export default function Sidebar({
             <p className="text-xs text-[var(--text-secondary)] text-center mt-8 px-2">
               {search
                 ? t('sidebar.noMatchingAgents')
-                : t('sidebar.noAgentsYet')}
+                : filterWorkspaceId
+                  ? t('sidebar.noAgentsInWorkspace')
+                  : t('sidebar.noAgentsYet')}
             </p>
           )}
 
@@ -583,30 +670,10 @@ export default function Sidebar({
             <button
               type="button"
               onClick={() => onNew({ engine: effectiveDefaultEngine })}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title={t('sidebar.newAgentDefaults')}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title={t('sidebar.newAgentDefaults', { engine: engineLabel(effectiveDefaultEngine, t) })}
             >
-              <EngineBadge engine={effectiveDefaultEngine} tone="onAccent" />
               {t('sidebar.newAgent')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setNewAgentModalOpen(true)}
-              className="shrink-0 flex items-center justify-center px-2 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-90 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-              title={t('sidebar.advancedOptions')}
-            >
-              {/* Sliders icon */}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="4" y1="21" x2="4" y2="14" />
-                <line x1="4" y1="10" x2="4" y2="3" />
-                <line x1="12" y1="21" x2="12" y2="12" />
-                <line x1="12" y1="8" x2="12" y2="3" />
-                <line x1="20" y1="21" x2="20" y2="16" />
-                <line x1="20" y1="12" x2="20" y2="3" />
-                <line x1="2" y1="14" x2="6" y2="14" />
-                <line x1="10" y1="8" x2="14" y2="8" />
-                <line x1="18" y1="16" x2="22" y2="16" />
-              </svg>
             </button>
           </div>
           <button
@@ -672,19 +739,6 @@ export default function Sidebar({
           </button>
         </div>
       </aside>
-
-      {newAgentModalOpen && (
-        <NewAgentModal
-          defaultEngine={defaultEngine}
-          engineModelConfigs={engineModelConfigs}
-          readyEngineIds={readyEngineIds}
-          onDefaultEngineChange={onDefaultEngineChange}
-          onCreate={({ engine, model }) => {
-            onNew({ engine, model });
-          }}
-          onClose={() => setNewAgentModalOpen(false)}
-        />
-      )}
     </>
   );
 }

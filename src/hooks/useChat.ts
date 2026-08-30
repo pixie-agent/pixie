@@ -48,6 +48,13 @@ export interface ConversationEntry {
 
 const UNBOUND_WORKSPACE_ID = "__pixie_unbound__";
 
+/** How many recent workspaces the picker dropdown shows. */
+const MAX_RECENT_WORKSPACES = 8;
+/** Hard cap on the persisted workspace list. Adding one more evicts the
+ *  least-recently-used entry (protected entries excepted) so config.json
+ *  doesn't grow without bound. Eviction never touches conversations. */
+const MAX_STORED_WORKSPACES = 20;
+
 function generateId(): string {
   return crypto.randomUUID();
 }
@@ -301,12 +308,24 @@ function emptyStreamBatch(): StreamBatch {
   return { textParts: [], tools: [] };
 }
 
-function flattenConversations(all: Record<string, Conversation[]>): ConversationEntry[] {
+/** Flatten all conversations for UI listing. Unbound (draft) conversations
+ *  are included so a freshly created — not yet messaged — session stays
+ *  reachable in the sidebar; their workspaceId resolves from the staged
+ *  pendingWorkspaceId so the row shows the right label. */
+function flattenConversations(
+  all: Record<string, Conversation[]>,
+  fallbackWorkspaceId?: string | null,
+): ConversationEntry[] {
   const entries: ConversationEntry[] = [];
   for (const [workspaceId, convs] of Object.entries(all)) {
-    if (workspaceId === UNBOUND_WORKSPACE_ID) continue;
     for (const conversation of convs) {
-      entries.push({ conversation, workspaceId });
+      if (workspaceId === UNBOUND_WORKSPACE_ID) {
+        const resolved = conversation.pendingWorkspaceId ?? fallbackWorkspaceId;
+        if (!resolved) continue;
+        entries.push({ conversation, workspaceId: resolved });
+      } else {
+        entries.push({ conversation, workspaceId });
+      }
     }
   }
   entries.sort((a, b) => b.conversation.updatedAt - a.conversation.updatedAt);
@@ -343,9 +362,49 @@ function sortWorkspacesByActivity(
   });
 }
 
+/** Drop the least-active workspaces beyond MAX_STORED_WORKSPACES. Protected
+ *  entries (the just-chosen path, active/default workspace, anything with a
+ *  running agent) are never evicted; entries are dropped from the tail of the
+ *  activity sort, i.e. oldest-first. */
+function capWorkspaces(
+  workspaces: WorkspaceState[],
+  allConversations: Record<string, Conversation[]>,
+  generatingIds: Set<string>,
+  protectedIds: ReadonlySet<string>,
+): WorkspaceState[] {
+  if (workspaces.length <= MAX_STORED_WORKSPACES) return workspaces;
+  const sorted = sortWorkspacesByActivity(workspaces, allConversations, generatingIds);
+  const kept: WorkspaceState[] = [];
+  let budget = MAX_STORED_WORKSPACES;
+  for (const ws of sorted) {
+    const isProtected = protectedIds.has(ws.id) || workspaceActivity(ws.id, allConversations, generatingIds).running;
+    if (isProtected) {
+      kept.push(ws);
+      continue;
+    }
+    if (budget > 0) {
+      kept.push(ws);
+      budget -= 1;
+    }
+  }
+  // Preserve the caller's ordering rather than the activity sort.
+  const keptIds = new Set(kept.map((w) => w.id));
+  return workspaces.filter((w) => keptIds.has(w.id));
+}
+
+/** History entries for PERSISTENCE: bound workspaces only, and only
+ *  conversations with real content. Draft (unbound, empty) sessions are
+ *  deliberately never written to disk — they vanish on restart. */
 function historyEntriesFromConversations(all: Record<string, Conversation[]>): ConversationEntry[] {
-  const entries = flattenConversations(all);
-  return entries.filter(({ conversation }) => conversation.messages.length > 0);
+  const entries: ConversationEntry[] = [];
+  for (const [workspaceId, convs] of Object.entries(all)) {
+    if (workspaceId === UNBOUND_WORKSPACE_ID) continue;
+    for (const conversation of convs) {
+      if (conversation.messages.length === 0) continue;
+      entries.push({ conversation, workspaceId });
+    }
+  }
+  return entries;
 }
 
 export function useChat(engineModelConfigs: EngineModelConfigs) {
@@ -371,6 +430,12 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   const unlistenRefs = useRef<Array<() => void>>([]);
   const activeIdRef = useRef<string | null>(activeId);
   const allConversationsRef = useRef(allConversations);
+  /** Latest generating set for callbacks that must not close over stale state. */
+  const generatingIdsRef = useRef<Set<string>>(generatingIds);
+  /** Engine/model changes made while a turn was streaming, keyed by
+   *  conversationId. Applied (backend sync) when the turn completes so the
+   *  live session is never killed mid-reply. */
+  const pendingOverridesRef = useRef<Map<string, { engine?: AgentEngineId; model?: string }>>(new Map());
   /** Reverse index: conversationId → workspaceId for O(1) lookups. */
   const convIndexRef = useRef<Map<string, string>>(new Map());
   const streamBatchesRef = useRef(new Map<string, StreamBatch>());
@@ -450,6 +515,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   }, [activeId]);
 
   useEffect(() => {
+    generatingIdsRef.current = generatingIds;
+  }, [generatingIds]);
+
+  useEffect(() => {
     allConversationsRef.current = allConversations;
     // Rebuild the convId → wsId index whenever conversations change.
     rebuildConversationIndex(allConversations, convIndexRef.current);
@@ -472,9 +541,15 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     [workspaces, allConversations, generatingIds],
   );
 
+  /** Capped view for the workspace picker dropdown — most recent first. */
+  const recentWorkspaces = useMemo(
+    () => sortedWorkspaces.slice(0, MAX_RECENT_WORKSPACES),
+    [sortedWorkspaces],
+  );
+
   const unifiedConversations = useMemo(
-    () => flattenConversations(allConversations),
-    [allConversations],
+    () => flattenConversations(allConversations, activeWorkspaceId),
+    [allConversations, activeWorkspaceId],
   );
 
   const activeConversation = useMemo(() => {
@@ -746,6 +821,22 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     if (loaded) updateConfig({ defaultEngine });
   }, [loaded, defaultEngine]);
 
+  /** Apply engine/model overrides staged while a turn was streaming, now that
+   *  the turn has finished and killing the persistent session is safe. */
+  const applyPendingOverrides = useCallback((conversationId: string) => {
+    const pending = pendingOverridesRef.current.get(conversationId);
+    if (!pending) return;
+    pendingOverridesRef.current.delete(conversationId);
+    const wsId = findWorkspaceForConversation(allConversationsRef.current, conversationId, convIndexRef);
+    const conv = wsId ? allConversationsRef.current[wsId]?.find((c) => c.id === conversationId) : undefined;
+    const engine = pending.engine ?? conv?.engine;
+    invoke("update_conversation_model", {
+      conversationId,
+      model: pending.model ?? null,
+      engine: engine ?? null,
+    }).catch((e) => console.error("[applyPendingOverrides] backend call failed:", e));
+  }, []);
+
   // Listen to Tauri events — route updates by conversation_id, not active workspace.
   useEffect(() => {
     let mounted = true;
@@ -779,6 +870,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         });
         // Only clear the banner when the turn actually succeeded.
         setError(null);
+        // Sync any engine/model change the user staged mid-turn.
+        applyPendingOverrides(done.conversation_id);
 
         // Fire-and-forget: write conversation to Obsidian vault.
         {
@@ -855,6 +948,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
           next.delete(err.conversation_id);
           return next;
         });
+        // The turn is over (failed) — staged engine/model changes can sync now.
+        applyPendingOverrides(err.conversation_id);
       });
 
       // The backend is transparently retrying a persistent turn that crashed
@@ -1003,24 +1098,43 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       batches.clear();
       streamFlushScheduledRef.current = false;
     };
-  }, [queueStreamUpdate, flushStreamBatches]);
+  }, [queueStreamUpdate, flushStreamBatches, applyPendingOverrides]);
 
   const resolveTargetWorkspace = useCallback((preferredWorkspaceId?: string | null): string | null => {
     return preferredWorkspaceId ?? newConversationWorkspaceId ?? defaultWorkspacePath ?? activeWorkspaceId ?? sortedWorkspaces[0]?.id ?? null;
   }, [newConversationWorkspaceId, defaultWorkspacePath, activeWorkspaceId, sortedWorkspaces]);
 
+  /** Ensure the workspace exists in the list (appending if new) and evict the
+   *  least-active entries beyond MAX_STORED_WORKSPACES. `chosenPath` and the
+   *  active/default workspaces are protected from eviction. Returns nothing —
+   *  callers set active/conversation state around it. */
+  const appendWorkspaceCapped = useCallback((chosenPath: string) => {
+    const name = basename(chosenPath);
+    const snapshot = allConversationsRef.current;
+    const generating = generatingIdsRef.current;
+    const protectedIds = new Set<string>([
+      chosenPath,
+      activeWorkspaceId ?? "",
+      defaultWorkspacePath || "",
+    ].filter(Boolean));
+    setWorkspaces((prev) => {
+      const next = prev.some((w) => w.path === chosenPath)
+        ? prev
+        : [...prev, { id: chosenPath, path: chosenPath, name }];
+      return capWorkspaces(next, snapshot, generating, protectedIds);
+    });
+    // Evicted workspaces keep their conversation buckets — history is never lost.
+    setAllConversations((prev) => ({ ...prev, [chosenPath]: prev[chosenPath] ?? [] }));
+  }, [activeWorkspaceId, defaultWorkspacePath]);
+
   const addWorkspacePath = useCallback((path: string) => {
     const trimmed = path.trim();
     if (!trimmed) return "";
-    const name = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed;
-    setWorkspaces((prev) =>
-      prev.some((w) => w.path === trimmed) ? prev : [...prev, { id: trimmed, path: trimmed, name }]
-    );
-    setAllConversations((prev) => ({ ...prev, [trimmed]: prev[trimmed] ?? [] }));
+    appendWorkspaceCapped(trimmed);
     setActiveWorkspaceId(trimmed);
     setError(null);
     return trimmed;
-  }, []);
+  }, [appendWorkspaceCapped]);
 
   // Change the configured default working directory. Config-only: it persists
   // the choice and updates what `get_default_workspace_path` returns, but does
@@ -1045,6 +1159,24 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     model?: string,
     metadata?: Partial<Pick<Conversation, "mode" | "applicationPath" | "templateId">>,
   ) => {
+    // Reuse an existing draft (unbound, no messages) instead of stacking a
+    // new one every click — the user's staged engine/model/workspace choices
+    // in that draft are preserved.
+    const drafts = allConversationsRef.current[UNBOUND_WORKSPACE_ID] ?? [];
+    const reusable = drafts.find(
+      (c) =>
+        c.messages.length === 0 &&
+        !c.mode &&
+        !c.applicationPath &&
+        !c.templateId &&
+        !generatingIdsRef.current.has(c.id),
+    );
+    if (reusable) {
+      setActiveId(reusable.id);
+      setError(null);
+      return reusable.id;
+    }
+
     const id = generateId();
     const conv: Conversation = {
       id, title: i18n.t("sidebar.newAgent"), messages: [],
@@ -1065,32 +1197,43 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     return id;
   }, [defaultEngine, newConversationWorkspaceId]);
 
+  /** Bind a chosen workspace folder to the current context: register it in the
+   *  list (capped), make it active, and — when the active conversation is still
+   *  unbound — stage it as that conversation's workspace. Shared by the native
+   *  folder picker and the recent-workspaces dropdown. */
+  const applyWorkspaceChoice = useCallback((path: string) => {
+    appendWorkspaceCapped(path);
+    setActiveWorkspaceId(path);
+    if (!activeId) {
+      setNewConversationWorkspaceId(path);
+      return;
+    }
+    const currentWsId = findWorkspaceForConversation(allConversationsRef.current, activeId, convIndexRef);
+    if (currentWsId !== UNBOUND_WORKSPACE_ID) return;
+    setAllConversations((prev) => ({
+      ...prev,
+      [UNBOUND_WORKSPACE_ID]: (prev[UNBOUND_WORKSPACE_ID] ?? []).map((conv) =>
+        conv.id === activeId ? { ...conv, pendingWorkspaceId: path } : conv,
+      ),
+    }));
+  }, [activeId, appendWorkspaceCapped]);
+
   const chooseActiveConversationWorkspace = useCallback(async () => {
     try {
       const path = await invoke<string | null>("select_workspace");
       if (!path) return;
-      const name = basename(path);
-      setWorkspaces((prev) =>
-        prev.some((w) => w.path === path) ? prev : [...prev, { id: path, path, name }],
-      );
-      setAllConversations((prev) => ({ ...prev, [path]: prev[path] ?? [] }));
-      setActiveWorkspaceId(path);
-      if (!activeId) {
-        setNewConversationWorkspaceId(path);
-        return;
-      }
-      const currentWsId = findWorkspaceForConversation(allConversationsRef.current, activeId, convIndexRef);
-      if (currentWsId !== UNBOUND_WORKSPACE_ID) return;
-      setAllConversations((prev) => ({
-        ...prev,
-        [UNBOUND_WORKSPACE_ID]: (prev[UNBOUND_WORKSPACE_ID] ?? []).map((conv) =>
-          conv.id === activeId ? { ...conv, pendingWorkspaceId: path } : conv,
-        ),
-      }));
+      applyWorkspaceChoice(path);
     } catch {
       /* ignore cancelled picker */
     }
-  }, [activeId]);
+  }, [applyWorkspaceChoice]);
+
+  /** Pick a workspace from the recent list (by its id = path). */
+  const selectExistingWorkspace = useCallback((workspaceId: string) => {
+    const ws = workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    applyWorkspaceChoice(ws.path);
+  }, [workspaces, applyWorkspaceChoice]);
 
   const switchConversation = useCallback((id: string, workspaceId?: string) => {
     const wsId =
@@ -1124,6 +1267,16 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       ),
     }));
 
+    // While a turn is streaming, the backend call would kill the live
+    // persistent session (update_conversation_model respawns it), truncating
+    // the in-flight reply. Defer the backend sync to turn completion instead —
+    // the UI already shows the new choice, and it takes effect next turn.
+    if (generatingIdsRef.current.has(id)) {
+      const pending = pendingOverridesRef.current.get(id) ?? {};
+      pendingOverridesRef.current.set(id, { ...pending, model });
+      return;
+    }
+
     // Notify the backend so it can update the model override and kill any
     // existing persistent session (the next send_message will respawn with
     // the new model). Roll back the optimistic state if the backend rejects.
@@ -1152,6 +1305,19 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   const setConversationEngine = useCallback((id: string, engine: AgentEngineId) => {
     const wsId = findWorkspaceForConversation(allConversationsRef.current, id, convIndexRef);
     if (!wsId) return;
+
+    // Same deferral as setConversationModel: don't kill the live session
+    // mid-turn; apply the switch when the turn finishes.
+    if (generatingIdsRef.current.has(id)) {
+      setAllConversations((prev) => ({
+        ...prev,
+        [wsId]: (prev[wsId] ?? []).map((c) =>
+          c.id === id ? { ...c, engine, model: undefined } : c
+        ),
+      }));
+      pendingOverridesRef.current.set(id, { engine, model: undefined });
+      return;
+    }
 
     const prevConv = allConversationsRef.current[wsId]?.find((c) => c.id === id);
     const prevEngine = prevConv?.engine;
@@ -1182,8 +1348,15 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   }, []);
 
   const deleteConversation = useCallback((id: string, workspaceId?: string) => {
-    const wsId =
+    let wsId =
       workspaceId ?? findWorkspaceForConversation(allConversationsRef.current, id, convIndexRef);
+    // Sidebar rows for draft sessions carry the RESOLVED workspace id, but the
+    // draft itself lives in the unbound bucket — fall back to it.
+    if (!wsId || !(allConversationsRef.current[wsId] ?? []).some((c) => c.id === id)) {
+      if ((allConversationsRef.current[UNBOUND_WORKSPACE_ID] ?? []).some((c) => c.id === id)) {
+        wsId = UNBOUND_WORKSPACE_ID;
+      }
+    }
     if (!wsId) return;
     convIndexRef.current.delete(id);
     setAllConversations((prev) => ({
@@ -1620,10 +1793,12 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     defaultWorkspacePath,
     changeDefaultWorkspace,
     workspaces: sortedWorkspaces,
+    recentWorkspaces,
     activeWorkspace,
     activeWorkspaceId,
     newConversationWorkspaceId,
     chooseActiveConversationWorkspace,
+    selectExistingWorkspace,
     error,
     addWorkspacePath,
     createConversation,

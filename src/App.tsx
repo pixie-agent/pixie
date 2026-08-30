@@ -481,11 +481,13 @@ function AppShell() {
     defaultWorkspacePath,
     changeDefaultWorkspace,
     workspaces,
+    recentWorkspaces,
     activeWorkspace,
     activeWorkspaceId,
     activeConversationWorkspaceId,
     newConversationWorkspaceId,
     chooseActiveConversationWorkspace,
+    selectExistingWorkspace,
     error,
     addWorkspacePath,
     createConversation,
@@ -1005,8 +1007,6 @@ ${entries}
           createConversation(opts?.workspaceId, opts?.engine ?? defaultEngine, opts?.model);
         }}
         defaultEngine={defaultEngine}
-        onDefaultEngineChange={setDefaultEngine}
-        engineModelConfigs={engineModelConfigs}
         readyEngineIds={readyEngineIds}
         onDelete={deleteConversation}
         onRename={renameConversation}
@@ -1208,7 +1208,12 @@ ${entries}
                 activeConversationWorkspaceId !== "__pixie_unbound__"
               }
               onPickWorkspace={chooseActiveConversationWorkspace}
+              workspaces={recentWorkspaces}
+              onSelectWorkspace={selectExistingWorkspace}
               engine={activeConversation?.engine}
+              engineLocked={
+                !!activeConversation && activeConversation.messages.length > 0
+              }
               onEngineChange={handleEngineChange}
               readyEngineIds={readyEngineIds}
               model={activeConversation?.model}

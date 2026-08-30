@@ -178,11 +178,19 @@
     "loopsSection": "ループ",
     "history": "履歴",
     "newAgent": "新しい Agent",
-    "newAgentDefaults": "新しい Agent（デフォルト）",
-    "advancedOptions": "詳細オプション",
+    "newAgentDefaults": "新しい Agent（デフォルト: {{engine}}）",
     "generating": "生成中...",
     "deleteConversation": "会話を削除",
-    "removeWorkspace": "ワークスペースを削除"
+    "removeWorkspace": "ワークスペースを削除",
+    "draftBadge": "新規",
+    "noAgentsInWorkspace": "このワークスペースには会話がありません",
+    "filterAll": "すべてのワークスペース",
+    "filterAllHover": "ワークスペースで絞り込み（現在：すべて）",
+    "filterSelected": "ワークスペースで絞り込み（{{name}}）— クリックで変更"
+  },
+  "newAgent": {
+    "engine": "エンジン",
+    "noModelsFound": "モデルが見つかりません"
   },
   "chat": {
     "newMessage": "メッセージを入力...",
@@ -235,17 +243,11 @@
     "selectModel": "モデルを選択",
     "selectEngine": "エンジンを切替",
     "customModelPlaceholder": "カスタムモデル...",
-    "autoSuffix": "（自動）"
-  },
-  "newAgent": {
-    "title": "新しい Agent",
-    "workspace": "ワークスペース",
-    "engine": "エンジン",
-    "modelOptional": "モデル（任意）",
-    "setDefaultEngine": "デフォルトエンジンに設定",
-    "loadingModels": "モデルを読み込み中…",
-    "noModelsFound": "モデルが見つかりません",
-    "changeModelLater": "後からコンポーザーでモデルを変更できます。"
+    "autoSuffix": "（自動）",
+    "workspaceRecent": "最近のワークスペース",
+    "workspaceBrowse": "別のフォルダを選択…",
+    "appliesNextTurn": "次のターンで適用",
+    "engineLocked": "会話を開始するとエンジンは変更できません"
   },
   "settings": {
     "title": "設定",

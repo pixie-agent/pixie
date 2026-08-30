@@ -178,11 +178,19 @@
     "loopsSection": "Loops",
     "history": "History",
     "newAgent": "New Agent",
-    "newAgentDefaults": "New agent (defaults)",
-    "advancedOptions": "Advanced options",
+    "newAgentDefaults": "New agent (default: {{engine}})",
     "generating": "Generating...",
     "deleteConversation": "Delete conversation",
-    "removeWorkspace": "Remove workspace"
+    "removeWorkspace": "Remove workspace",
+    "draftBadge": "Draft",
+    "noAgentsInWorkspace": "No conversations in this workspace yet",
+    "filterAll": "All workspaces",
+    "filterAllHover": "Filter by workspace (showing all)",
+    "filterSelected": "Filter by workspace ({{name}}) — click to change"
+  },
+  "newAgent": {
+    "engine": "Engine",
+    "noModelsFound": "No models found"
   },
   "chat": {
     "newMessage": "Type a message...",
@@ -235,17 +243,11 @@
     "selectModel": "Select model",
     "selectEngine": "Switch engine",
     "customModelPlaceholder": "Custom model...",
-    "autoSuffix": "(auto)"
-  },
-  "newAgent": {
-    "title": "New Agent",
-    "workspace": "Workspace",
-    "engine": "Engine",
-    "modelOptional": "Model (optional)",
-    "setDefaultEngine": "Set as default engine",
-    "loadingModels": "Loading models…",
-    "noModelsFound": "No models found",
-    "changeModelLater": "You can also change the model later from the composer."
+    "autoSuffix": "(auto)",
+    "workspaceRecent": "Recent workspaces",
+    "workspaceBrowse": "Choose another folder…",
+    "appliesNextTurn": "applies next turn",
+    "engineLocked": "Engine can't be changed once the conversation has started"
   },
   "settings": {
     "title": "Settings",

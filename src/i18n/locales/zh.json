@@ -178,11 +178,19 @@
     "loopsSection": "循环",
     "history": "历史",
     "newAgent": "新建 Agent",
-    "newAgentDefaults": "新建 Agent（默认）",
-    "advancedOptions": "高级选项",
+    "newAgentDefaults": "新建 Agent（默认 {{engine}}）",
     "generating": "生成中...",
     "deleteConversation": "删除对话",
-    "removeWorkspace": "移除工作区"
+    "removeWorkspace": "移除工作区",
+    "draftBadge": "新会话",
+    "noAgentsInWorkspace": "此工作区还没有会话",
+    "filterAll": "全部工作区",
+    "filterAllHover": "筛选工作区（当前：全部）",
+    "filterSelected": "筛选工作区（当前：{{name}}），点击更改"
+  },
+  "newAgent": {
+    "engine": "引擎",
+    "noModelsFound": "未找到模型"
   },
   "chat": {
     "newMessage": "输入消息...",
@@ -235,17 +243,11 @@
     "selectModel": "选择模型",
     "selectEngine": "切换引擎",
     "customModelPlaceholder": "自定义模型...",
-    "autoSuffix": "（自动）"
-  },
-  "newAgent": {
-    "title": "新建 Agent",
-    "workspace": "工作区",
-    "engine": "引擎",
-    "modelOptional": "模型（可选）",
-    "setDefaultEngine": "设为默认引擎",
-    "loadingModels": "加载模型中…",
-    "noModelsFound": "未找到模型",
-    "changeModelLater": "之后也可以在输入框中更改模型。"
+    "autoSuffix": "（自动）",
+    "workspaceRecent": "最近的工作区",
+    "workspaceBrowse": "选择其他文件夹…",
+    "appliesNextTurn": "下一轮生效",
+    "engineLocked": "开始对话后不能切换引擎"
   },
   "settings": {
     "title": "设置",

@@ -5,7 +5,8 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import SkillsDropdown from "./SkillsDropdown";
-import type { SkillEntry, AgentEngineId, EngineModelConfigs, ModelEntry } from "../types";
+import WorkspaceDropdown from "./WorkspaceDropdown";
+import type { SkillEntry, AgentEngineId, EngineModelConfigs, ModelEntry, WorkspaceState } from "../types";
 import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
 import { engineLabel } from "../lib/i18nFormat";
 import { getExtension, IMAGE_EXTENSIONS } from "../preview";
@@ -26,9 +27,18 @@ interface InputBarProps {
   selectedWorkspaceId: string | null;
   selectedWorkspaceName?: string | null;
   workspaceLocked: boolean;
+  /** Recent workspaces for the quick-pick dropdown (most recent first). */
+  workspaces: WorkspaceState[];
+  /** Pick one of the recent workspaces from the dropdown. */
+  onSelectWorkspace: (workspaceId: string) => void;
+  /** Open the native folder picker (dropdown's "choose another folder" row). */
   onPickWorkspace: () => void;
   /** Engine of the active conversation. */
   engine?: AgentEngineId;
+  /** True once the conversation has messages — the engine can no longer be
+   *  switched (each engine keeps its own session continuity; mixing engines
+   *  mid-conversation breaks resume). */
+  engineLocked: boolean;
   /** Called when the user switches the conversation to another engine. */
   onEngineChange: (engine: AgentEngineId) => void;
   /** Engines that are installed + ready; the engine switcher is limited to these. */
@@ -114,8 +124,11 @@ export default function InputBar({
   selectedWorkspaceId,
   selectedWorkspaceName,
   workspaceLocked,
+  workspaces,
+  onSelectWorkspace,
   onPickWorkspace,
   engine,
+  engineLocked,
   onEngineChange,
   readyEngineIds,
   model,
@@ -128,6 +141,7 @@ export default function InputBar({
   const { t, currentLanguage } = useTranslation();
   const numberLocale = appLocale(currentLanguage);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [customModelInput, setCustomModelInput] = useState("");
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
@@ -137,6 +151,7 @@ export default function InputBar({
   const [attachments, setAttachments] = useState<string[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const skillsWrapperRef = useRef<HTMLDivElement>(null);
+  const workspaceWrapperRef = useRef<HTMLDivElement>(null);
   const modelWrapperRef = useRef<HTMLDivElement>(null);
   const modelDropdownListRef = useRef<HTMLDivElement>(null);
 
@@ -168,13 +183,14 @@ export default function InputBar({
     el.style.height = `${Math.max(min, Math.min(el.scrollHeight, max))}px`;
   }, [value, textareaRef]);
 
-  // Whether drops / picks should currently be accepted. Read from a ref so the
+  // Whether drops / pastes should currently be accepted. Read from a ref so the
   // window-wide drag listener (subscribed once, below) never holds a stale
-  // closure as `disabled` / `isGenerating` toggle.
+  // closure as `disabled` toggles. Generation no longer gates this: staged
+  // attachments belong to the next message.
   const acceptInputRef = useRef(false);
   useEffect(() => {
-    acceptInputRef.current = !disabled && !isGenerating;
-  }, [disabled, isGenerating]);
+    acceptInputRef.current = !disabled;
+  }, [disabled]);
 
   const addAttachments = useCallback((paths: string[]) => {
     if (paths.length === 0) return;
@@ -260,15 +276,17 @@ export default function InputBar({
   );
 
   // Open the native multi-file picker; returned paths are staged as attachments.
+  // Allowed while generating: staged attachments ride along with the NEXT
+  // message, so preparing them mid-turn is safe and useful.
   const handlePickFiles = useCallback(async () => {
-    if (disabled || isGenerating) return;
+    if (disabled) return;
     try {
       const result = await invoke<string[] | null>("pick_files");
       if (result && result.length > 0) addAttachments(result);
     } catch {
       /* ignore picker errors / cancellations */
     }
-  }, [disabled, isGenerating, addAttachments]);
+  }, [disabled, addAttachments]);
 
   // Paste a screenshot / copied image. The clipboard image Blob is base64-encoded
   // and written to disk by the backend; the returned path is staged as an
@@ -324,6 +342,24 @@ export default function InputBar({
       document.removeEventListener("pointerdown", onDown);
     };
   }, [dropdownOpen]);
+
+  // Close the workspace dropdown when clicking outside of it.
+  useEffect(() => {
+    if (!workspaceDropdownOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (workspaceWrapperRef.current && !workspaceWrapperRef.current.contains(target)) {
+        setWorkspaceDropdownOpen(false);
+      }
+    };
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("pointerdown", onDown);
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [workspaceDropdownOpen]);
 
   // Close the model dropdown when clicking outside of it.
   useEffect(() => {
@@ -534,30 +570,47 @@ export default function InputBar({
 
         {/* Bottom action bar: Attach, Skills, Model */}
         <div className="flex items-center gap-0.5 mt-1 px-1">
-          <button
-            type="button"
-            onClick={onPickWorkspace}
-            disabled={workspaceLocked || isGenerating}
-            className={`flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] transition-colors ${
+          <div ref={workspaceWrapperRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setWorkspaceDropdownOpen((v) => !v)}
+              disabled={workspaceLocked || isGenerating}
+              className={`flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] transition-colors ${
                 workspaceLocked
                   ? "text-[var(--text-secondary)] opacity-70"
                   : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
               } disabled:cursor-not-allowed`}
-            title={workspacePath ?? selectedWorkspaceId ?? t('common.workspace')}
-            aria-label={t('common.workspace')}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-              <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
-            </svg>
-            <span className="truncate max-w-[160px]">
-              {selectedWorkspaceName ?? (selectedWorkspaceId ? basename(selectedWorkspaceId) : t('common.workspace'))}
-            </span>
-          </button>
+              title={workspacePath ?? selectedWorkspaceId ?? t('common.workspace')}
+              aria-label={t('common.workspace')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
+              </svg>
+              <span className="truncate max-w-[160px]">
+                {selectedWorkspaceName ?? (selectedWorkspaceId ? basename(selectedWorkspaceId) : t('common.workspace'))}
+              </span>
+            </button>
+            {workspaceDropdownOpen && (
+              <WorkspaceDropdown
+                workspaces={workspaces}
+                selectedId={selectedWorkspaceId}
+                onSelect={(ws) => {
+                  setWorkspaceDropdownOpen(false);
+                  onSelectWorkspace(ws.id);
+                }}
+                onBrowse={() => {
+                  setWorkspaceDropdownOpen(false);
+                  onPickWorkspace();
+                }}
+                onClose={() => setWorkspaceDropdownOpen(false)}
+              />
+            )}
+          </div>
 
           <button
             type="button"
             onClick={handlePickFiles}
-            disabled={disabled || isGenerating}
+            disabled={disabled}
             title={t('inputBar.attachFiles')}
             aria-label={t('inputBar.attachFiles')}
             className="flex items-center justify-center w-7 h-6 rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -572,7 +625,7 @@ export default function InputBar({
             <button
               type="button"
               onClick={toggleDropdown}
-              disabled={disabled || isGenerating}
+              disabled={disabled}
               title={t('inputBar.browseSkills')}
               aria-label={t('inputBar.browseSkills')}
               className="flex items-center justify-center w-7 h-6 rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -594,7 +647,7 @@ export default function InputBar({
           <button
             type="button"
             onClick={onToggleKb}
-            disabled={disabled || isGenerating}
+            disabled={disabled}
             title={kbEnabled ? t('inputBar.kbActive') : t('inputBar.kbInclude')}
             aria-label={kbEnabled ? t('inputBar.kbActive') : t('inputBar.kbInclude')}
             className={`flex items-center justify-center w-7 h-6 rounded-md transition-colors ${
@@ -614,14 +667,19 @@ export default function InputBar({
             <select
               value={engine}
               onChange={(e) => {
-                if (isGenerating) return;
                 onEngineChange(e.target.value as AgentEngineId);
               }}
-              disabled={isGenerating}
-              title={t('inputBar.selectEngine')}
+              disabled={engineLocked}
+              title={engineLocked
+                ? t('inputBar.engineLocked')
+                : isGenerating
+                  ? `${t('inputBar.selectEngine')} · ${t('inputBar.appliesNextTurn')}`
+                  : t('inputBar.selectEngine')}
               aria-label={t('inputBar.selectEngine')}
-              className={`flex items-center h-6 rounded-md bg-transparent px-1 text-[11px] text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] ${
-                isGenerating ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+              className={`flex items-center h-6 rounded-md bg-transparent px-1 text-[11px] text-[var(--text-secondary)] outline-none transition-colors ${
+                engineLocked
+                  ? "opacity-60 cursor-not-allowed"
+                  : "hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
               }`}
             >
               {AGENT_ENGINES.filter(
@@ -639,21 +697,21 @@ export default function InputBar({
               <button
                 type="button"
                 onClick={() => {
-                  if (isGenerating) return;
                   setModelDropdownOpen((v) => {
                     const next = !v;
                     if (next) setCustomModelInput("");
                     return next;
                   });
                 }}
-                disabled={isGenerating}
-                title={t('inputBar.selectModel')}
+                title={isGenerating
+                  ? `${t('inputBar.selectModel')} · ${t('inputBar.appliesNextTurn')}`
+                  : t('inputBar.selectModel')}
                 aria-label={t('inputBar.selectModel')}
                 className={`flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] transition-colors ${
                   model
                     ? "text-[var(--accent)] bg-[var(--accent)]/10"
                     : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-                } ${isGenerating ? "opacity-50 cursor-not-allowed" : ""}`}
+                }`}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="4" y="4" width="16" height="16" rx="2" />
