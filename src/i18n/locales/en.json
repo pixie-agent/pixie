@@ -438,6 +438,19 @@
       "notFound": "Loop not found"
     }
   },
+  "applicationChat": {
+    "badge": "App",
+    "expand": "Open application chat",
+    "collapse": "Minimize application chat",
+    "clear": "Clear chat",
+    "clearConfirm": "Clear this application's chat history?",
+    "empty": "Chat with this application. Your messages drive its AI actions; the app refreshes with each reply.",
+    "placeholder": "Message this application…",
+    "send": "Send",
+    "sending": "Thinking…",
+    "done": "Done",
+    "noAction": "This application declares no action the chat can drive."
+  },
   "marketplace": {
     "title": "Skill Marketplace",
     "sections": {

@@ -8,10 +8,15 @@ import type { FileEntry, PreviewTarget, DiffViewMode, PixieApplicationEntry, Age
 import { getExtension, PREVIEW_EXTENSIONS, IMAGE_EXTENSIONS, basename } from "../preview";
 import { languageFromExt } from "../lib/languages";
 import { segmentColor, tokenizeSource, type TokenSegment } from "../lib/highlight";
+import {
+  APPLICATION_RUN_RESULT_MESSAGE_TYPE,
+  isApplicationRunMessage,
+} from "../lib/applicationMessages";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
 import { openExternal } from "../openExternal";
 import Terminal from "./Terminal";
+import type { ApplicationChatTarget } from "./ApplicationChat";
 
 const DiffViewer = lazy(() => import("./DiffViewer"));
 const EngineModelPicker = lazy(() => import("./EngineModelPicker"));
@@ -25,6 +30,9 @@ interface RightPanelProps {
   readyEngineIds?: AgentEngineId[];
   engineModelConfigs?: EngineModelConfigs;
   onApplicationInstalled?: (id: string) => void;
+  /** Reports the studio app the system floating chat should attach to (null
+   *  when the App tab isn't showing a live preview). */
+  onAppChatTargetChange?: (target: ApplicationChatTarget | null) => void;
 }
 
 type Tab = "files" | "app" | "preview" | "git" | "terminal";
@@ -47,8 +55,6 @@ const RICH_PREVIEW_CHAR_LIMIT = 20_000;
 const HIGHLIGHT_BATCH_LINES = 160;
 const EXTERNAL_LINK_RE = /^(https?:\/\/|mailto:|tel:|obsidian:\/\/)/i;
 const HTML_PREVIEW_LINK_MESSAGE_TYPE = "pixie-preview-open-external";
-const APPLICATION_RUN_MESSAGE_TYPE = "pixie-application-run";
-const APPLICATION_RUN_RESULT_MESSAGE_TYPE = "pixie-application-run-result";
 
 const MD_CODE_STYLE: CSSProperties = { margin: 0, borderRadius: "0.5rem", fontSize: "0.75rem" };
 const REMARK_PLUGINS = [remarkGfm];
@@ -62,24 +68,6 @@ function isHtmlPreviewLinkMessage(value: unknown): value is { type: typeof HTML_
   if (!value || typeof value !== "object") return false;
   const msg = value as Record<string, unknown>;
   return msg.type === HTML_PREVIEW_LINK_MESSAGE_TYPE && typeof msg.href === "string";
-}
-
-function isApplicationRunMessage(value: unknown): value is {
-  type: typeof APPLICATION_RUN_MESSAGE_TYPE;
-  requestId: string;
-  actionId: string;
-  inputs: Record<string, unknown>;
-} {
-  if (!value || typeof value !== "object") return false;
-  const msg = value as Record<string, unknown>;
-  return (
-    msg.type === APPLICATION_RUN_MESSAGE_TYPE &&
-    typeof msg.requestId === "string" &&
-    typeof msg.actionId === "string" &&
-    !!msg.inputs &&
-    typeof msg.inputs === "object" &&
-    !Array.isArray(msg.inputs)
-  );
 }
 
 function htmlPreviewSrcDoc(content: string): string {
@@ -411,7 +399,7 @@ function PanelTabIcon({ tab }: { tab: Tab }) {
   );
 }
 
-function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false, defaultEngine, readyEngineIds, engineModelConfigs, onApplicationInstalled }: RightPanelProps) {
+function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false, defaultEngine, readyEngineIds, engineModelConfigs, onApplicationInstalled, onAppChatTargetChange }: RightPanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("files");
   const [contentTab, setContentTab] = useState<Tab>("files");
@@ -442,6 +430,9 @@ function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false,
   // preview so the Preview tab preserves its original behavior.
   const [appPreviewFile, setAppPreviewFile] = useState<FileEntry | null>(null);
   const [appPreviewContent, setAppPreviewContent] = useState<string | null>(null);
+  /** Bumped on iframe load so the chat-target effect gets the fresh
+   *  contentWindow after a srcDoc re-render. */
+  const [appPreviewFrameTick, setAppPreviewFrameTick] = useState(0);
   const [appPreviewLoading, setAppPreviewLoading] = useState(false);
   const appPreviewContentRef = useRef<string | null>(null);
   const appPreviewLoadTokenRef = useRef(0);
@@ -754,6 +745,21 @@ function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false,
     appModeAutoOpenRef.current = workspacePath;
     window.setTimeout(() => activateTab("app"), 0);
   }, [activateTab, applicationMode, contentTab, workspacePath]);
+
+  // Report the live studio preview to the system floating chat. The manifest
+  // isn't loaded on this side — the backend resolves the chat action.
+  useEffect(() => {
+    if (!applicationMode || contentTab !== "app" || !appPreviewFile || appPreviewLoading) {
+      onAppChatTargetChange?.(null);
+      return;
+    }
+    onAppChatTargetChange?.({
+      kind: "studio",
+      appPath: workspacePath,
+      appName: workspaceLabel,
+      frameWindow: appPreviewFrameRef.current?.contentWindow ?? null,
+    });
+  }, [appPreviewFile, appPreviewFrameTick, appPreviewLoading, applicationMode, contentTab, onAppChatTargetChange, workspaceLabel, workspacePath]);
 
   // Untracked files aren't covered by `git diff HEAD`; surface them separately.
   const untracked = useMemo(
@@ -1183,6 +1189,7 @@ function RightPanelImpl({ workspacePath, previewTarget, applicationMode = false,
           srcDoc={htmlPreviewSrcDoc(text)}
           className="w-full h-full min-h-full border-0 bg-white"
           sandbox="allow-scripts"
+          onLoad={() => setAppPreviewFrameTick((v) => v + 1)}
         />
       );
     }

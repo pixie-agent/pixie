@@ -14,6 +14,11 @@ import type {
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
 import EngineModelPicker from "./EngineModelPicker";
+import type { ApplicationChatTarget } from "./ApplicationChat";
+import {
+  APPLICATION_RUN_MESSAGE_TYPE,
+  APPLICATION_RUN_RESULT_MESSAGE_TYPE,
+} from "../lib/applicationMessages";
 
 interface MarketplacePanelProps {
   onClose: () => void;
@@ -29,6 +34,9 @@ interface MarketplacePanelProps {
    *  the caller can clear it (otherwise reopening the view re-expands it). */
   openApplicationId?: string | null;
   onOpenedApplication?: () => void;
+  /** Reports the app the system floating chat should attach to (null when no
+   *  app is running in this host). */
+  onAppChatTargetChange?: (target: ApplicationChatTarget | null) => void;
 }
 
 /** Seed marketplaces shown as tabs. Keyed by repo so "added" state is stable
@@ -42,8 +50,6 @@ const SUGGESTED: { repo: string; tabKey: "official" | "knowledgeWork" | "plusSki
 
 const CUSTOM_TAB = "__add_custom__";
 const INSTALLED_TAB = "__installed__";
-const APPLICATION_RUN_MESSAGE_TYPE = "pixie-application-run";
-const APPLICATION_RUN_RESULT_MESSAGE_TYPE = "pixie-application-run-result";
 
 function formatCount(n: number | undefined, t: TFunction): string {
   if (!n) return "";
@@ -122,7 +128,7 @@ function latestApplicationRuns(
   }, {});
 }
 
-export default function MarketplacePanel({ onClose, section, onSkillsChanged, onStartApplicationStudio, defaultEngine, readyEngineIds, engineModelConfigs, openApplicationId, onOpenedApplication }: MarketplacePanelProps) {
+export default function MarketplacePanel({ onClose, section, onSkillsChanged, onStartApplicationStudio, defaultEngine, readyEngineIds, engineModelConfigs, openApplicationId, onOpenedApplication, onAppChatTargetChange }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[]>([]);
@@ -150,6 +156,9 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
   const [pendingOpenApplicationId, setPendingOpenApplicationId] = useState<string | null>(null);
   /** App id whose run view is expanded to a full-window overlay (Esc exits). */
   const [fullscreenAppId, setFullscreenAppId] = useState<string | null>(null);
+  /** Bumped on iframe load so the chat-target effect can pick up the fresh
+   *  contentWindow reference. */
+  const [appFrameReadyTick, setAppFrameReadyTick] = useState(0);
   const applicationFrameRef = useRef<HTMLIFrameElement | null>(null);
 
   const reload = useCallback(async () => {
@@ -444,6 +453,27 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [fullscreenAppId]);
 
+  // Report the running app to the system floating chat. The fullscreen app
+  // wins over the inline one when both are set (only one iframe is live at a
+  // time anyway — the inline copy is not rendered while fullscreen).
+  useEffect(() => {
+    if (section !== "applications") return;
+    const activeId = fullscreenAppId ?? expandedAppId;
+    const app = applications.find((a) => a.id === activeId);
+    if (!app || !applicationContent[app.id]) {
+      onAppChatTargetChange?.(null);
+      return;
+    }
+    onAppChatTargetChange?.({
+      kind: "marketplace",
+      appId: app.id,
+      appName: app.name,
+      actions: app.actions,
+      inputs: app.inputs,
+      frameWindow: applicationFrameRef.current?.contentWindow ?? null,
+    });
+  }, [appFrameReadyTick, applications, expandedAppId, fullscreenAppId, applicationContent, onAppChatTargetChange, section]);
+
   useEffect(() => {
     const handleApplicationMessage = (event: MessageEvent) => {
       if (event.source !== applicationFrameRef.current?.contentWindow) return;
@@ -628,6 +658,7 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
                 srcDoc={applicationContent[fullscreenAppId] ?? ""}
                 sandbox="allow-scripts"
                 className="h-full w-full border-0"
+                onLoad={() => setAppFrameReadyTick((v) => v + 1)}
               />
             </div>
           </div>
@@ -904,6 +935,7 @@ export default function MarketplacePanel({ onClose, section, onSkillsChanged, on
                                     srcDoc={applicationContent[app.id]}
                                     sandbox="allow-scripts"
                                     className="h-full w-full border-0"
+                                    onLoad={() => setAppFrameReadyTick((v) => v + 1)}
                                   />
                                 )}
                                 <button

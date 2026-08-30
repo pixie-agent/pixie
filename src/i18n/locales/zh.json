@@ -438,6 +438,19 @@
       "notFound": "未找到循环任务"
     }
   },
+  "applicationChat": {
+    "badge": "应用",
+    "expand": "打开应用对话",
+    "collapse": "收起应用对话",
+    "clear": "清空对话",
+    "clearConfirm": "清空此应用的对话记录？",
+    "empty": "与此应用对话。你的消息会驱动它的 AI 动作，每次回复后应用自动刷新。",
+    "placeholder": "给这个应用发消息…",
+    "send": "发送",
+    "sending": "思考中…",
+    "done": "完成",
+    "noAction": "此应用未声明可供对话驱动的动作。"
+  },
   "marketplace": {
     "title": "技能市场",
     "sections": {

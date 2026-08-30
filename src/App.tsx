@@ -21,6 +21,7 @@ const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel"
 const LoopTasksPanel = lazy(() => import("./components/LoopTasksPanel"));
 const FileExplorer = lazy(() => import("./components/RightPanel"));
 const SearchPalette = lazy(() => import("./components/SearchPalette"));
+const ApplicationChat = lazy(() => import("./components/ApplicationChat"));
 const PageFind = lazy(() => import("./components/PageFind"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
 import { useLoopTasks } from "./hooks/useLoopTasks";
@@ -37,6 +38,7 @@ import type {
 } from "./types";
 import { AGENT_ENGINES } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
+import type { ApplicationChatTarget } from "./components/ApplicationChat";
 import { bootstrap, getConfig, getHistory, updateConfig, UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "./lib/storage";
 
 type MainView = "chat" | "tasks" | "loops" | "skills" | "applications" | "settings";
@@ -417,6 +419,9 @@ function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
   const [applicationToOpen, setApplicationToOpen] = useState<string | null>(null);
+  // Active application for the system-level floating chat. Set by whichever
+  // host (MarketplacePanel / RightPanel) currently shows a running app.
+  const [appChatTarget, setAppChatTarget] = useState<ApplicationChatTarget | null>(null);
   const [headerEditing, setHeaderEditing] = useState(false);
   const [headerEditValue, setHeaderEditValue] = useState("");
   const headerEditRef = useRef<HTMLInputElement>(null);
@@ -1296,6 +1301,7 @@ ${entries}
             engineModelConfigs={engineModelConfigs}
             openApplicationId={applicationToOpen}
             onOpenedApplication={() => setApplicationToOpen(null)}
+            onAppChatTargetChange={setAppChatTarget}
           />
           </Suspense>
         )}
@@ -1353,6 +1359,7 @@ ${entries}
               setMainView("applications");
               setFileExplorerOpen(false);
             }}
+            onAppChatTargetChange={setAppChatTarget}
           />
           </Suspense>
         </div>
@@ -1369,6 +1376,19 @@ ${entries}
       <Suspense fallback={null}>
         <PageFind />
       </Suspense>
+
+      {/* System-level floating chat for the active application. Rendered in
+          the host DOM (outside every app iframe) at z-[60] so it stays above
+          fullscreen app views; identical for all applications. */}
+      {appChatTarget && (
+        <Suspense fallback={null}>
+          <ApplicationChat
+            target={appChatTarget}
+            defaultEngine={defaultEngine}
+            readyEngineIds={readyEngineIds}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

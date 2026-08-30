@@ -4405,6 +4405,17 @@ fn application_ensure_studio_defaults(path: String) -> Result<PixieApplicationEn
         } catch {
           // Sandboxed Pixie previews may not expose persistent browser storage.
         }
+        reportState();
+      }
+
+      // Report the current state to the Pixie host so the system-level chat
+      // can attach it as `currentState` for continuity across runs.
+      function reportState() {
+        try {
+          window.parent.postMessage({ type: "pixie-application-state", state: state }, "*");
+        } catch {
+          // Host messaging unavailable — non-fatal.
+        }
       }
 
       function escapeHtml(value) {
@@ -4436,6 +4447,17 @@ fn application_ensure_studio_defaults(path: String) -> Result<PixieApplicationEn
 
       window.addEventListener("message", (event) => {
         const message = event.data || {};
+        if (message.type === "pixie-application-state-update") {
+          // A run triggered elsewhere (e.g. the system floating chat) produced
+          // new outputs — merge them into the page state and re-render.
+          try {
+            const output = message.outputs && message.outputs.appState;
+            applyState(typeof output === "string" ? JSON.parse(output) : output);
+          } catch (error) {
+            statusEl.textContent = `Could not apply the updated state: ${error}`;
+          }
+          return;
+        }
         if (message.type !== "pixie-application-run-result") return;
         runEl.disabled = false;
         if (message.error) {
@@ -4756,6 +4778,42 @@ fn application_entry_content(id: String, app: AppHandle) -> Result<String, Strin
 }
 
 #[allow(clippy::too_many_arguments)] // engine + model overrides keep the two call sites uniform
+/// Resolve an action id to a manifest action. The reserved id "chat" picks
+/// the action the system-level floating chat should drive: an explicit `chat`
+/// action if declared, else the first action accepting a `chatMessage` input,
+/// else the app's only action. Any other id must match exactly.
+fn resolve_application_action(
+    manifest: &PixieApplicationManifest,
+    action_id: &str,
+) -> Result<PixieApplicationAction, String> {
+    if action_id != "chat" {
+        return manifest
+            .actions
+            .iter()
+            .find(|a| a.id == action_id)
+            .cloned()
+            .ok_or_else(|| format!("Application action '{action_id}' does not exist"));
+    }
+    let explicit = manifest.actions.iter().find(|a| a.id == "chat");
+    if let Some(action) = explicit {
+        return Ok(action.clone());
+    }
+    let has_chat_message = |action: &PixieApplicationAction| {
+        action.inputs.iter().any(|i| i == "chatMessage")
+            || manifest
+                .inputs
+                .iter()
+                .any(|input| input.id == "chatMessage")
+    };
+    if let Some(action) = manifest.actions.iter().find(|a| has_chat_message(a)) {
+        return Ok(action.clone());
+    }
+    if manifest.actions.len() == 1 {
+        return Ok(manifest.actions[0].clone());
+    }
+    Err("Application has no action for chat".to_string())
+}
+
 async fn run_application_action(
     app: AppHandle,
     id: String,
@@ -4768,12 +4826,7 @@ async fn run_application_action(
     source_commit: Option<String>,
 ) -> Result<PixieApplicationRunRecord, String> {
     let id = sanitize_application_id(&id)?;
-    let action = manifest
-        .actions
-        .iter()
-        .find(|a| a.id == action_id)
-        .cloned()
-        .ok_or_else(|| format!("Application action '{action_id}' does not exist"))?;
+    let action = resolve_application_action(&manifest, &action_id)?;
     let input_obj = inputs
         .as_object()
         .ok_or_else(|| "Application inputs must be an object".to_string())?;
@@ -8903,6 +8956,25 @@ mod tests {
         cleanup();
         assert!(err.contains("must not contain '..'"));
         assert!(!outside.exists());
+    }
+
+    /// A fresh directory gets the default template, whose runtime script must
+    /// participate in the system-chat protocol: report state to the host and
+    /// apply state updates pushed from runs triggered elsewhere.
+    #[test]
+    fn application_studio_default_entry_supports_system_chat_protocol() {
+        let dir =
+            std::env::temp_dir().join(format!("pixie-application-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let entry = application_ensure_studio_defaults(dir.to_string_lossy().to_string()).unwrap();
+
+        let html =
+            std::fs::read_to_string(std::path::Path::new(&entry.install_path).join(&entry.entry))
+                .unwrap();
+        assert!(html.contains("pixie-application-state"));
+        assert!(html.contains("pixie-application-state-update"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
