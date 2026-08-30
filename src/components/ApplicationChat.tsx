@@ -305,6 +305,33 @@ function ChatPanel({
     };
   }, [appendMessage, buildConvId]);
 
+  // Use mode: application_run streams its progress as application-run-event
+  // (text deltas / tool activity), so a long agent turn shows live output
+  // instead of a silent spinner that reads as a frozen page.
+  const [useStreamText, setUseStreamText] = useState("");
+  const useRunActiveRef = useRef(false);
+  useEffect(() => {
+    if (isBuildMode) return;
+    const unsubs: Array<() => void> = [];
+    let active = true;
+    void (async () => {
+      const unsub = await listen<{ run_id: string; event: { kind: string; text?: string } }>(
+        "application-run-event",
+        (event) => {
+          if (!active || !useRunActiveRef.current) return;
+          const payload = event.payload;
+          if (payload?.event?.kind !== "text" || !payload.event.text) return;
+          setUseStreamText((prev) => (prev + payload.event.text!).slice(0, 600));
+        },
+      );
+      unsubs.push(unsub);
+    })();
+    return () => {
+      active = false;
+      for (const fn of unsubs) fn();
+    };
+  }, [isBuildMode]);
+
   const send = useCallback(async () => {
     const text = draft.trim();
     if (!text || sending || !canChat) return;
@@ -344,13 +371,21 @@ function ChatPanel({
       // marketplace targets reach here — build mode returned above.
       if (target.kind !== "marketplace") return;
       const inputs = buildChatInputs(text, stateRef.current);
-      const record: PixieApplicationRunRecord = await invoke("application_run", {
-        id: target.appId,
-        actionId: CHAT_ACTION_ID,
-        inputs,
-        engine: effectiveEngine,
-        model: null,
-      });
+      useRunActiveRef.current = true;
+      setUseStreamText("");
+      let record: PixieApplicationRunRecord;
+      try {
+        record = await invoke<PixieApplicationRunRecord>("application_run", {
+          id: target.appId,
+          actionId: CHAT_ACTION_ID,
+          inputs,
+          engine: effectiveEngine,
+          model: null,
+        });
+      } finally {
+        useRunActiveRef.current = false;
+        setUseStreamText("");
+      }
       const { text: summary, followups } = summarizeRunOutputs(record.outputs);
       appendMessage({
         role: "assistant",
@@ -451,9 +486,16 @@ function ChatPanel({
           </div>
         ))}
         {sending && (
-          <div className="flex items-center gap-2 px-1 text-xs text-[var(--text-secondary)]">
-            <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
-            {isBuildMode ? t("applicationChat.sendingBuild") : t("applicationChat.sending")}
+          <div className="flex flex-col gap-1.5">
+            {!isBuildMode && useStreamText && (
+              <div className="max-w-[85%] rounded-lg bg-[var(--bg-tertiary)] px-2.5 py-1.5 text-xs leading-relaxed text-[var(--text-secondary)] opacity-70 whitespace-pre-wrap break-words">
+                {useStreamText}
+              </div>
+            )}
+            <div className="flex items-center gap-2 px-1 text-xs text-[var(--text-secondary)]">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
+              {isBuildMode ? t("applicationChat.sendingBuild") : t("applicationChat.sending")}
+            </div>
           </div>
         )}
       </div>
@@ -474,7 +516,6 @@ function ChatPanel({
                 void send();
               }
             }}
-            disabled={sending}
             rows={2}
             placeholder={isBuildMode ? t("applicationChat.placeholderBuild") : t("applicationChat.placeholder")}
             aria-label={isBuildMode ? t("applicationChat.placeholderBuild") : t("applicationChat.placeholder")}

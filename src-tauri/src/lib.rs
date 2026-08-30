@@ -4918,7 +4918,6 @@ async fn run_application_action(
         &install_path,
     )?;
     let started = Utc::now();
-    let install_path_string = install_path.to_string_lossy().to_string();
     // Use-mode runs are read-only: the agent works from the app's data
     // directory, never the install directory, so even an engine without a
     // read-only tool enforcement cannot rewrite the app itself.
@@ -4937,8 +4936,45 @@ async fn run_application_action(
                 &api_key,
                 base_url.as_deref(),
             );
-            match session.run_turn(&prompt, &[], |_event| {}).await {
+            // Stream progress to the caller — a 15+ second agent turn with a
+            // silent spinner feels like a frozen page.
+            let app_for_stream = app.clone();
+            let run_id_for_stream = run_id.clone();
+            let mut stream_text = String::new();
+            let mut stream_error = false;
+            let emit = |event: NormalizedEvent| {
+                match &event {
+                    NormalizedEvent::TextDelta { text, .. } => stream_text.push_str(text),
+                    NormalizedEvent::Error { .. } => stream_error = true,
+                    _ => {}
+                }
+                let _ = app_for_stream.emit(
+                    "application-run-event",
+                    serde_json::json!({
+                        "run_id": run_id_for_stream,
+                        "event": match &event {
+                            NormalizedEvent::TextDelta { text, event_type } => serde_json::json!({
+                                "kind": "text", "text": text, "event_type": event_type,
+                            }),
+                            NormalizedEvent::ThinkingText { content } => serde_json::json!({
+                                "kind": "thinking", "text": content,
+                            }),
+                            NormalizedEvent::Tool(tool) => serde_json::json!({
+                                "kind": "tool", "id": tool.id,
+                            }),
+                            NormalizedEvent::Error { message } => serde_json::json!({
+                                "kind": "error", "message": message,
+                            }),
+                            _ => serde_json::json!({"kind": "other"}),
+                        },
+                    }),
+                );
+            };
+            match session.run_turn(&prompt, &[], emit).await {
                 Ok((text, false)) => Ok(text),
+                Ok((_, true)) | Err(_) if stream_error && !stream_text.is_empty() => {
+                    Ok(stream_text)
+                }
                 Ok((text, true)) => Err(if text.trim().is_empty() {
                     "Application agent returned an error event".to_string()
                 } else {
