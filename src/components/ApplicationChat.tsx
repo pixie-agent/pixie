@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AgentEngineId,
   PixieApplicationAction,
   PixieApplicationField,
   PixieApplicationRunRecord,
+  ResponseChunk,
+  ResponseDone,
+  ResponseError,
 } from "../types";
 import { useTranslation } from "../hooks/useTranslation";
 import {
@@ -63,10 +67,35 @@ interface ApplicationChatProps {
  *  else the app's only action. */
 const CHAT_ACTION_ID = "chat";
 
+/** First message of a build conversation teaches the agent the app contract.
+ *  Later messages go bare — the session carries the context. */
+const applicationBuildPrompt = `You are adjusting an existing Pixie AI Application in this workspace.
+
+Files at the application root:
+- pixie.application.json — the source of truth for inputs, outputs, actions, and the preview entry
+- ui/index.html — the application UI the user sees (declared by manifest.entry)
+- agent/instructions.md — the agent that powers the app's actions
+
+Rules:
+- Make visible changes in the entry file so the user immediately sees them in the preview.
+- Keep manifest.entry previewable at all times.
+- Keep inputs, outputs, and actions consistent with pixie.application.json when behavior changes.
+
+User request:
+`;
+
+/** Stable conversation id per application path, so build sessions persist
+ *  across panel remounts. */
+function buildConversationId(appPath: string): string {
+  const slug = appPath.replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-");
+  return `app-build-${slug}`;
+}
+
 /** Front-end mirror of the backend's chat-action resolution, used only to
- *  decide whether the composer should be enabled. */
+ *  decide whether the composer should be enabled. Build-mode conversations
+ *  don't depend on the app's declared actions at all. */
 function chatActionAvailable(target: ApplicationChatTarget): boolean {
-  if (target.kind === "studio") return true; // backend resolves from manifest
+  if (target.kind === "studio") return true;
   if (target.actions.length === 0) return false;
   return (
     target.actions.some((a) => a.id === CHAT_ACTION_ID) ||
@@ -89,8 +118,17 @@ function buildChatInputs(text: string, currentState: unknown): Record<string, un
 }
 
 function historyKey(target: ApplicationChatTarget): string {
-  const id = target.kind === "marketplace" ? target.appId : target.appPath;
-  return `pixie-app-chat-${id}`;
+  // Build and use histories are separate: one commands the app's
+  // construction, the other drives its features. Never mix them.
+  return target.kind === "marketplace"
+    ? `pixie-app-chat-${target.appId}`
+    : `pixie-app-chat-build-${target.appPath}`;
+}
+
+/** Whether a build conversation has started (independent of the visible
+ *  history — clearing messages must not orphan the backend session). */
+function buildStartedKey(target: ApplicationChatTarget): string {
+  return `pixie-app-chat-build-started-${target.kind === "studio" ? target.appPath : ""}`;
 }
 
 function loadHistory(target: ApplicationChatTarget): ChatMessage[] {
@@ -185,8 +223,45 @@ function ChatPanel({
   }, [target]);
 
   const canChat = chatActionAvailable(target);
+  const isBuildMode = target.kind === "studio";
   const effectiveEngine: AgentEngineId =
     readyEngineIds.includes(defaultEngine) ? defaultEngine : "builtin";
+
+  // Build mode: the reply streams back over the regular agent events, routed
+  // by conversation id. Accumulate deltas; done/error finalize the turn.
+  const buildConvId = isBuildMode ? buildConversationId(target.appPath) : null;
+  const streamRef = useRef("");
+  useEffect(() => {
+    if (!buildConvId) return;
+    streamRef.current = "";
+    const unsubs: Array<() => void> = [];
+    let active = true;
+    void (async () => {
+      const u1 = await listen<ResponseChunk>("agent-response", (event) => {
+        if (!active || event.payload.conversation_id !== buildConvId) return;
+        streamRef.current += event.payload.content;
+      });
+      const u2 = await listen<ResponseDone>("agent-done", (event) => {
+        if (!active || event.payload.conversation_id !== buildConvId) return;
+        appendMessage({
+          role: "assistant",
+          text: (event.payload.full_text || streamRef.current).slice(0, 4000),
+          at: Date.now(),
+        });
+        setSending(false);
+      });
+      const u3 = await listen<ResponseError>("agent-error", (event) => {
+        if (!active || event.payload.conversation_id !== buildConvId) return;
+        appendMessage({ role: "assistant", text: event.payload.error, at: Date.now(), error: true });
+        setSending(false);
+      });
+      unsubs.push(u1, u2, u3);
+    })();
+    return () => {
+      active = false;
+      for (const fn of unsubs) fn();
+    };
+  }, [appendMessage, buildConvId]);
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -195,23 +270,45 @@ function ChatPanel({
     setSending(true);
     appendMessage({ role: "user", text, at: Date.now() });
     try {
+      if (isBuildMode && target.kind === "studio") {
+        // Build mode drives the regular chat pipeline: the agent has file
+        // tools and a persistent session, so it actually edits the app and
+        // remembers earlier adjustments.
+        const startedKey = buildStartedKey(target);
+        let started = false;
+        try {
+          started = localStorage.getItem(startedKey) === "1";
+        } catch { /* non-persistent storage: treat as first message */ }
+        const message = started ? text : `${applicationBuildPrompt}${text}`;
+        // Point the backend's spawn cwd at the app directory (same pattern
+        // as the main chat's per-conversation workspace handling).
+        await invoke("set_active_workspace", { path: target.appPath }).catch(() => {});
+        await invoke("send_message", {
+          message,
+          conversationId: buildConversationId(target.appPath),
+          engine: effectiveEngine,
+          isContinue: started,
+          model: null,
+        });
+        if (!started) {
+          try {
+            localStorage.setItem(startedKey, "1");
+          } catch { /* ignore */ }
+        }
+        // The reply arrives via the agent-response/done/error listeners.
+        return;
+      }
+      // Use mode: stateless run against the app's chat action. Only
+      // marketplace targets reach here — build mode returned above.
+      if (target.kind !== "marketplace") return;
       const inputs = buildChatInputs(text, stateRef.current);
-      const record: PixieApplicationRunRecord =
-        target.kind === "marketplace"
-          ? await invoke("application_run", {
-              id: target.appId,
-              actionId: CHAT_ACTION_ID,
-              inputs,
-              engine: effectiveEngine,
-              model: null,
-            })
-          : await invoke("application_studio_run", {
-              path: target.appPath,
-              actionId: CHAT_ACTION_ID,
-              inputs,
-              engine: effectiveEngine,
-              model: null,
-            });
+      const record: PixieApplicationRunRecord = await invoke("application_run", {
+        id: target.appId,
+        actionId: CHAT_ACTION_ID,
+        inputs,
+        engine: effectiveEngine,
+        model: null,
+      });
       const summary =
         Object.entries(record.outputs)
           .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
@@ -229,10 +326,11 @@ function ChatPanel({
       );
     } catch (e) {
       appendMessage({ role: "assistant", text: String(e), at: Date.now(), error: true });
-    } finally {
       setSending(false);
+    } finally {
+      if (!isBuildMode) setSending(false);
     }
-  }, [appendMessage, canChat, draft, effectiveEngine, sending, t, target]);
+  }, [appendMessage, canChat, draft, effectiveEngine, isBuildMode, sending, t, target]);
 
   return (
     <div className="fixed bottom-6 right-6 z-[60] flex h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] shadow-2xl">
@@ -243,7 +341,7 @@ function ChatPanel({
           {target.appName}
         </span>
         <span className="shrink-0 rounded bg-[var(--bg-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
-          {t("applicationChat.badge")}
+          {isBuildMode ? t("applicationChat.badgeBuild") : t("applicationChat.badge")}
         </span>
         <button
           type="button"
@@ -277,7 +375,7 @@ function ChatPanel({
       <div ref={listRef} className="flex-1 min-h-0 space-y-2 overflow-y-auto px-3 py-3">
         {messages.length === 0 && (
           <p className="px-1 text-xs leading-relaxed text-[var(--text-secondary)]">
-            {t("applicationChat.empty")}
+            {isBuildMode ? t("applicationChat.emptyBuild") : t("applicationChat.empty")}
           </p>
         )}
         {messages.map((message, index) => (
@@ -297,7 +395,7 @@ function ChatPanel({
         {sending && (
           <div className="flex items-center gap-2 px-1 text-xs text-[var(--text-secondary)]">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
-            {t("applicationChat.sending")}
+            {isBuildMode ? t("applicationChat.sendingBuild") : t("applicationChat.sending")}
           </div>
         )}
       </div>
@@ -320,8 +418,8 @@ function ChatPanel({
             }}
             disabled={sending}
             rows={2}
-            placeholder={t("applicationChat.placeholder")}
-            aria-label={t("applicationChat.placeholder")}
+            placeholder={isBuildMode ? t("applicationChat.placeholderBuild") : t("applicationChat.placeholder")}
+            aria-label={isBuildMode ? t("applicationChat.placeholderBuild") : t("applicationChat.placeholder")}
             className="max-h-28 min-h-[2.4rem] flex-1 resize-none rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
           />
           <button

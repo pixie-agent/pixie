@@ -440,14 +440,18 @@
   },
   "applicationChat": {
     "badge": "App",
+    "badgeBuild": "Build",
     "expand": "Open application chat",
     "collapse": "Minimize application chat",
     "clear": "Clear chat",
     "clearConfirm": "Clear this application's chat history?",
     "empty": "Chat with this application. Your messages drive its AI actions; the app refreshes with each reply.",
+    "emptyBuild": "Direct the construction of this app: change layouts, add features, adjust behavior. Edits appear live in the preview.",
     "placeholder": "Message this application…",
+    "placeholderBuild": "Describe what this app should become…",
     "send": "Send",
     "sending": "Thinking…",
+    "sendingBuild": "Editing the app…",
     "done": "Done",
     "noAction": "This application declares no action the chat can drive."
   },
