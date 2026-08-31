@@ -139,12 +139,21 @@ pub async fn check_available() -> EngineStatus {
 }
 
 /// Spawn a one-shot CodeBuddy process for the readiness probe. Reuses the base
-/// stream flags (no session id needed for a throwaway turn); stderr is captured
-/// by `spawn_probe_child` so an auth failure surfaces for classification.
+/// stream flags (no session id needed for a throwaway turn) and passes the
+/// user-configured model (Settings → codebuddy/CODEBUDDY_MODEL) if set, so the
+/// probe doesn't fall back to a CLI default that may be unavailable; stderr is
+/// captured by `spawn_probe_child` so an auth failure surfaces for classification.
 pub async fn spawn_probe() -> Result<Child> {
     let binary = find_codebuddy_binary()?;
     let env = collect_env().await;
-    let args = base_stream_args();
+    let mut args: Vec<String> = super::default_probe_args("codebuddy")?
+        .into_iter()
+        .map(String::from)
+        .collect();
+    if let Some(model) = shared::get_model_config_value("codebuddy", "CODEBUDDY_MODEL") {
+        args.push("--model".into());
+        args.push(model);
+    }
     shared::spawn_probe_child(binary, &args, "ping", None, &env).await
 }
 

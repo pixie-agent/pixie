@@ -476,6 +476,38 @@ pub async fn run_probe(engine_id: &str, mut child: Child) -> ProbeOutcome {
     outcome
 }
 
+/// Default probe args per engine — the single source of truth shared by each
+/// engine's `spawn_probe()`, so per-engine copies can't drift apart. Model
+/// flags are appended at spawn time and deliberately NOT included here.
+pub fn default_probe_args(id: &str) -> Result<Vec<&'static str>> {
+    Ok(match id {
+        "claude" => vec![
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ],
+        "codebuddy" => vec![
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--permission-mode",
+            "bypassPermissions",
+        ],
+        "cursor" => vec!["-p", "--force", "--output-format", "stream-json", "--stream-partial-output"],
+        "codex" => vec![
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ],
+        other => anyhow::bail!("no default probe command for engine: {other}"),
+    })
+}
+
 /// Probe a single engine's readiness: cheap-check first, and only if the binary
 /// is present, send a real "ping" turn and classify the response.
 pub async fn probe_engine(id: &str) -> EngineStatus {

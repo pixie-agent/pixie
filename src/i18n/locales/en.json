@@ -103,6 +103,11 @@
     "title": "Configure Agent Engine",
     "description": "Pixie doesn't include its own models. Install and log in to one engine to get started. Ready check = successfully ping the model.",
     "hint": "Note: Detection sends a ping message to the engine, which may incur minimal call costs.",
+    "probeModel": {
+      "label": "Model",
+      "placeholder": "Default model (optional)",
+      "hint": "Used by the readiness probe and conversations; empty = CLI default."
+    },
     "close": "Close",
     "enterApp": "Enter App",
     "anyReady": "Has ready engine",

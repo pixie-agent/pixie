@@ -36,7 +36,7 @@ import type {
   TaskRunRecord,
   EngineStatus,
 } from "./types";
-import { AGENT_ENGINES } from "./types";
+import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "./types";
 import { engineLabel } from "./lib/i18nFormat";
 import type { ApplicationChatTarget } from "./components/ApplicationChat";
 import { bootstrap, getConfig, getHistory, updateConfig, UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "./lib/storage";
@@ -186,6 +186,8 @@ function EngineCard({
   engineId,
   label,
   status,
+  modelConfig,
+  onModelConfigChange,
   onProbe,
   onLogin,
   onInstall,
@@ -193,7 +195,12 @@ function EngineCard({
   engineId: AgentEngineId;
   label: string;
   status: EngineStatus | undefined;
-  onProbe: (id: AgentEngineId) => void;
+  modelConfig: Record<string, string | undefined>;
+  onModelConfigChange: (
+    engine: AgentEngineId,
+    patch: Record<string, string | undefined>,
+  ) => void;
+  onProbe: (id: AgentEngineId) => void | Promise<void>;
   onLogin: (id: AgentEngineId) => void;
   onInstall: (id: AgentEngineId) => Promise<{ success: boolean; output: string }>;
 }) {
@@ -207,6 +214,12 @@ function EngineCard({
   const probing = installed && authState === "unknown" && (!isBuiltin || !!status?.available);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  /** Local in-flight marker for a user-initiated re-probe. The derived
+   *  `probing` flag only covers auth_state === "unknown" (initial check), so a
+   *  re-probe click on an engine that already has a state would otherwise show
+   *  zero feedback until the result lands. */
+  const [probingNow, setProbingNow] = useState(false);
+  const modelEnvKey = ENGINE_MODEL_ENV_KEY[engineId];
 
   const handleInstall = async () => {
     setInstalling(true);
@@ -220,6 +233,17 @@ function EngineCard({
       setInstalling(false);
     }
   };
+
+  const handleProbe = async () => {
+    setProbingNow(true);
+    try {
+      await onProbe(engineId);
+    } finally {
+      setProbingNow(false);
+    }
+  };
+
+  const busy = probing || probingNow;
 
   return (
     <div className="border border-[var(--border-color)] rounded-xl p-4 bg-[var(--bg-primary)]">
@@ -247,7 +271,31 @@ function EngineCard({
         )}
       </div>
 
-      {isBuiltin && notReady && !probing && (
+      {/* Model override used by the readiness probe (and normal turns): when
+          the CLI's default model is unavailable (e.g. gateway accounts),
+          configure it here so the probe doesn't fail on the default. */}
+      <div className="mb-3">
+        <label className="block text-xs text-[var(--text-secondary)] mb-1">
+          {t('engineSetup.probeModel.label')}{" "}
+          <code className="text-[10px] opacity-60">{modelEnvKey}</code>
+        </label>
+        <input
+          type="text"
+          value={modelConfig[modelEnvKey] ?? ""}
+          onChange={(e) =>
+            onModelConfigChange(engineId, {
+              [modelEnvKey]: e.target.value || undefined,
+            })
+          }
+          placeholder={t('engineSetup.probeModel.placeholder')}
+          className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors font-mono"
+        />
+        <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
+          {t('engineSetup.probeModel.hint')}
+        </p>
+      </div>
+
+      {isBuiltin && notReady && !busy && (
         <div className="space-y-2">
           <p className="text-xs text-amber-400">
             {t('engineSetup.messages.builtinConfigHint')}
@@ -256,10 +304,16 @@ function EngineCard({
             {t('engineSetup.messages.builtinDesc')}
           </p>
           <button
-            onClick={() => onProbe(engineId)}
-            className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80"
+            onClick={handleProbe}
+            disabled={busy}
+            className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {t('engineSetup.actions.reprobe')}
+            <span className="flex items-center gap-1.5">
+              {busy && (
+                <span className="w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+              )}
+              {t('engineSetup.actions.reprobe')}
+            </span>
           </button>
         </div>
       )}
@@ -292,7 +346,7 @@ function EngineCard({
         </div>
       )}
 
-      {probing && (
+      {busy && (
         <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
           <div className="w-3.5 h-3.5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
           {t('engineSetup.messages.probing')}
@@ -301,7 +355,7 @@ function EngineCard({
 
       {ready && <p className="text-xs text-emerald-400">{t('engineSetup.messages.readyMessage')}</p>}
 
-      {!isBuiltin && notReady && !probing && (
+      {!isBuiltin && notReady && !busy && (
         <div className="space-y-2">
           <p className="text-xs text-amber-400">{t('engineSetup.messages.notReadyHint')}</p>
           <div className="flex gap-2">
@@ -312,8 +366,9 @@ function EngineCard({
               {t('engineSetup.actions.oneClickLogin')}
             </button>
             <button
-              onClick={() => onProbe(engineId)}
-              className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80"
+              onClick={handleProbe}
+            disabled={busy}
+              className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {t('engineSetup.actions.reprobe')}
             </button>
@@ -333,10 +388,16 @@ function EngineCard({
       {installed && ready && (
         <div className="flex justify-end mt-1">
           <button
-            onClick={() => onProbe(engineId)}
-            className="text-xs px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium transition-colors hover:opacity-80"
+            onClick={handleProbe}
+            disabled={busy}
+            className="text-xs px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium transition-colors hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {t('engineSetup.actions.reprobe')}
+            <span className="flex items-center gap-1.5">
+              {busy && (
+                <span className="w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+              )}
+              {t('engineSetup.actions.reprobe')}
+            </span>
           </button>
         </div>
       )}
@@ -346,13 +407,20 @@ function EngineCard({
 
 function EngineSetup({
   statuses,
+  engineModelConfigs,
+  onEngineModelConfigChange,
   onProbe,
   onLogin,
   onInstall,
   onClose,
 }: {
   statuses: EngineStatus[];
-  onProbe: (id: AgentEngineId) => void;
+  engineModelConfigs: EngineModelConfigs;
+  onEngineModelConfigChange: (
+    engine: keyof EngineModelConfigs,
+    patch: Record<string, string | undefined>,
+  ) => void;
+  onProbe: (id: AgentEngineId) => void | Promise<void>;
   onLogin: (id: AgentEngineId) => void;
   onInstall: (id: AgentEngineId) => Promise<{ success: boolean; output: string }>;
   onClose: () => void;
@@ -388,6 +456,8 @@ function EngineSetup({
               engineId={e.id}
               label={engineLabel(e.id, t)}
               status={statuses.find((s) => s.id === e.id)}
+              modelConfig={engineModelConfigs[e.id] as Record<string, string | undefined>}
+              onModelConfigChange={onEngineModelConfigChange}
               onProbe={onProbe}
               onLogin={onLogin}
               onInstall={onInstall}
@@ -986,6 +1056,8 @@ ${entries}
       {setupOpen && (
         <EngineSetup
           statuses={engineStatuses}
+          engineModelConfigs={engineModelConfigs}
+          onEngineModelConfigChange={handleEngineModelConfigChange}
           onProbe={probeEngineStatus}
           onLogin={engineLogin}
           onInstall={installEngine}

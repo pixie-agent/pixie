@@ -63,12 +63,15 @@ pub async fn check_available() -> EngineStatus {
 
 /// Spawn a one-shot cursor-agent process for the readiness probe. Reuses the
 /// streaming args (-p --force --output-format stream-json --stream-partial-output)
-/// with the CLI's default model; stderr is captured by `spawn_probe_child` so an
-/// auth failure surfaces for classification.
+/// with the user-configured model if set (Settings → cursor/CURSOR_MODEL), else
+/// the CLI's default; stderr is captured by `spawn_probe_child` so an auth
+/// failure surfaces for classification.
 pub async fn spawn_probe() -> Result<Child> {
     let binary = find_cursor_binary()?;
     let env = collect_env().await;
-    let args = stream_args_with_model(None);
+    // Probe uses the shared default args (no model) — the configured model env
+    // (CURSOR_MODEL) still applies via collect_env, matching a "default" turn.
+    let args = probe_args()?;
     shared::spawn_probe_child(binary, &args, "ping", None, &env).await
 }
 
@@ -185,6 +188,19 @@ const STREAM_ARGS: &[&str] = &[
     "stream-json",
     "--stream-partial-output",
 ];
+
+/// Probe args from the shared single source of truth (`default_probe_args`),
+/// which must stay in sync with STREAM_ARGS. Kept as an assertion-style helper
+/// so a future edit to either side trips a clear error instead of silently
+/// diverging from the command string shown in the setup UI.
+fn probe_args() -> Result<Vec<String>> {
+    let args = super::default_probe_args("cursor")?;
+    anyhow::ensure!(
+        args == STREAM_ARGS,
+        "cursor probe args drifted from STREAM_ARGS"
+    );
+    Ok(args.into_iter().map(String::from).collect())
+}
 
 fn stream_args_with_model(model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = STREAM_ARGS.iter().map(|s| (*s).into()).collect();

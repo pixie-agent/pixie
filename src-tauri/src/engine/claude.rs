@@ -119,17 +119,20 @@ pub async fn check_available() -> EngineStatus {
 /// `--verbose` is REQUIRED: current Claude Code rejects `--print` +
 /// `--output-format stream-json` without it ("requires --verbose"). The
 /// persistent-session spawn uses the same combination (see `persistent.rs`).
+///
+/// The user-configured model (Settings → claude/ANTHROPIC_MODEL) is applied
+/// explicitly, mirroring the persistent-session spawn, so the probe doesn't
+/// fall back to a CLI default that may be unavailable.
 pub async fn spawn_probe() -> Result<Child> {
     let binary = find_claude_binary()?;
-    let env = collect_env().await;
-    let args: Vec<String> = vec![
-        "--print".into(),
-        "--output-format".into(),
-        "stream-json".into(),
-        "--verbose".into(),
-        "--permission-mode".into(),
-        "bypassPermissions".into(),
-    ];
+    let mut env = collect_env().await;
+    if let Some(model) = shared::get_model_config_value("claude", "ANTHROPIC_MODEL") {
+        env.insert("ANTHROPIC_MODEL".to_string(), model);
+    }
+    let args: Vec<String> = super::default_probe_args("claude")?
+        .into_iter()
+        .map(String::from)
+        .collect();
     shared::spawn_probe_child(binary, &args, "ping", None, &env).await
 }
 

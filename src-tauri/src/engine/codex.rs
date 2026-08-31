@@ -87,16 +87,20 @@ pub async fn check_available() -> EngineStatus {
 }
 
 /// Spawn a one-shot Codex process for the readiness probe.
-/// Uses minimal flags with a tiny prompt.
+/// Uses minimal flags with a tiny prompt, and passes the user-configured model
+/// (Settings → codex/CODEX_MODEL) if set so the probe doesn't fall back to a
+/// CLI default that may be unavailable.
 pub async fn spawn_probe() -> Result<Child> {
     let binary = find_codex_binary()?;
     let env = collect_env().await;
-    let args: Vec<String> = vec![
-        "exec".into(),
-        "--json".into(),
-        "--ephemeral".into(),
-        "--dangerously-bypass-approvals-and-sandbox".into(),
-    ];
+    let mut args: Vec<String> = super::default_probe_args("codex")?
+        .into_iter()
+        .map(String::from)
+        .collect();
+    if let Some(model) = shared::get_model_config_value("codex", "CODEX_MODEL") {
+        args.push("-m".into());
+        args.push(model);
+    }
     shared::spawn_probe_child(binary, &args, "ping", None, &env).await
 }
 

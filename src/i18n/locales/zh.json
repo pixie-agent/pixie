@@ -103,6 +103,11 @@
     "title": "配置 Agent 引擎",
     "description": "Pixie 不自带模型，安装并登录一个引擎即可。检测就绪 = 能成功 ping 通该模型。",
     "hint": "提示：检测会向引擎发送一条 ping 消息，可能产生极少量调用费用。",
+    "probeModel": {
+      "label": "模型",
+      "placeholder": "默认模型（可留空）",
+      "hint": "检测和对话会用此模型；留空则用 CLI 默认模型。"
+    },
     "close": "关闭",
     "enterApp": "进入应用",
     "anyReady": "已有引擎就绪",
