@@ -235,7 +235,11 @@
       "agentStartup": "智能体启动失败。对话历史已保留，请重新发送消息以重试。"
     },
     "retry": "重试",
-    "errorOccurred": "出错了"
+    "errorOccurred": "出错了",
+    "queuedCount": "队列中 ({{count}})",
+    "queueClear": "清空队列",
+    "queuePlaceholder": "生成中 — 回车加入队列",
+    "interruptSend": "立即发送（停止当前）"
   },
   "inputBar": {
     "removeAttachment": "移除",
@@ -748,7 +752,8 @@
       "collapse": "收起",
       "openMain": "打开主窗口",
       "hide": "隐藏小精灵",
-      "resetChat": "清空对话"
+      "resetChat": "清空对话",
+      "dndActive": "免打扰中"
     },
     "settings": {
       "title": "小精灵",

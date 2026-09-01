@@ -101,6 +101,12 @@ body {
   padding: 0 1px;
 }
 
+/* The companion (pet) window is a transparent overlay — its body must stay
+   clear or the whole window renders as an opaque dark rectangle. */
+body.companion-body {
+  background: transparent;
+}
+
 .page-find-active {
   background: var(--accent);
   color: white;
@@ -1164,4 +1170,79 @@ body {
 @keyframes pet-toast-in {
   from { opacity: 0; transform: translateX(8px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+/* Companion sprite: wing flaps (mirrored pair) + whole-body hover. */
+@keyframes pet-flap-r {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(38deg); }
+}
+
+@keyframes pet-flap-l {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-38deg); }
+}
+
+@keyframes pet-hover {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+/* Compact markdown for the companion bubble (~290px wide): tighter spacing
+   and smaller code blocks than the chat's .markdown-body. */
+.companion-markdown p {
+  margin: 0.25em 0;
+}
+
+.companion-markdown ul,
+.companion-markdown ol {
+  margin: 0.25em 0;
+  padding-left: 1.2em;
+}
+
+.companion-markdown li {
+  margin: 0.1em 0;
+}
+
+.companion-markdown h1,
+.companion-markdown h2,
+.companion-markdown h3,
+.companion-markdown h4 {
+  margin: 0.5em 0 0.25em;
+  font-size: 1em;
+}
+
+.companion-markdown pre {
+  margin: 0.35em 0;
+  padding: 0.5em 0.6em;
+  border-radius: 8px;
+  font-size: 0.85em;
+  overflow-x: auto;
+}
+
+.companion-markdown code:not(pre code) {
+  font-size: 0.85em;
+  padding: 0.08em 0.3em;
+}
+
+.companion-markdown blockquote {
+  margin: 0.35em 0;
+  padding: 0.1em 0.7em;
+}
+
+.companion-markdown table {
+  font-size: 0.9em;
+}
+
+.companion-markdown th,
+.companion-markdown td {
+  padding: 0.2em 0.45em;
+}
+
+/* Running-state radiance: the whole white overlay breathes brighter/dimmer,
+   so the pet reads as EMITTING light rather than just being white. The
+   filter brightness rides on top of the cross-fade opacity. */
+@keyframes pet-radiance {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.5); }
 }

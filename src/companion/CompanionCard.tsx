@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ActivityRecord,
@@ -82,6 +85,7 @@ export function CompanionCard({
   brainAvailable,
   isAsking,
   streamedAnswer,
+  dndActive,
   onCollapse,
   onDnd,
   onResetChat,
@@ -92,6 +96,7 @@ export function CompanionCard({
   brainAvailable: boolean;
   isAsking: boolean;
   streamedAnswer: string;
+  dndActive: boolean;
   onCollapse: () => void;
   onDnd: () => void;
   onResetChat: () => void;
@@ -159,9 +164,13 @@ export function CompanionCard({
         <button
           onClick={onDnd}
           title={t("companion.menu.dnd1h")}
-          className="text-[10px] px-1.5 py-0.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
+          className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+            dndActive
+              ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
+              : "text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+          }`}
         >
-          {t("companion.menu.dnd1h")}
+          {dndActive ? t("companion.menu.dndActive") : t("companion.menu.dnd1h")}
         </button>
         <button
           onClick={onResetChat}
@@ -207,14 +216,18 @@ export function CompanionCard({
           {history.map((e, i) => (
             <div key={i} className="space-y-1">
               <div className="text-xs text-[var(--text-primary)] text-right">{"Q: " + e.question}</div>
-              <div className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap">
-                {e.answer}
+              <div className="companion-markdown markdown-body text-xs text-[var(--text-secondary)]">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                  {e.answer}
+                </ReactMarkdown>
               </div>
             </div>
           ))}
           {(isAsking || streamedAnswer) && (
-            <div className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap">
-              {streamedAnswer || "…"}
+            <div className="companion-markdown markdown-body text-xs text-[var(--text-secondary)]">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                {streamedAnswer || "…"}
+              </ReactMarkdown>
             </div>
           )}
           <div ref={chatBottomRef} />

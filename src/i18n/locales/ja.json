@@ -235,7 +235,11 @@
       "agentStartup": "エージェントの起動に失敗しました。会話履歴は保持されています。もう一度メッセージを送信してお試しください。"
     },
     "retry": "再試行",
-    "errorOccurred": "エラーが発生しました"
+    "errorOccurred": "エラーが発生しました",
+    "queuedCount": "キュー中 ({{count}})",
+    "queueClear": "すべてクリア",
+    "queuePlaceholder": "生成中 — Enter でキューに追加",
+    "interruptSend": "今すぐ送信（現在を停止）"
   },
   "inputBar": {
     "removeAttachment": "削除",
@@ -748,7 +752,8 @@
       "collapse": "折りたたむ",
       "openMain": "メインウィンドウを開く",
       "hide": "非表示",
-      "resetChat": "チャットをリセット"
+      "resetChat": "チャットをリセット",
+      "dndActive": "通知オフ中"
     },
     "settings": {
       "title": "コンパニオン",

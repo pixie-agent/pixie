@@ -9,6 +9,10 @@ import "../i18n";
 if (import.meta.env.PROD) {
   document.addEventListener("contextmenu", (e) => e.preventDefault());
 }
+// index.css sets `body { background: var(--bg-primary) }` for the main app —
+// that would paint an opaque dark rectangle over the whole transparent
+// window. The companion body stays clear.
+document.body.classList.add("companion-body");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

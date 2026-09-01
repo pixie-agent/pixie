@@ -129,10 +129,12 @@ pub struct CompanionChatEntry {
 /// notification center and of any window being open.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanionToast {
-    /// "done" | "info" — colors the bubble.
+    /// "done" | "error" | "info" — colors the bubble.
     pub kind: String,
-    pub title: String,
-    pub body: String,
+    /// The main text the user reads (agent output / error / progress).
+    pub main: String,
+    /// Tiny context label (session/task name) — secondary.
+    pub label: String,
 }
 
 /// The input side of `apply_event` — a deserialized observation of one
@@ -182,9 +184,11 @@ pub enum Observation {
 /// What the pure core wants the outside world to do about a transition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SideEffect {
-    /// Fire an OS notification (title, body).
+    /// Fire a pet bubble: (main text, small context label). The MAIN text is
+    /// the payload the user actually reads (agent output, error, tool); the
+    /// label is secondary context (session/task name) rendered tiny.
     Notify(String, String),
-    /// Record finished — completion ran longer than the notification threshold.
+    /// Record finished: (result text, small context label).
     NotifyCompletion(String, String),
 }
 
@@ -297,12 +301,10 @@ pub fn apply_event(
             rec.status = ActivityStatus::WaitingPermission;
             rec.last_event_at = now;
             rec.excerpt = format!("permission: {tool_name}");
-            let title = "🔔 Pixie".to_string();
-            let body = match &rec.title {
-                t if t.is_empty() => format!("{tool_name} wants permission"),
-                t => format!("{t}: {tool_name} wants permission"),
-            };
-            (Some(rec.clone()), Some(SideEffect::Notify(title, body)))
+            // Main text = what needs approval; label = session name (tiny).
+            let main = format!("🔔 请求权限: {tool_name}");
+            let label = rec.title.clone();
+            (Some(rec.clone()), Some(SideEffect::Notify(main, label)))
         }
         Observation::Finished {
             id,
@@ -319,19 +321,15 @@ pub fn apply_event(
             rec.detail = Some(truncate_chars(detail, 400));
             // EVERY turn completion notifies (no minimum duration): the pet's
             // job is telling the pilot a session finished, even a quick one.
-            // Empty detail (no final text) still notifies with a bare title.
+            // Main text = the agent's final output; label = session name (tiny).
             let effect = if !suppress_notification {
                 let d = detail.trim();
-                Some(SideEffect::NotifyCompletion(
-                    "✅ Pixie".to_string(),
-                    if d.is_empty() {
-                        "已完成".to_string()
-                    } else if rec.title.is_empty() {
-                        truncate_chars(d, 120)
-                    } else {
-                        format!("{}: {}", rec.title, truncate_chars(d, 120))
-                    },
-                ))
+                let main = if d.is_empty() {
+                    "✅ 已完成".to_string()
+                } else {
+                    format!("✅ {}", truncate_chars(d, 300))
+                };
+                Some(SideEffect::NotifyCompletion(main, rec.title.clone()))
             } else {
                 None
             };
@@ -348,12 +346,10 @@ pub fn apply_event(
             rec.last_event_at = now;
             rec.finished_at = Some(now);
             rec.detail = Some(truncate_chars(error, 400));
+            // Main text = the error; label = session name (tiny).
             let effect = Some(SideEffect::Notify(
-                "❌ Pixie".to_string(),
-                match &rec.title {
-                    t if t.is_empty() => truncate_chars(error, 160),
-                    t => format!("{t}: {}", truncate_chars(error, 120)),
-                },
+                format!("❌ {}", truncate_chars(error, 300)),
+                rec.title.clone(),
             ));
             let out = rec.clone();
             trim_finished(activities);
@@ -480,9 +476,11 @@ impl CompanionHandle {
 
     fn run_effect(&self, effect: SideEffect) {
         use tauri_plugin_notification::NotificationExt;
-        let (title, body, is_completion) = match &effect {
-            SideEffect::Notify(t, b) => (t.clone(), b.clone(), false),
-            SideEffect::NotifyCompletion(t, b) => (t.clone(), b.clone(), true),
+        // Effect fields are (main, label): main = the text the user reads
+        // (agent output / error / progress), label = tiny context (session name).
+        let (main, label, is_completion) = match &effect {
+            SideEffect::Notify(m, l) => (m.clone(), l.clone(), false),
+            SideEffect::NotifyCompletion(m, l) => (m.clone(), l.clone(), true),
         };
 
         let store = self.app.state::<CompanionStateStore>();
@@ -502,9 +500,9 @@ impl CompanionHandle {
         let os_enabled = prefs.os_notifications;
         let os_category_on = if is_completion {
             prefs.notify_completion
-        } else if title.starts_with("❌") {
+        } else if main.starts_with("❌") {
             prefs.notify_error
-        } else if title.starts_with("🔔") {
+        } else if main.starts_with("🔔") {
             prefs.notify_permission
         } else {
             true // heartbeat ⏳
@@ -512,30 +510,43 @@ impl CompanionHandle {
         drop(prefs);
 
         if !dnd {
+            let kind = if is_completion || main.starts_with("✅") {
+                "done"
+            } else if main.starts_with("❌") {
+                "error"
+            } else {
+                "info"
+            };
             let _ = self.app.emit_to(
                 "companion",
                 "companion-toast",
                 CompanionToast {
-                    kind: if is_completion { "done" } else { "info" }.to_string(),
-                    title: title.clone(),
-                    body: body.clone(),
+                    kind: kind.to_string(),
+                    main: main.clone(),
+                    label: label.clone(),
                 },
             );
         }
 
         // --- OS notification: opt-in backup, for when the user wants buzzes
-        // even without looking at the pet (e.g. away from the desk).
+        // even without looking at the pet (e.g. away from the desk). Title is
+        // the label (short); body carries the main text.
         if !os_enabled || !os_category_on || dnd {
             return;
         }
+        let os_title = if label.is_empty() {
+            "Pixie".to_string()
+        } else {
+            label.clone()
+        };
         let _ = self
             .app
             .notification()
             .builder()
-            .title(&title)
-            .body(&body)
+            .title(&os_title)
+            .body(&main)
             .show();
-        log::info!("[companion] os notification: {title}");
+        log::info!("[companion] os notification: {os_title}");
     }
 
     /// Lazily backfill title/workspace for conversation records from
@@ -718,14 +729,14 @@ fn spawn_heartbeat(app: AppHandle) {
             }
             for (title, elapsed, excerpt) in beats {
                 let h = CompanionHandle { app: app.clone() };
+                // Main text = what it's doing right now; label = session name.
                 h.run_effect(SideEffect::Notify(
-                    "⏳ Pixie".to_string(),
                     format!(
-                        "{} — still running ({}s): {}",
-                        if title.is_empty() { "task" } else { &title },
+                        "⏳ {}s · {}",
                         elapsed / 1_000,
-                        truncate_chars(&excerpt, 80)
+                        truncate_chars(&excerpt, 200)
                     ),
+                    title,
                 ));
             }
         }
@@ -957,8 +968,8 @@ fn create_window(app: &AppHandle, prefs: &CompanionPrefs) -> Result<(), tauri::E
     if app.get_webview_window("companion").is_some() {
         return Ok(()); // dev reload — keep the existing window
     }
-    const W: f64 = 96.0;
-    const H: f64 = 120.0;
+    const W: f64 = 120.0;
+    const H: f64 = 140.0;
     // Restore the saved logical position, clamped into the nearest monitor's
     // visible area — a stale record from another display (or a pre-scale-fix
     // save in physical px) must not strand the pet off-screen.
@@ -1339,6 +1350,9 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
     let api_key = crate::engine::builtin::get_api_key();
     if api_key.is_empty() {
         let answer = local_fallback_answer(&activities, now);
+        // Persist before the done signal (see the main path: the frontend
+        // snapshot-refresh on "done" must observe this entry).
+        append_history(&app, &question, &answer);
         let _ = app.emit(
             "companion-response",
             CompanionResponse {
@@ -1348,7 +1362,6 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
                 brain_offline: true,
             },
         );
-        append_history(&app, &question, &answer);
         return Ok(());
     }
     let base_url = crate::engine::builtin::get_base_url();
@@ -1397,6 +1410,10 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
 
     match result {
         Ok((full_text, had_error)) if !had_error => {
+            // Persist FIRST, then signal done: the frontend refreshes its
+            // history snapshot on "done", and if the write lands after the
+            // emit the refreshed list is missing exactly this latest turn.
+            append_history(&app, &question, &full_text);
             let _ = app.emit(
                 "companion-response",
                 CompanionResponse {
@@ -1406,7 +1423,6 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
                     brain_offline: false,
                 },
             );
-            append_history(&app, &question, &full_text);
         }
         Ok((_, _)) | Err(_) => {
             // Surface the failure to the pet window; history stays untouched.

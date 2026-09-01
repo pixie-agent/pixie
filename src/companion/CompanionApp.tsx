@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   getCurrentWindow,
   LogicalSize,
   PhysicalPosition,
+  PhysicalSize,
   currentMonitor,
 } from "@tauri-apps/api/window";
 import { PetSprite } from "./PetSprite";
@@ -19,10 +23,19 @@ import type {
   PetState,
 } from "./types";
 
-const COLLAPSED_SIZE = new LogicalSize(96, 120);
-/// Collapsed + toast bubble: wider so the text fits to the LEFT of the sprite.
-const TOAST_SIZE = new LogicalSize(340, 120);
+/// Toast bubble width (logical px); height is measured from content so long
+/// agent output is fully visible instead of clipping.
+const TOAST_WIDTH = 420;
+const TOAST_MIN_HEIGHT = 140;
+const TOAST_MAX_HEIGHT = 640;
 const EXPANDED_SIZE = new LogicalSize(400, 560);
+
+/// The pet's on-screen anchor: the sprite's right edge x and vertical center
+/// y (logical px, screen space). Every size change (expand / collapse / toast)
+/// recomputes the window position so THIS point never moves — the user parked
+/// the pet here, and it stays here.
+const SPRITE_W = 120; // collapsed window = the sprite's hitbox
+const SPRITE_H = 140;
 
 const win = getCurrentWindow();
 
@@ -44,9 +57,9 @@ function badgeCount(activities: ActivityRecord[]): number {
 }
 
 interface CompanionToast {
-  kind: string; // "done" | "info"
-  title: string;
-  body: string;
+  kind: string; // "done" | "error" | "info"
+  main: string;
+  label: string;
 }
 
 export function CompanionApp() {
@@ -60,21 +73,19 @@ export function CompanionApp() {
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<CompanionToast | null>(null);
+  const [toastClosed, setToastClosed] = useState(false);
   const askBufferRef = useRef("");
   const prefsRef = useRef<CompanionPrefs | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Ambient bubble: every notification the pet fires also pops a text bubble
-  // beside the sprite for a few seconds — visible even with the chat window
-  // closed and the OS notification center cleared.
+  // Ambient bubble: STICKY — a new notification REPLACES the current bubble
+  // in place; it never auto-dismisses. The user closes it by clicking the ×
+  // (a new message reopens it). This is the pet's voice, not a transient hint.
   useEffect(() => {
     const un = listen<CompanionToast>("companion-toast", (e) => {
       setToast(e.payload);
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = setTimeout(() => setToast(null), 6_000);
+      setToastClosed(false);
     });
     return () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
       void un.then((f) => f());
     };
   }, []);
@@ -140,13 +151,18 @@ export function CompanionApp() {
       } else if (event_type === "done") {
         setStreamedAnswer("");
         setIsAsking(false);
-        // The final text was appended to history on the Rust side; refresh it.
-        void invoke<CompanionSnapshot>("get_companion_state")
-          .then((snap) => {
-            setHistory(snap.history);
-            setBrainAvailable(snap.brain_available);
-          })
-          .catch(() => {});
+        // The final text was appended to history on the Rust side (persist
+        // happens BEFORE this event); refresh the snapshot. A second, delayed
+        // pull guards against any fs-sync edge the first read might hit.
+        const pull = () =>
+          void invoke<CompanionSnapshot>("get_companion_state")
+            .then((snap) => {
+              setHistory(snap.history);
+              setBrainAvailable(snap.brain_available);
+            })
+            .catch(() => {});
+        pull();
+        setTimeout(pull, 300);
       } else if (event_type === "error") {
         setStreamedAnswer("");
         setIsAsking(false);
@@ -157,56 +173,105 @@ export function CompanionApp() {
     };
   }, []);
 
-  // Window size follows expand/collapse/toast. The toast widens the window to
-  // the LEFT of the sprite — the sprite stays anchored at its right edge so
-  // the pet never appears to jump. Before expanding, slide the window so the
-  // larger size still fits its monitor (a card stuck off-screen can't be
-  // dragged back, since its header is the only drag region).
+  // ---- Pet anchoring ------------------------------------------------------
+  // The sprite's anchor (right-edge x / vertical-center y, PHYSICAL screen px)
+  // is the single source of truth for WHERE the pet lives. All math runs in
+  // physical pixels — logical↔physical round-trips are what caused the 1px
+  // drift between toast-open and toast-closed. Size changes recompute the
+  // window position from the anchor — never the other way — so expanding,
+  // collapsing, and toasts leave the sprite pixel-stationary.
+  const anchorRef = useRef<{ rx: number; cy: number } | null>(null);
+  const toastRef = useRef<HTMLDivElement>(null);
+  const restoringRef = useRef(false);
+
+  // Size/position for the current mode, derived from the anchor.
   useEffect(() => {
     void (async () => {
-      const target = expanded ? EXPANDED_SIZE : toast ? TOAST_SIZE : COLLAPSED_SIZE;
-      if (expanded) {
-        try {
-          const [pos, factor, monitor] = await Promise.all([
-            win.outerPosition(),
-            win.scaleFactor(),
-            currentMonitor(),
-          ]);
-          if (monitor) {
-            // All Tauri geometry here is physical px; compare in one space.
-            const w = EXPANDED_SIZE.width * factor;
-            const h = EXPANDED_SIZE.height * factor;
-            const maxX = monitor.position.x + monitor.size.width - w - 8 * factor;
-            const maxY = monitor.position.y + monitor.size.height - h - 8 * factor;
-            const x = Math.min(pos.x, Math.max(monitor.position.x, maxX));
-            const y = Math.min(pos.y, Math.max(monitor.position.y, maxY));
-            if (x !== pos.x || y !== pos.y) {
-              await win.setPosition(new PhysicalPosition(x, y));
-            }
-          }
-        } catch {
-          // best-effort — fall through to the plain resize
-        }
-      } else if (toast) {
-        // Widen leftward: keep the sprite's right edge where it was.
-        try {
-          const [pos, size, factor] = await Promise.all([
-            win.outerPosition(),
-            win.outerSize(),
-            win.scaleFactor(),
-          ]);
-          const grow = (TOAST_SIZE.width - COLLAPSED_SIZE.width) * factor;
-          await win.setPosition(new PhysicalPosition(pos.x - grow, pos.y));
-          await win.setSize(TOAST_SIZE);
-          void size;
-          void factor;
-        } catch {
-          await win.setSize(TOAST_SIZE).catch(() => {});
-        }
+      const factor = await win.scaleFactor().catch(() => 1);
+      const spriteW = Math.round(SPRITE_W * factor);
+      const spriteH = Math.round(SPRITE_H * factor);
+
+      // Seed the anchor on first run from the actual window position.
+      if (!anchorRef.current) {
+        const pos = await win.outerPosition();
+        anchorRef.current = {
+          rx: pos.x + spriteW,
+          cy: pos.y + spriteH / 2,
+        };
       }
-      await win.setSize(target).catch(() => {});
+      const { rx, cy } = anchorRef.current;
+
+      let w = spriteW;
+      let h = spriteH;
+
+      if (expanded) {
+        w = Math.round(EXPANDED_SIZE.width * factor);
+        h = Math.round(EXPANDED_SIZE.height * factor);
+      } else if (toast && !toastClosed) {
+        // Bubble height from the rendered content (measured after paint).
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        h = Math.max(
+          Math.round(TOAST_MIN_HEIGHT * factor),
+          Math.min(
+            Math.round(TOAST_MAX_HEIGHT * factor),
+            Math.ceil((toastRef.current?.offsetHeight ?? 0) * factor) + 8 * factor
+          )
+        );
+        w = Math.round(TOAST_WIDTH * factor);
+      }
+
+      // Window x/y so the sprite's right edge = rx and its center = cy.
+      const physX = rx - w;
+      const physY = cy - spriteH / 2;
+
+      // Clamp into the current monitor — only as much as visibility requires.
+      let x = physX;
+      let y = physY;
+      try {
+        const monitor = await currentMonitor();
+        if (monitor) {
+          const minX = monitor.position.x;
+          const minY = monitor.position.y;
+          const maxX = monitor.position.x + monitor.size.width - w;
+          const maxY = monitor.position.y + monitor.size.height - h;
+          x = Math.max(minX, Math.min(x, maxX));
+          y = Math.max(minY, Math.min(y, maxY));
+        }
+      } catch {
+        // best-effort
+      }
+
+      restoringRef.current = true; // suppress anchor updates from our own move
+      await win.setPosition(new PhysicalPosition(x, y)).catch(() => {});
+      await win.setSize(new PhysicalSize(w, h)).catch(() => {});
+      // Hold the suppression through a grace window: macOS can deliver the
+      // Moved event for the resize slightly AFTER setSize resolves.
+      setTimeout(() => {
+        restoringRef.current = false;
+      }, 350);
     })();
-  }, [expanded, toast]);
+  }, [expanded, toast, toastClosed]);
+
+  // Drag → update the anchor (physical px). Only GENUINE user drags count:
+  // (a) grace window after our own transitions, (b) window must be at
+  // collapsed sprite size — programmatic toast/card geometry is rejected.
+  useEffect(() => {
+    const un = win.onMoved(async () => {
+      if (restoringRef.current) return;
+      const pos = await win.outerPosition();
+      const size = await win.outerSize();
+      const factor = await win.scaleFactor().catch(() => 1);
+      const spriteW = Math.round(SPRITE_W * factor);
+      if (Math.abs(size.width - spriteW) > 2) return; // not sprite-sized
+      anchorRef.current = {
+        rx: pos.x + spriteW,
+        cy: pos.y + Math.round(SPRITE_H * factor) / 2,
+      };
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -218,10 +283,12 @@ export function CompanionApp() {
 
   // Persist drag position (debounced). `outerPosition` returns PHYSICAL
   // pixels; convert to logical so the saved value restores correctly
-  // regardless of the display's scale factor.
+  // regardless of the display's scale factor. Programmatic re-anchoring does
+  // NOT persist (only genuine user drags do).
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const un = win.onMoved(() => {
+      if (restoringRef.current) return; // our own setPosition, not a drag
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         void (async () => {
@@ -281,15 +348,31 @@ export function CompanionApp() {
   const enableDnd = useCallback(() => {
     const p = prefsRef.current;
     if (!p) return;
-    const until = new Date(Date.now() + 60 * 60_000).toISOString();
-    const next = { ...p, dnd_until: until };
+    const dndActive = p.dnd_until ? new Date(p.dnd_until) > new Date() : false;
+    // Toggle: a second click CANCELS do-not-disturb.
+    const next = {
+      ...p,
+      dnd_until: dndActive ? null : new Date(Date.now() + 60 * 60_000).toISOString(),
+    };
     setPrefs(next);
+    prefsRef.current = next;
     void invoke("set_companion_prefs", { prefs: next }).catch(() => {});
+    // Visible confirmation — the pet "speaks" so the click never feels dead.
+    setToast({
+      kind: "info",
+      main: dndActive ? "🔔 已取消免打扰" : "🔕 免打扰已开启（1 小时）",
+      label: "",
+    });
+    setToastClosed(false);
   }, []);
 
   const resetChat = useCallback(() => {
     void invoke("reset_companion_chat")
-      .then(() => setHistory([]))
+      .then(() => {
+        setHistory([]);
+        setToast({ kind: "info", main: "🧹 对话已清空", label: "" });
+        setToastClosed(false);
+      })
       .catch(() => {});
   }, []);
 
@@ -310,37 +393,67 @@ export function CompanionApp() {
           brainAvailable={brainAvailable}
           isAsking={isAsking}
           streamedAnswer={streamedAnswer}
+          dndActive={
+            prefs?.dnd_until ? new Date(prefs.dnd_until) > new Date() : false
+          }
           onCollapse={() => setExpanded(false)}
           onDnd={enableDnd}
           onResetChat={resetChat}
           onAsk={ask}
         />
       ) : (
-        <div className="w-full h-full flex items-center justify-end gap-2">
-          {/* Toast bubble: appears to the LEFT of the sprite when a
-              notification fires; the window widens to make room. */}
-          {toast && (
-            <div
-              className={`max-w-[236px] rounded-2xl border px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl animate-[pet-toast-in_0.25s_ease-out] ${
-                toast.kind === "done"
-                  ? "bg-green-500/15 border-green-500/30"
-                  : "bg-[var(--bg-primary)]/90 border-[var(--border)]"
-              }`}
-            >
-              <div className="text-[10px] font-semibold text-[var(--text-secondary)] truncate">
-                {toast.title}
-              </div>
-              <div className="text-[11px] text-[var(--text-primary)] leading-snug line-clamp-3">
-                {toast.body}
+        // The sprite occupies a FIXED 140×140 zone at the window's top-right
+        // (vertically CENTERED in that zone — matching the anchor math, where
+        // the sprite's visual center is window-top + SPRITE_H/2). A toast to
+        // its left never affects it; a taller window grows downward only.
+        <div className="w-full h-full flex justify-end gap-2">
+          {toast && !toastClosed && (
+            // flex-1 min-w-0: the bubble fills the space LEFT of the fixed
+            // sprite zone exactly — never wider than the window (a fixed
+            // w-[288px] overflowed the 380px window and got clipped).
+            <div className="flex-1 min-w-0 flex items-center h-[140px]">
+              <div
+                ref={toastRef}
+                className={`relative flex flex-col w-full rounded-2xl border px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl animate-[pet-toast-in_0.25s_ease-out] max-h-full ${
+                  toast.kind === "done"
+                    ? "bg-green-950/85 border-green-500/30"
+                    : toast.kind === "error"
+                      ? "bg-red-950/85 border-red-500/30"
+                      : "bg-[var(--bg-primary)]/90 border-[var(--border)]"
+                }`}
+              >
+                <button
+                  onClick={() => setToastClosed(true)}
+                  className="absolute top-1 right-1.5 w-4 h-4 flex items-center justify-center rounded text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-white/10 transition-colors"
+                  aria-label="dismiss"
+                >
+                  ×
+                </button>
+                {toast.label && (
+                  <div className="pr-4 text-[9px] text-[var(--text-secondary)]/70 truncate mb-0.5">
+                    {toast.label}
+                  </div>
+                )}
+                {/* Markdown-rendered body (agent output is markdown). Compact
+                    variant: the bubble is ~290px wide, so code blocks and
+                    lists must stay small; window height follows the rendered
+                    height. */}
+                <div className="companion-markdown markdown-body min-h-0 flex-1 overflow-y-auto text-[12px] text-[var(--text-primary)]">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                    {toast.main}
+                  </ReactMarkdown>
+                </div>
               </div>
             </div>
           )}
-          <PetSprite
-            state={petState}
-            badge={badge}
-            onClick={() => setExpanded(true)}
-            onContextMenu={() => setMenuOpen((v) => !v)}
-          />
+          <div className="w-[120px] h-[140px] shrink-0 flex items-center justify-center">
+            <PetSprite
+              state={petState}
+              badge={badge}
+              onClick={() => setExpanded(true)}
+              onContextMenu={() => setMenuOpen((v) => !v)}
+            />
+          </div>
         </div>
       )}
 

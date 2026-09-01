@@ -6,6 +6,7 @@ import { formatShortDate } from "./lib/i18nFormat";
 import { formatShortcut, shortcutMatches, type ShortcutsConfig } from "./lib/shortcuts";
 import Sidebar from "./components/Sidebar";
 import InputBar from "./components/InputBar";
+import QueueTray from "./components/QueueTray";
 import { openExternal } from "./openExternal";
 import { useChat } from "./hooks/useChat";
 import EngineBadge from "./components/EngineBadge";
@@ -575,6 +576,10 @@ function AppShell() {
     clearError,
     addScheduledRun,
     addRunningTask,
+    messageQueues,
+    enqueueMessage,
+    clearQueue,
+    removeQueuedMessage,
   } = useChat(engineModelConfigs);
 
   useEffect(() => {
@@ -1241,6 +1246,15 @@ ${entries}
               <ChatView conversation={activeConversation} isGenerating={isGenerating} onOpenPreview={handleOpenPreview} onRespondPermission={respondPermission} onRetry={retryFailedMessage} />
             </Suspense>
 
+            {/* Queue tray: messages staged while the current turn streams. */}
+            {activeId && (
+              <QueueTray
+                items={messageQueues[activeId] ?? []}
+                onRemove={(msgId) => removeQueuedMessage(activeId, msgId)}
+                onClearAll={() => clearQueue(activeId)}
+              />
+            )}
+
             <InputBar
               onSend={(msg, images) => {
                 if (kbEnabled) {
@@ -1265,6 +1279,53 @@ ${entries}
                 } else {
                   sendMessage(msg, undefined, images);
                 }
+              }}
+              onEnqueue={(msg, images) => {
+                if (kbEnabled) {
+                  void (async () => {
+                    try {
+                      const vaultPath = getConfig().vaultPath ?? null;
+                      const results = await invoke<KbSearchResult[]>("search_kb", {
+                        query: msg.trim(),
+                        vaultPath,
+                      });
+                      if (results.length > 0) {
+                        const ctx = formatKbContext(results);
+                        enqueueMessage(`${ctx}\n${msg}`, images);
+                        return;
+                      }
+                    } catch (e) {
+                      console.error("[kb-context] search failed:", e);
+                    }
+                    enqueueMessage(msg, images);
+                  })();
+                } else {
+                  enqueueMessage(msg, images);
+                }
+              }}
+              onInterruptSend={(msg, images) => {
+                void (async () => {
+                  await stopGeneration();
+                  // Same KB enrichment as a normal send for the interrupting
+                  // message (it IS a normal send, just preceded by a stop).
+                  if (kbEnabled) {
+                    try {
+                      const vaultPath = getConfig().vaultPath ?? null;
+                      const results = await invoke<KbSearchResult[]>("search_kb", {
+                        query: msg.trim(),
+                        vaultPath,
+                      });
+                      if (results.length > 0) {
+                        const ctx = formatKbContext(results);
+                        sendMessage(`${ctx}\n${msg}`, undefined, images);
+                        return;
+                      }
+                    } catch (e) {
+                      console.error("[kb-context] search failed:", e);
+                    }
+                  }
+                  sendMessage(msg, undefined, images);
+                })();
               }}
               onStop={() => stopGeneration()}
               isGenerating={isGenerating}

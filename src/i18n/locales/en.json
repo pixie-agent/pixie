@@ -235,7 +235,11 @@
       "agentStartup": "The agent failed to start. Your conversation history is preserved — please resend your message to try again."
     },
     "retry": "Retry",
-    "errorOccurred": "Something went wrong"
+    "errorOccurred": "Something went wrong",
+    "queuedCount": "Queued ({{count}})",
+    "queueClear": "Clear all",
+    "queuePlaceholder": "Generating — Enter to queue",
+    "interruptSend": "Send now (stop current)"
   },
   "inputBar": {
     "removeAttachment": "Remove",
@@ -748,7 +752,8 @@
       "collapse": "Collapse",
       "openMain": "Open main window",
       "hide": "Hide pet",
-      "resetChat": "Reset chat"
+      "resetChat": "Reset chat",
+      "dndActive": "DND active"
     },
     "settings": {
       "title": "Companion",

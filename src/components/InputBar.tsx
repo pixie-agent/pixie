@@ -14,6 +14,11 @@ import { getExtension, IMAGE_EXTENSIONS } from "../preview";
 interface InputBarProps {
   onSend: (message: string, images?: string[]) => void;
   onStop: () => void;
+  /** Queue a message while generating (sent automatically when the current
+   *  turn finishes). Absent ⇒ queueing unsupported (hard block as before). */
+  onEnqueue?: (message: string, images?: string[]) => void;
+  /** Stop the streaming turn and send this message immediately. */
+  onInterruptSend?: (message: string, images?: string[]) => void;
   isGenerating: boolean;
   disabled?: boolean;
   disabledHint?: string;
@@ -113,6 +118,8 @@ function blobToBase64(blob: Blob): Promise<string> {
 export default function InputBar({
   onSend,
   onStop,
+  onEnqueue,
+  onInterruptSend,
   isGenerating,
   disabled = false,
   disabledHint,
@@ -239,7 +246,7 @@ export default function InputBar({
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if (isGenerating || disabled) return;
+    if (disabled) return;
     if (!trimmed && attachments.length === 0) return;
     // Image attachments are handed to the backend as paths (`images`): Claude/
     // CodeBuddy embed them as native image content blocks, Cursor as @mentions.
@@ -254,10 +261,40 @@ export default function InputBar({
         ? `${trimmed}\n\n${mentions}`
         : trimmed
       : mentions;
+    // While generating: Enter queues the message (sent automatically when the
+    // current turn finishes) instead of being silently dropped.
+    if (isGenerating && onEnqueue) {
+      onEnqueue(finalMessage, imagePaths.length > 0 ? imagePaths : undefined);
+      onChange("");
+      setAttachments([]);
+      return;
+    }
+    if (isGenerating) return; // no queue support (e.g. loop conversation)
     onSend(finalMessage, imagePaths.length > 0 ? imagePaths : undefined);
     onChange("");
     setAttachments([]);
-  }, [value, attachments, isGenerating, disabled, onSend, onChange, workspacePath]);
+  }, [value, attachments, isGenerating, disabled, onSend, onEnqueue, onChange, workspacePath]);
+
+  /** Interrupt-send: stop the streaming turn and send this message as the
+   *  next one immediately (ChatGPT-style "send now"). */
+  const handleInterruptSend = useCallback(() => {
+    const trimmed = value.trim();
+    if (disabled || !isGenerating || !onInterruptSend) return;
+    if (!trimmed && attachments.length === 0) return;
+    const imagePaths = attachments.filter(isImagePath);
+    const mentions = attachments
+      .filter((p) => !isImagePath(p))
+      .map((p) => "@" + toWorkspaceRelative(p, workspacePath))
+      .join("\n");
+    const finalMessage = trimmed
+      ? mentions
+        ? `${trimmed}\n\n${mentions}`
+        : trimmed
+      : mentions;
+    onInterruptSend(finalMessage, imagePaths.length > 0 ? imagePaths : undefined);
+    onChange("");
+    setAttachments([]);
+  }, [value, attachments, isGenerating, disabled, onInterruptSend, onChange, workspacePath]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -535,7 +572,7 @@ export default function InputBar({
               disabled
                 ? (disabledHint ?? t('chat.addWorkspaceHint'))
                 : isGenerating
-                  ? t('chat.newMessage')
+                  ? t('chat.queuePlaceholder')
                   : t('chat.newMessage')
             }
             rows={3}
@@ -543,16 +580,32 @@ export default function InputBar({
           />
 
           {isGenerating ? (
-            <button
-              onClick={onStop}
-              className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors mr-2 self-end mb-2"
-              title={t('inputBar.stopTitle', { key: stopShortcutLabel ?? t('keys.escape') })}
-              aria-label={t('chat.stop')}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                <rect x="3" y="3" width="10" height="10" rx="1" />
-              </svg>
-            </button>
+            <>
+              {/* Interrupt-send: stop the current turn and send the draft
+                  immediately (visible only with a non-empty draft). */}
+              {onInterruptSend && (value.trim().length > 0 || attachments.length > 0) && (
+                <button
+                  onClick={handleInterruptSend}
+                  className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors mr-1.5 self-end mb-2"
+                  title={t('chat.interruptSend')}
+                  aria-label={t('chat.interruptSend')}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M2 8L8 3V6L14 6V10L8 10V13L2 8Z" />
+                  </svg>
+                </button>
+              )}
+              <button
+                onClick={onStop}
+                className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors mr-2 self-end mb-2"
+                title={t('inputBar.stopTitle', { key: stopShortcutLabel ?? t('keys.escape') })}
+                aria-label={t('chat.stop')}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <rect x="3" y="3" width="10" height="10" rx="1" />
+                </svg>
+              </button>
+            </>
           ) : (
             <button
               onClick={handleSend}

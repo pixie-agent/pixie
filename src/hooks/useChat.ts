@@ -46,6 +46,15 @@ export interface ConversationEntry {
   workspaceId: string;
 }
 
+/** A message submitted while its conversation was already generating. It
+ *  waits in the queue and is sent (as its own turn) when the current turn
+ *  finishes. Kept OUT of Conversation.messages — unsent is not history. */
+export interface QueuedMessage {
+  id: string;
+  content: string;
+  images?: string[];
+}
+
 const UNBOUND_WORKSPACE_ID = "__pixie_unbound__";
 
 /** How many recent workspaces the picker dropdown shows. */
@@ -432,6 +441,18 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   const allConversationsRef = useRef(allConversations);
   /** Latest generating set for callbacks that must not close over stale state. */
   const generatingIdsRef = useRef<Set<string>>(generatingIds);
+  /**
+   * Per-conversation message queue: while a turn is streaming, submitted
+   * messages wait here instead of being dropped. When the turn finishes
+   * (agent-done), the queue head is sent through the regular sendMessage
+   * path — one at a time, so the backend session's stdin never sees
+   * overlapping turns. Not persisted: an unsent message is not history.
+   */
+  const [messageQueues, setMessageQueues] = useState<Record<string, QueuedMessage[]>>({});
+  const messageQueuesRef = useRef<Record<string, QueuedMessage[]>>({});
+  /** Conversations whose queue is mid-drain this tick — guards against
+   *  double-sends from StrictMode re-invocation or duplicate done events. */
+  const drainingRef = useRef<Set<string>>(new Set());
   /** Engine/model changes made while a turn was streaming, keyed by
    *  conversationId. Applied (backend sync) when the turn completes so the
    *  live session is never killed mid-reply. */
@@ -517,6 +538,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   useEffect(() => {
     generatingIdsRef.current = generatingIds;
   }, [generatingIds]);
+
+  useEffect(() => {
+    messageQueuesRef.current = messageQueues;
+  }, [messageQueues]);
 
   useEffect(() => {
     allConversationsRef.current = allConversations;
@@ -837,6 +862,32 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     }).catch((e) => console.error("[applyPendingOverrides] backend call failed:", e));
   }, []);
 
+  // ---- Message queue helpers (hoisted above the event-listener effect
+  // below — its agent-error callback references clearQueue) -------------------
+
+  const clearQueue = useCallback((convId: string) => {
+    setMessageQueues((prev) => {
+      if (!(convId in prev)) return prev;
+      const next = { ...prev };
+      delete next[convId];
+      messageQueuesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  /** Loop-driven conversations fire agent-done per iteration; draining a
+   *  queue there would inject user messages into an autonomous loop. */
+  const isLoopConversation = useCallback((convId: string): boolean => {
+    const wsId = findWorkspaceForConversation(allConversationsRef.current, convId, convIndexRef);
+    const conv = wsId ? allConversationsRef.current[wsId]?.find((c) => c.id === convId) : undefined;
+    return Boolean(conv?.loopTaskId);
+  }, []);
+
+  /** Ref indirection so the agent-done listener (subscribed once, above in
+   *  source order relative to sendMessage) can call the queue drain without
+   *  re-subscribing or closing over stale state. Assigned after sendMessage. */
+  const drainNextQueuedRef = useRef<(convId: string) => void>(() => {});
+
   // Listen to Tauri events — route updates by conversation_id, not active workspace.
   useEffect(() => {
     let mounted = true;
@@ -872,6 +923,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         setError(null);
         // Sync any engine/model change the user staged mid-turn.
         applyPendingOverrides(done.conversation_id);
+        // Send the next queued message (if any) as its own turn. Via ref: the
+        // listener subscribes once, but the drain implementation lives with
+        // sendMessage further down and must never close over stale state.
+        drainNextQueuedRef.current(done.conversation_id);
 
         // Fire-and-forget: write conversation to Obsidian vault.
         {
@@ -950,6 +1005,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         });
         // The turn is over (failed) — staged engine/model changes can sync now.
         applyPendingOverrides(err.conversation_id);
+        // A failed turn discards the queue: the user just saw an error and
+        // should re-decide what (if anything) to send next.
+        clearQueue(err.conversation_id);
       });
 
       // The backend is transparently retrying a persistent turn that crashed
@@ -1098,7 +1156,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       batches.clear();
       streamFlushScheduledRef.current = false;
     };
-  }, [queueStreamUpdate, flushStreamBatches, applyPendingOverrides]);
+  }, [queueStreamUpdate, flushStreamBatches, applyPendingOverrides, clearQueue]);
 
   const resolveTargetWorkspace = useCallback((preferredWorkspaceId?: string | null): string | null => {
     return preferredWorkspaceId ?? newConversationWorkspaceId ?? defaultWorkspacePath ?? activeWorkspaceId ?? sortedWorkspaces[0]?.id ?? null;
@@ -1363,6 +1421,14 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       ...prev,
       [wsId]: (prev[wsId] ?? []).filter((c) => c.id !== id),
     }));
+    // A deleted conversation's queue goes with it.
+    setMessageQueues((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      messageQueuesRef.current = next;
+      return next;
+    });
     // Removal is persisted via the debounced history save (setHistory in the persist effect).
     if (activeId === id) {
       setActiveId(null);
@@ -1500,9 +1566,12 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
             return { ...conv, messages: msgs };
           }, convIndexRef),
         );
+        // The invoke itself failed (e.g. command error): nothing will stream,
+        // so the queue must not sit waiting for an agent-done that never comes.
+        clearQueue(convId!);
       }
     },
-    [activeId, resolveTargetWorkspace, defaultEngine],
+    [activeId, resolveTargetWorkspace, defaultEngine, clearQueue],
   );
 
   /** Retry after a failed turn: drops the failed assistant reply and the user
@@ -1544,15 +1613,20 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         next.delete(convId);
         return next;
       });
+      // Retrying is an explicit restart — staged messages don't carry over.
+      clearQueue(convId);
 
       await sendMessage(userMsg.content, convId, userMsg.images);
     },
-    [sendMessage],
+    [sendMessage, clearQueue],
   );
 
   const stopGeneration = useCallback(async (convId?: string) => {
     const targetId = convId ?? activeId;
     if (!targetId) return;
+    // Interrupting discards the queue: the user chose to re-take control, so
+    // anything staged for auto-send should not fire afterwards.
+    clearQueue(targetId);
     try {
       await invoke("stop_generation", { conversationId: targetId });
     } catch { /* ignore */ }
@@ -1571,7 +1645,75 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         return { ...conv, messages: msgs };
       }, convIndexRef),
     );
-  }, [activeId]);
+  }, [activeId, clearQueue]);
+
+  // ---- Message queue (per conversation) ------------------------------------
+  // See the state block near the top for the model. enqueueMessage and the
+  // drain ref live here (they depend on sendMessage, defined above);
+  // clearQueue/isLoopConversation are hoisted ABOVE the event-listener effect
+  // (they are referenced from its callbacks).
+
+  const removeQueuedMessage = useCallback((convId: string, msgId: string) => {
+    setMessageQueues((prev) => {
+      const queue = prev[convId];
+      if (!queue) return prev;
+      const next = { ...prev, [convId]: queue.filter((m) => m.id !== msgId) };
+      messageQueuesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  /** Submit a message: if the conversation is streaming, it queues; otherwise
+   *  it sends immediately (fast path — identical to plain sendMessage). */
+  const enqueueMessage = useCallback(
+    (content: string, images?: string[], convIdOverride?: string) => {
+      const convId = convIdOverride ?? activeIdRef.current;
+      if (!convId) return;
+      if (isLoopConversation(convId)) return; // loops: keep the old hard block
+      if (!generatingIdsRef.current.has(convId)) {
+        void sendMessage(content, convIdOverride ? convId : undefined, images);
+        return;
+      }
+      setMessageQueues((prev) => {
+        const next = {
+          ...prev,
+          [convId]: [...(prev[convId] ?? []), { id: generateId(), content, images }],
+        };
+        messageQueuesRef.current = next;
+        return next;
+      });
+    },
+    [sendMessage, isLoopConversation],
+  );
+
+  /** Sent from the agent-done listener (via ref, so the listener never needs
+   *  to re-subscribe): shifts the queue head and sends it as the next turn.
+   *  Assigned in an effect (never during render) and kept fresh whenever its
+   *  dependencies change. */
+  useEffect(() => {
+    drainNextQueuedRef.current = (convId: string) => {
+      if (drainingRef.current.has(convId)) return; // double-fire guard
+      const queue = messageQueuesRef.current[convId];
+      if (!queue || queue.length === 0) return;
+      // Loop conversations never drain (belt & suspenders — enqueue blocks too).
+      if (isLoopConversation(convId)) {
+        clearQueue(convId);
+        return;
+      }
+      const [next, ...rest] = queue;
+      drainingRef.current.add(convId);
+      const updated = { ...messageQueuesRef.current };
+      if (rest.length > 0) updated[convId] = rest;
+      else delete updated[convId];
+      messageQueuesRef.current = updated;
+      setMessageQueues(updated);
+      // The next turn re-adds the conv to generatingIds inside sendMessage; the
+      // marker is only for THIS drain tick, so a duplicate agent-done arriving
+      // before the new turn starts cannot double-send.
+      requestAnimationFrame(() => drainingRef.current.delete(convId));
+      void sendMessage(next.content, convId, next.images);
+    };
+  }, [sendMessage, isLoopConversation, clearQueue]);
 
   const respondPermission = useCallback(
     async (convId: string, requestId: string, allow: boolean) => {
@@ -1820,5 +1962,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     clearError,
     addScheduledRun,
     addRunningTask,
+    // Message queue (per conversation)
+    messageQueues,
+    enqueueMessage,
+    clearQueue,
+    removeQueuedMessage,
   };
 }
