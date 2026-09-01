@@ -24,6 +24,7 @@ const SearchPalette = lazy(() => import("./components/SearchPalette"));
 const ApplicationChat = lazy(() => import("./components/ApplicationChat"));
 const PageFind = lazy(() => import("./components/PageFind"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
+import { useCompanionNavigate } from "./hooks/useCompanionNavigate";
 import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
   AgentEngineId,
@@ -680,6 +681,9 @@ function AppShell() {
     toggle: toggleTask,
     runNow: runTaskNow,
   } = useScheduledTasks();
+
+  // Companion pet: open the conversation the user clicked in the pet card.
+  useCompanionNavigate(switchConversation, setMainView);
 
   const {
     tasks: loopTasks,

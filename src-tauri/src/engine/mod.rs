@@ -497,7 +497,13 @@ pub fn default_probe_args(id: &str) -> Result<Vec<&'static str>> {
             "--permission-mode",
             "bypassPermissions",
         ],
-        "cursor" => vec!["-p", "--force", "--output-format", "stream-json", "--stream-partial-output"],
+        "cursor" => vec![
+            "-p",
+            "--force",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+        ],
         "codex" => vec![
             "exec",
             "--json",

@@ -19,6 +19,7 @@ import { useUpdater } from "../hooks/useUpdater";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "../lib/storage";
 import LanguageSelector from "./LanguageSelector";
+import { CompanionSettings } from "./CompanionSettings";
 
 // Brand mark — same art as the app/README icon.
 const iconUrl = new URL("../assets/icon.svg", import.meta.url).href;
@@ -430,6 +431,9 @@ export default function Settings({
               {t('settings.workingDirectoryHint')}
             </p>
           </section>
+
+          {/* Companion pet (小精灵) */}
+          <CompanionSettings />
 
           {/* Knowledge Base */}
           <section>

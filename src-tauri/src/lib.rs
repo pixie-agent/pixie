@@ -1,3 +1,4 @@
+mod companion;
 mod engine;
 mod pty;
 mod search;
@@ -430,6 +431,32 @@ pub struct TaskRunRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Generic observability events (consumed by the companion observer)
+// ---------------------------------------------------------------------------
+
+/// Emitted by `send_message` once the engine/workspace are resolved — the one
+/// moment a new interactive turn becomes observable from outside. Generic:
+/// any listener may subscribe; the companion uses it to open an activity record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseTurnStarted {
+    pub conversation_id: String,
+    pub engine: String,
+    /// Resolved workspace path ("" when none).
+    pub workspace: String,
+}
+
+/// Emitted when a headless scheduled task starts executing. Generic
+/// observability counterpart to the existing `task-run-complete`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseTaskRunStarted {
+    pub conversation_id: String,
+    pub task_id: String,
+    pub task_name: String,
+    pub workspace: String,
+    pub engine: String,
+}
+
+// ---------------------------------------------------------------------------
 // Loop tasks: iterative agent cycles with exit conditions
 // ---------------------------------------------------------------------------
 
@@ -855,6 +882,17 @@ async fn send_message(
         ),
         None => None,
     };
+
+    // Generic observability: a new interactive turn is starting on a resolved
+    // engine/workspace. (The companion subscribes to this.)
+    let _ = app.emit(
+        "agent-turn-started",
+        ResponseTurnStarted {
+            conversation_id: conversation_id.clone(),
+            engine: engine_id.to_string(),
+            workspace: workspace.clone().unwrap_or_default(),
+        },
+    );
     let session_id =
         resolve_session_id(&state.conversation_engines, &conversation_id, engine_id).await;
     // Absolute paths of image attachments. Claude/CodeBuddy embed these as native
@@ -2346,7 +2384,7 @@ const DEFAULT_WORKSPACE_FILE: &str = "default_workspace.txt";
 const APP_CONFIG_FILE: &str = "config.json";
 const HISTORY_FILE: &str = "history.jsonl";
 const SCHEDULED_TASKS_FILE: &str = "scheduled_tasks.json";
-const TASK_RUNS_FILE: &str = "task_runs.json";
+pub(crate) const TASK_RUNS_FILE: &str = "task_runs.json";
 const LOOP_TASKS_FILE: &str = "loop_tasks.json";
 const LOOP_ITERATIONS_FILE: &str = "loop_iterations.json";
 const APPLICATION_SCHEMA_VERSION: &str = "0.1";
@@ -6541,6 +6579,19 @@ async fn run_task_headless(app: AppHandle, mut task: ScheduledTask, conversation
         .body(format!("Running in {}…", dir_label))
         .show();
 
+    // Generic observability: the headless task run is starting. (The companion
+    // subscribes to this.)
+    let _ = app.emit(
+        "task-run-started",
+        ResponseTaskRunStarted {
+            conversation_id: conversation_id.clone(),
+            task_id: task.id.clone(),
+            task_name: task.name.clone(),
+            workspace: task.workspace.clone(),
+            engine: task.engine.clone(),
+        },
+    );
+
     // Guard against a vanished or symlinked workspace before spawning.
     let workspace = match ensure_directory_no_symlink(Path::new(&task.workspace), "Task workspace")
     {
@@ -8688,6 +8739,10 @@ pub fn run() {
             }
 
             // --- System tray (keeps the app resident when the window is hidden) ---
+            // Companion ("小精灵") observer: manages its own state, listens to
+            // existing events, and owns the floating pet window. self-contained.
+            companion::init(app.handle());
+
             let show_item = MenuItem::with_id(app, "show", "Show Pixie", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Pixie", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
@@ -8838,6 +8893,11 @@ pub fn run() {
             search_kb,
             index_kb,
             backfill_list,
+            companion::get_companion_state,
+            companion::set_companion_prefs,
+            companion::focus_conversation,
+            companion::reset_companion_chat,
+            companion::companion_ask,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -719,5 +719,52 @@
     "builtin": "組み込み",
     "codex": "OpenAI Codex",
     "notReady": "未準備"
+  },
+  "companion": {
+    "title": "ピクシー",
+    "untitled": "無題",
+    "tooltip": {
+      "idle": "静かです — クリックで開く",
+      "watching": "{{count}} 件を監視中 — クリックで開く",
+      "alert": "注意が必要 — クリックで開く"
+    },
+    "status": {
+      "running": "実行中",
+      "waiting_permission": "許可待ち",
+      "completed": "完了",
+      "failed": "失敗",
+      "stopped": "停止"
+    },
+    "card": {
+      "activityTitle": "アクティビティ",
+      "noActivity": "実行中のタスクはありません。",
+      "askTitle": "質問",
+      "askPlaceholder": "進捗は？",
+      "askHint": "実行中・最近のアクティビティについて質問できます。",
+      "brainOffline": "ブレインオフライン — ローカル要約を返します。builtin エンジンの API キーを設定してください。"
+    },
+    "menu": {
+      "dnd1h": "通知オフ (1時間)",
+      "collapse": "折りたたむ",
+      "openMain": "メインウィンドウを開く",
+      "hide": "非表示",
+      "resetChat": "チャットをリセット"
+    },
+    "settings": {
+      "title": "コンパニオン",
+      "description": "すべての会話とタスクを監視し、重要な瞬間に通知し、進捗の質問に答えるフローティングペットです。",
+      "enable": "コンパニオンを表示",
+      "notify_permission": "許可リクエスト時に通知",
+      "notify_error": "エラー時に通知",
+      "notify_completion": "長時間タスク完了時に通知",
+      "dnd": "通知オフ",
+      "dndEnable": "1時間オン",
+      "dndActive": "有効 — キャンセル",
+      "brainModel": "ブレインモデル",
+      "brainModelPlaceholder": "claude-haiku-4-5-20251001",
+      "brainModelHint": "builtin エンジンの API キーを使用します。ペットは要約のみなので小さい高速モデルが最適です。",
+      "osNotifications": "システム通知も送る",
+      "osNotificationsHint": "ピクシーのバブルがメインで常時オン。システム通知は離席時用のオプションです。"
+    }
   }
 }

@@ -1146,3 +1146,22 @@ body {
 .permission-btn--allow:hover {
   background: color-mix(in srgb, var(--accent) 30%, var(--bg-tertiary));
 }
+
+/* ---------------------------------------------------------------------------
+ * Companion pet (小精灵) animations — the sprite's state language.
+ * idle: slow dim breath · watching: steady accent pulse · alert: hot fast pulse
+ * ------------------------------------------------------------------------- */
+@keyframes pet-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.96); }
+  50% { opacity: 0.75; transform: scale(1.03); }
+}
+
+@keyframes pet-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+@keyframes pet-toast-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}

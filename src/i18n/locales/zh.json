@@ -719,5 +719,52 @@
     "builtin": "内置",
     "codex": "OpenAI Codex",
     "notReady": "未就绪"
+  },
+  "companion": {
+    "title": "小精灵",
+    "untitled": "未命名",
+    "tooltip": {
+      "idle": "一切安静 — 点击展开",
+      "watching": "正在盯守 {{count}} 个任务 — 点击展开",
+      "alert": "需要你处理 — 点击展开"
+    },
+    "status": {
+      "running": "运行中",
+      "waiting_permission": "待审批",
+      "completed": "完成",
+      "failed": "失败",
+      "stopped": "已停止"
+    },
+    "card": {
+      "activityTitle": "动态",
+      "noActivity": "暂无活动。发个会话或任务试试。",
+      "askTitle": "问答",
+      "askPlaceholder": "现在什么进度了？",
+      "askHint": "可以问我任何运行中或最近的活动。",
+      "brainOffline": "大脑离线 — 将返回本地摘要。请配置 builtin 引擎的 API Key。"
+    },
+    "menu": {
+      "dnd1h": "免打扰 (1小时)",
+      "collapse": "收起",
+      "openMain": "打开主窗口",
+      "hide": "隐藏小精灵",
+      "resetChat": "清空对话"
+    },
+    "settings": {
+      "title": "小精灵",
+      "description": "一个浮动小宠物，盯守所有会话和任务，在重要时刻通知你，并回答进度问题。",
+      "enable": "显示小精灵",
+      "notify_permission": "权限请求时通知",
+      "notify_error": "出错时通知",
+      "notify_completion": "长任务完成时通知",
+      "dnd": "免打扰",
+      "dndEnable": "开启 1 小时",
+      "dndActive": "已开启 — 取消",
+      "brainModel": "大脑模型",
+      "brainModelPlaceholder": "claude-haiku-4-5-20251001",
+      "brainModelHint": "使用 builtin 引擎的 API Key。小快模型即可 — 小精灵只做摘要。",
+      "osNotifications": "同时发系统通知",
+      "osNotificationsHint": "小精灵的气泡是主通道，始终开启。系统通知是可选备份，适合离开屏幕时使用。"
+    }
   }
 }

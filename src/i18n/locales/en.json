@@ -719,5 +719,52 @@
     "builtin": "Built-in",
     "codex": "OpenAI Codex",
     "notReady": "not ready"
+  },
+  "companion": {
+    "title": "Pixie Companion",
+    "untitled": "Untitled",
+    "tooltip": {
+      "idle": "All quiet — click to open",
+      "watching": "Watching {{count}} running — click to open",
+      "alert": "Needs your attention — click to open"
+    },
+    "status": {
+      "running": "Running",
+      "waiting_permission": "Permission",
+      "completed": "Done",
+      "failed": "Failed",
+      "stopped": "Stopped"
+    },
+    "card": {
+      "activityTitle": "Activity",
+      "noActivity": "Nothing running. Start a conversation or task.",
+      "askTitle": "Ask",
+      "askPlaceholder": "What's the progress?",
+      "askHint": "Ask me about any running or recent activity.",
+      "brainOffline": "Brain offline — answers will be a local digest. Configure the builtin engine API key."
+    },
+    "menu": {
+      "dnd1h": "Do not disturb (1h)",
+      "collapse": "Collapse",
+      "openMain": "Open main window",
+      "hide": "Hide pet",
+      "resetChat": "Reset chat"
+    },
+    "settings": {
+      "title": "Companion",
+      "description": "A floating pet that watches all conversations and tasks, notifies you at important moments, and answers progress questions.",
+      "enable": "Show companion pet",
+      "notify_permission": "Notify on permission requests",
+      "notify_error": "Notify on errors",
+      "notify_completion": "Notify on long-running completions",
+      "dnd": "Do not disturb",
+      "dndEnable": "Enable 1h",
+      "dndActive": "Active — cancel",
+      "brainModel": "Brain model",
+      "brainModelPlaceholder": "claude-haiku-4-5-20251001",
+      "brainModelHint": "Uses the builtin engine's API key. Small fast models work best — the pet only summarizes.",
+      "osNotifications": "Also send system notifications",
+      "osNotificationsHint": "The pet's bubble is the main channel — always on. System (OS) notifications are an optional backup for when you're away from the screen."
+    }
   }
 }

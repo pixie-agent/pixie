@@ -80,7 +80,7 @@ impl BuiltinSession {
         )
     }
 
-    fn with_tools(
+    pub(crate) fn with_tools(
         session_id: &str,
         model: Option<&str>,
         system_prompt: Option<&str>,
