@@ -436,6 +436,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The pet's read-only tools are rooted at the user's home directory — global
+/// by design (it watches ALL workspaces, not one), but confined to the home.
+fn home_root() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+}
+
 impl CompanionHandle {
     /// Apply an observation: throttle progress, update the registry, broadcast
     /// `companion-activity`, and run notification side effects. Called from
@@ -984,6 +990,13 @@ fn create_window(app: &AppHandle, prefs: &CompanionPrefs) -> Result<(), tauri::E
             .skip_taskbar(true)
             .resizable(false)
             .shadow(false)
+            // The pet LIVES on the desktop, not on one Space: visible on
+            // every workspace (macOS canJoinAllSpaces) and above fullscreen
+            // apps (fullScreenAuxiliary) — the standard behavior for resident
+            // desktop companions (Shimeji/RunCat-style). Without this it
+            // vanishes when the user switches Spaces or enters a fullscreen
+            // app, which reads as "the pet got lost".
+            .visible_on_all_workspaces(true)
             .position(x, y);
 
     builder.build()?;
@@ -1155,11 +1168,14 @@ pub fn reset_companion_chat(app: AppHandle) -> Result<(), String> {
 const COMPANION_SYSTEM_PROMPT: &str = "You are Pixie (小精灵), a desktop companion that \
 watches the user's AI agent activity across all workspaces. You receive an ACTIVITY \
 DIGEST describing every running, waiting, and recently finished conversation/task. \
-Answer the user's questions about progress based ONLY on the digest (and the chat \
-history). Be concise — a few sentences at most, plain text, no markdown headers. \
-Reply in the user's language (Chinese gets Chinese). Never claim to be executing \
-tasks or running tools: you only observe and report. If the digest lacks the answer, \
-say so plainly.";
+Answer questions about progress from the digest, general-knowledge questions from \
+your own knowledge, and questions about the user's files with the READ-ONLY tools \
+(read, grep, find, ls). You may LOOK at files to answer accurately, but you can \
+NEVER create, modify, or execute anything — if the user asks you to change \
+something, explain what you found and suggest they ask the main chat agent to do \
+it. Be concise — a few sentences at most unless asked for detail. Reply in the \
+user's language (Chinese gets Chinese). Never fabricate facts about the user's \
+environment: if the digest and your tools don't contain the answer, say so plainly.";
 
 /// Default brain model — small and fast; the pet only summarizes and answers.
 const COMPANION_DEFAULT_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -1374,10 +1390,13 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
                 "__companion__",
                 Some(brain_model.as_deref().unwrap_or(COMPANION_DEFAULT_MODEL)),
                 Some(COMPANION_SYSTEM_PROMPT),
-                ".",
+                // Rooted at the user's home: the pet can LOOK at anything under
+                // it (read/grep/find/ls) but the toolset has no write/execute —
+                // "eyes, no hands" is a property of the tool list itself.
+                &home_root(),
                 &api_key,
                 base_url.as_deref(),
-                Vec::new(), // NO tools — the pet has no hands, by construction
+                pixie_pi::tools::read_only_tools(std::path::PathBuf::from(home_root())),
             ));
         }
     }
