@@ -3351,6 +3351,7 @@ dependencies = [
  "jieba-rs",
  "libc",
  "log",
+ "objc2-app-kit",
  "pixie-pi",
  "portable-pty",
  "regex",

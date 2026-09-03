@@ -1019,6 +1019,21 @@ fn create_window(app: &AppHandle, prefs: &CompanionPrefs) -> Result<(), tauri::E
             .position(x, y);
 
     builder.build()?;
+    // `visible_on_all_workspaces` (tao) only sets CanJoinAllSpaces — WITHOUT
+    // FullScreenAuxiliary the window does not appear on a Space occupied by a
+    // fullscreen app (fullscreen apps run at NSFullScreenWindowLevel and other
+    // Spaces' windows are hidden), so the pet vanished whenever the user went
+    // fullscreen. Adding the flag lets the pet float above fullscreen apps,
+    // like Shimeji/RunCat do.
+    #[cfg(target_os = "macos")]
+    if let Some(win) = app.get_webview_window("companion") {
+        let ns_window: &objc2_app_kit::NSWindow =
+            unsafe { &*win.ns_window().expect("companion ns_window").cast() };
+        let behavior = ns_window.collectionBehavior();
+        ns_window.setCollectionBehavior(
+            behavior | objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
+    }
     log::info!("[companion] pet window created at ({x}, {y})");
     Ok(())
 }

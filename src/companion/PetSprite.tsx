@@ -1,9 +1,11 @@
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PetState } from "./types";
 
 /** Pointer travel beyond this (px) means the press was a drag, not a click —
- *  suppress the click that follows so dragging never expands the card. */
+ *  hand the press to the native window drag and suppress the click that
+ *  follows, so dragging never expands the card. */
 const DRAG_THRESHOLD_PX = 6;
 
 // One shared svg body; two fills per element via stacked copies.
@@ -126,23 +128,39 @@ const SpriteSvg = ({
 export function PetSprite({
   state,
   badge,
+  runningCount,
   onClick,
   onContextMenu,
 }: {
   state: PetState;
   badge: number;
+  /** How many sessions are currently running — drives the flap cadence. */
+  runningCount: number;
   onClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const { t } = useTranslation();
-  // Suppress the click that follows a drag: Tauri's drag-region takes over on
-  // mousedown, but the browser still fires click on mouseup — without this,
-  // every drag past a few px would expand the card.
+  // Manual drag arbitration. `data-tauri-drag-region` hands the press to the
+  // native drag loop on MOUSEDOWN — the webview then receives no pointermove
+  // during the drag, so travel-based "was this a drag?" detection could never
+  // fire and mouseup synthesized a click that expanded the card mid-drag.
+  // Instead: track movement ourselves, and only past the threshold call
+  // startDragging() to hand the press to the native loop. The flag then
+  // reliably suppresses the trailing click.
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
   const draggedRef = useRef(false);
 
-  // Flap cadence carries the state: lazy → brisk → urgent.
-  const flapDuration = state === "alert" ? "0.35s" : state === "watching" ? "0.5s" : "1.4s";
+  // Flap cadence carries the state: lazy → brisk → urgent. While WATCHING,
+  // cadence scales with HOW MANY sessions run concurrently — more parallel
+  // work, faster wings. Session counts are small, so each one takes a big
+  // visible step; floor at 0.18s where more sessions stop being readable
+  // and start being noise.
+  const flapDuration =
+    state === "alert"
+      ? "0.35s"
+      : state === "watching"
+        ? `${Math.max(0.18, 0.5 - 0.1 * (runningCount - 1)).toFixed(2)}s`
+        : "1.4s";
   const running = state === "watching";
   // White layer opacity drives the cross-fade (CSS transition does the ramp).
   const whiteOpacity = running ? 1 : 0;
@@ -150,25 +168,40 @@ export function PetSprite({
   return (
     <div className="w-full h-full flex items-start justify-center select-none">
       <button
-        data-tauri-drag-region
         className="relative w-28 h-28 cursor-pointer"
         onPointerDown={(e) => {
+          // Only the primary button starts drag arbitration; secondary is
+          // context-menu territory (handled by onContextMenu).
+          if (e.button !== 0) return;
           downPosRef.current = { x: e.clientX, y: e.clientY };
           draggedRef.current = false;
         }}
         onPointerMove={(e) => {
           const down = downPosRef.current;
-          if (!down) return;
+          if (!down || draggedRef.current) return;
           const dx = e.clientX - down.x;
           const dy = e.clientY - down.y;
           if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
             draggedRef.current = true;
+            // Hand the press to the native window-drag loop. Must run while
+            // the button is held; failures ignored — the click suppression
+            // below still prevents a spurious expand either way.
+            void getCurrentWindow().startDragging().catch(() => {});
           }
+        }}
+        onPointerUp={() => {
+          downPosRef.current = null;
+        }}
+        onPointerLeave={() => {
+          // Pointer left without dragging — forget the press so a later move
+          // (e.g. re-entry) can't resurrect it.
+          if (!draggedRef.current) downPosRef.current = null;
         }}
         onClick={(e) => {
           if (draggedRef.current) {
             e.preventDefault();
             e.stopPropagation();
+            draggedRef.current = false; // reset for the next press
             return; // this press was a drag — not a click
           }
           onClick();

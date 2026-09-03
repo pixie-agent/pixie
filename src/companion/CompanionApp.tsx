@@ -337,6 +337,7 @@ export function CompanionApp() {
 
   const petState = derivePetState(activities, now);
   const badge = badgeCount(activities);
+  const runningCount = activities.filter((r) => r.status === "running").length;
 
   const ask = useCallback((q: string) => {
     askBufferRef.current = "";
@@ -450,6 +451,7 @@ export function CompanionApp() {
             <PetSprite
               state={petState}
               badge={badge}
+              runningCount={runningCount}
               onClick={() => setExpanded(true)}
               onContextMenu={() => setMenuOpen((v) => !v)}
             />

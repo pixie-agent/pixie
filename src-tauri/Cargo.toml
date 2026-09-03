@@ -55,3 +55,28 @@ async-trait = "0.1"
 tokio-util = "0.7"
 # Builtin engine: in-process agent loop via the pixie-pi library crate.
 pixie-pi = { git = "https://github.com/white1or1black/pixie-pi", tag = "v0.1.2" }
+
+# Companion pet window: sets NSWindowCollectionBehavior::FullScreenAuxiliary so
+# the pet stays visible over macOS fullscreen apps. Feature set mirrors tao's
+# (NSWindow only would do, but sharing tao's features keeps ONE build of the
+# crate in the final binary).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSApplication",
+    "NSButton",
+    "NSColor",
+    "NSControl",
+    "NSEvent",
+    "NSGraphics",
+    "NSImage",
+    "NSOpenGLView",
+    "NSPasteboard",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "NSUserActivity",
+] }

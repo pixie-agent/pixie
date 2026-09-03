@@ -199,19 +199,6 @@ impl BuiltinSession {
 
         Ok((final_text, had_error))
     }
-
-    /// Cancel the current turn.
-    pub fn cancel(&self) {
-        self.cancel_token.cancel();
-    }
-
-    /// Whether the current turn was cancelled (via `cancel` / the cancel
-    /// token). Callers use this after `run_turn*` returns to distinguish a
-    /// user stop (finalize silently, emit `agent-stopped`) from a normal
-    /// completion.
-    pub fn is_cancelled(&self) -> bool {
-        self.cancel_token.is_cancelled()
-    }
 }
 
 // ---------------------------------------------------------------------------

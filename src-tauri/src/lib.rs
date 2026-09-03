@@ -633,6 +633,13 @@ type KillRegistry = Arc<Mutex<HashMap<String, u32>>>;
 /// silently instead of emitting "persistent session stdout closed unexpectedly"
 /// and tearing down any session a follow-up message just respawned.
 type StoppedSet = Arc<Mutex<HashSet<String>>>;
+/// conversation_id → cancel token of the builtin turn currently in flight.
+/// `stop_generation` cancels through THIS map instead of taking the
+/// `builtin_sessions` lock — that lock is held for the whole turn, so a
+/// stop that waited on it would queue behind the very turn it means to
+/// cancel (stop "did nothing" with several sessions running). The map
+/// mirrors ACTIVE_LOOP_BUILTIN_CANCELS, which exists for the same reason.
+type BuiltinCancelMap = Arc<StdMutex<HashMap<String, tokio_util::sync::CancellationToken>>>;
 
 pub struct AppState {
     /// Per-conversation agent processes for parallel execution
@@ -651,6 +658,8 @@ pub struct AppState {
     builtin_sessions: BuiltinSessionMap,
     /// Conversations whose current persistent turn was deliberately stopped.
     stopped_convs: StoppedSet,
+    /// In-flight builtin turn cancel tokens (see BuiltinCancelMap).
+    builtin_cancels: BuiltinCancelMap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -913,6 +922,7 @@ async fn send_message(
     // --- Builtin engine path (in-process agent loop) ---
     if engine_id == "builtin" {
         let builtin_sessions = state.builtin_sessions.clone();
+        let builtin_cancels = state.builtin_cancels.clone();
         let app_handle = app.clone();
         let conv_id = conversation_id.clone();
         let message_owned = message.clone();
@@ -921,12 +931,23 @@ async fn send_message(
         let model_owned = model.clone();
 
         tokio::spawn(async move {
+            // Cancel token for THIS turn, registered in the shared map BEFORE
+            // the sessions lock is taken: stop_generation cancels through this
+            // map and must never queue behind the turn it means to cancel.
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            if let Ok(mut cancels) = builtin_cancels.lock() {
+                cancels.insert(conv_id.clone(), cancel_token.clone());
+            }
+
             // Get or create a builtin session
             let mut sessions = builtin_sessions.lock().await;
             let needs_create = !sessions.contains_key(&conv_id);
             if needs_create {
                 let api_key = engine::builtin::get_api_key();
                 if api_key.is_empty() {
+                    if let Ok(mut cancels) = builtin_cancels.lock() {
+                        cancels.remove(&conv_id);
+                    }
                     let _ = app_handle.emit(
                         "agent-error",
                         ResponseError {
@@ -954,29 +975,33 @@ async fn send_message(
 
             // Run the turn, emitting each event to the frontend IN REAL TIME via
             // the closure (not buffered in a channel) — so streaming deltas
-            // appear as they arrive. The session lock is held for the turn.
+            // appear as they arrive. The session lock is held for the turn —
+            // this SERIALIZES builtin conversations, but the cancel map above
+            // keeps stop immediate regardless.
             let mut last_thinking: u64 = 0;
             let result = {
                 let session = sessions.get_mut(&conv_id).unwrap();
                 let app_h = app_handle.clone();
                 let conv_c = conv_id.clone();
                 session
-                    .run_turn(&message_owned, &images_for_builtin, |evt| {
-                        emit_agent_events(&app_h, &conv_c, &[evt], &mut last_thinking);
-                    })
+                    .run_turn_with_cancel_token(
+                        &message_owned,
+                        &images_for_builtin,
+                        cancel_token.clone(),
+                        |evt| {
+                            emit_agent_events(&app_h, &conv_c, &[evt], &mut last_thinking);
+                        },
+                    )
                     .await
             };
 
             // Release the session lock.
             drop(sessions);
 
-            // A cancelled turn ends here with a normal-looking result; the
-            // companion (and the frontend's bookkeeping) needs the dedicated
-            // stop signal instead of agent-done.
-            let was_cancelled = {
-                let sessions = builtin_sessions.lock().await;
-                sessions.get(&conv_id).is_some_and(|s| s.is_cancelled())
-            };
+            let was_cancelled = cancel_token.is_cancelled();
+            if let Ok(mut cancels) = builtin_cancels.lock() {
+                cancels.remove(&conv_id);
+            }
 
             match result {
                 Ok((final_text, had_error)) => {
@@ -5339,16 +5364,26 @@ async fn stop_generation(
     conversation_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    // First, check if this is a builtin engine session.
+    // Builtin engine: cancel through the token map — NOT the sessions lock.
+    // The turn task holds that lock for the entire turn, so a stop that
+    // waited on it would queue behind the turn it means to cancel and only
+    // "work" after the turn finished naturally. Cancelling the token makes
+    // the in-flight agent stream abort immediately; the turn task detects
+    // it (was_cancelled) and emits agent-stopped. The session stays in the
+    // map so the conversation's transcript survives for the next turn.
     {
-        let mut sessions = state.builtin_sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&conversation_id) {
+        let token = {
+            let Ok(cancels) = state.builtin_cancels.lock() else {
+                return Ok(());
+            };
+            cancels.get(&conversation_id).cloned()
+        };
+        if let Some(token) = token {
             log::info!(
-                "[stop_generation] cancelling builtin session for conv {}",
+                "[stop_generation] cancelling builtin turn for conv {}",
                 conversation_id
             );
-            session.cancel();
-            sessions.remove(&conversation_id);
+            token.cancel();
             return Ok(());
         }
     }
@@ -8849,6 +8884,7 @@ pub fn run() {
             sessions: ps::init_session_map(),
             builtin_sessions: init_builtin_sessions(),
             stopped_convs: Arc::new(Mutex::new(HashSet::new())),
+            builtin_cancels: Arc::new(StdMutex::new(HashMap::new())),
         })
         .on_window_event(|window, event| {
             // Close button hides to tray instead of quitting, so scheduled tasks keep firing.
