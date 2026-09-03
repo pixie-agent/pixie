@@ -456,6 +456,17 @@ pub struct ResponseTaskRunStarted {
     pub engine: String,
 }
 
+/// Emitted when the user deliberately stops a turn (stop_generation). The
+/// stop path finalizes SILENTLY toward the frontend (no agent-done /
+/// agent-error — the UI already marked the message done when stop was
+/// clicked), so this is the only signal an observer gets that the activity
+/// is no longer running. The companion uses it to close the record as
+/// Stopped instead of leaving it Running forever (white sprite bug).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseStopped {
+    pub conversation_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Loop tasks: iterative agent cycles with exit conditions
 // ---------------------------------------------------------------------------
@@ -959,14 +970,32 @@ async fn send_message(
             // Release the session lock.
             drop(sessions);
 
+            // A cancelled turn ends here with a normal-looking result; the
+            // companion (and the frontend's bookkeeping) needs the dedicated
+            // stop signal instead of agent-done.
+            let was_cancelled = {
+                let sessions = builtin_sessions.lock().await;
+                sessions.get(&conv_id).is_some_and(|s| s.is_cancelled())
+            };
+
             match result {
                 Ok((final_text, had_error)) => {
                     log::info!(
-                        "[send_message] builtin done, total_len={}, had_error={}",
+                        "[send_message] builtin done, total_len={}, had_error={}, cancelled={}",
                         final_text.len(),
-                        had_error
+                        had_error,
+                        was_cancelled
                     );
-                    if !had_error {
+                    if had_error || was_cancelled {
+                        if was_cancelled {
+                            let _ = app_handle.emit(
+                                "agent-stopped",
+                                ResponseStopped {
+                                    conversation_id: conv_id.clone(),
+                                },
+                            );
+                        }
+                    } else {
                         let _ = app_handle.emit(
                             "agent-done",
                             ResponseDone {
@@ -1391,7 +1420,15 @@ async fn send_message(
                 }
                 TurnOutcome::Stopped { .. } => {
                     // Finalize silently — the frontend already marked the
-                    // message done when the user hit stop.
+                    // message done when the user hit stop. But the companion
+                    // observer only closes records on agent-done/-error, so
+                    // emit the dedicated stop signal or the pet stays white.
+                    let _ = app_handle.emit(
+                        "agent-stopped",
+                        ResponseStopped {
+                            conversation_id: conv_id_after.clone(),
+                        },
+                    );
                     log::info!(
                         "[send_message] persistent turn finalized as stopped for conv {}",
                         conv_id_after
@@ -5225,6 +5262,7 @@ async fn set_engine_model_config(
 /// respawn it with the new model.
 #[tauri::command]
 async fn update_conversation_model(
+    app: AppHandle,
     conversation_id: String,
     model: Option<String>,
     engine: Option<String>,
@@ -5255,6 +5293,17 @@ async fn update_conversation_model(
     // respawn with the new model. Only Claude/CodeBuddy use persistent
     // sessions; Cursor spawns per-message so no cleanup needed.
     if engine_id == "claude" || engine_id == "codebuddy" {
+        let had_session = state.sessions.lock().await.contains_key(&conversation_id);
+        if had_session {
+            // The kill below finalizes the in-flight turn silently; observers
+            // (companion) need the dedicated stop signal to close the record.
+            let _ = app.emit(
+                "agent-stopped",
+                ResponseStopped {
+                    conversation_id: conversation_id.clone(),
+                },
+            );
+        }
         let mut sessions = state.sessions.lock().await;
         if let Some(session) = sessions.get_mut(&conversation_id) {
             log::info!(

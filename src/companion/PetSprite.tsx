@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { PetState } from "./types";
 
@@ -126,16 +126,11 @@ const SpriteSvg = ({
 export function PetSprite({
   state,
   badge,
-  dimmed = false,
   onClick,
   onContextMenu,
 }: {
   state: PetState;
   badge: number;
-  /** Quiet presence: shrink + fade while the user works in another (likely
-   *  fullscreen) Space — the pet stays reachable but stops competing for
-   *  attention. Hover or focus restores full presence. */
-  dimmed?: boolean;
   onClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
@@ -145,7 +140,6 @@ export function PetSprite({
   // every drag past a few px would expand the card.
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
   const draggedRef = useRef(false);
-  const [hovered, setHovered] = useState(false);
 
   // Flap cadence carries the state: lazy → brisk → urgent.
   const flapDuration = state === "alert" ? "0.35s" : state === "watching" ? "0.5s" : "1.4s";
@@ -157,11 +151,7 @@ export function PetSprite({
     <div className="w-full h-full flex items-start justify-center select-none">
       <button
         data-tauri-drag-region
-        onPointerEnter={() => setHovered(true)}
-        onPointerLeave={() => setHovered(false)}
-        className={`relative w-28 h-28 cursor-pointer transition-[opacity,transform] duration-500 ${
-          dimmed && !hovered ? "opacity-40 scale-[0.55]" : ""
-        }`}
+        className="relative w-28 h-28 cursor-pointer"
         onPointerDown={(e) => {
           downPosRef.current = { x: e.clientX, y: e.clientY };
           draggedRef.current = false;

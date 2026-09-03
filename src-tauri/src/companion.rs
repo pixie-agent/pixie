@@ -166,10 +166,9 @@ pub enum Observation {
         id: String,
         error: String,
     },
-    /// Deliberate user stop (stop_generation). Reserved: v1 has no reliable
-    /// post-stop signal, so this arrives only from tests — kept because the
-    /// status enum and UI already understand it.
-    #[allow(dead_code)]
+    /// Deliberate user stop (stop_generation). The stop path finalizes
+    /// silently (no agent-done / agent-error), so the `agent-stopped`
+    /// observability event is the only reliable post-stop signal.
     Stopped {
         id: String,
     },
@@ -847,6 +846,21 @@ fn register_listeners(handle: Arc<CompanionHandle>) {
         });
     });
 
+    // Turn deliberately stopped by the user (stop_generation). The stop path
+    // finalizes silently (no agent-done/-error), so without this listener the
+    // record stays Running forever and the pet stays white.
+    let h = handle.clone();
+    let _ = app.listen_any("agent-stopped", move |event| {
+        let payload = event.payload();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+            return;
+        };
+        let Some(id) = v.get("conversation_id").and_then(|x| x.as_str()) else {
+            return;
+        };
+        h.observe(Observation::Stopped { id: id.to_string() });
+    });
+
     // Headless scheduled task started (event emitted by run_task_headless).
     let h = handle.clone();
     let _ = app.listen_any("task-run-started", move |event| {
@@ -997,6 +1011,11 @@ fn create_window(app: &AppHandle, prefs: &CompanionPrefs) -> Result<(), tauri::E
             // vanishes when the user switches Spaces or enters a fullscreen
             // app, which reads as "the pet got lost".
             .visible_on_all_workspaces(true)
+            // macOS: an UNFOCUSED window's first click normally just activates
+            // the window and is swallowed — the pet would need "click, then
+            // click-drag" to move. acceptFirstMouse forwards that first click
+            // to the content so dragging works in one press.
+            .accept_first_mouse(true)
             .position(x, y);
 
     builder.build()?;
@@ -1572,6 +1591,19 @@ mod tests {
             2_000,
         );
         assert_eq!(rec.unwrap().status, ActivityStatus::Running);
+    }
+
+    #[test]
+    fn stopped_closes_running_record_silently() {
+        let mut acts = Vec::new();
+        apply_event(&mut acts, &conv("c1"), 0);
+        let (rec, effect) =
+            apply_event(&mut acts, &Observation::Stopped { id: "c1".into() }, 1_000);
+        let rec = rec.unwrap();
+        assert_eq!(rec.status, ActivityStatus::Stopped);
+        assert_eq!(rec.finished_at, Some(1_000));
+        // A user stop is deliberate — no completion/error bubble for it.
+        assert_eq!(effect, None);
     }
 
     #[test]

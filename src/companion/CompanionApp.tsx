@@ -74,47 +74,8 @@ export function CompanionApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<CompanionToast | null>(null);
   const [toastClosed, setToastClosed] = useState(false);
-  // Fullscreen etiquette: when the window shares a Space with a fullscreen
-  // app, shrink the sprite to a small dim dot so it never competes for
-  // attention with focused full-screen work. Heuristic, refreshed on focus
-  // changes + a slow poll (window focus toggles as the user swaps Spaces).
-  const [dimmed, setDimmed] = useState(false);
   const askBufferRef = useRef("");
   const prefsRef = useRef<CompanionPrefs | null>(null);
-  const expandedRef = useRef(false);
-
-  useEffect(() => {
-    expandedRef.current = expanded;
-  }, [expanded]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const evaluate = async () => {
-      if (cancelled) return;
-      try {
-        // Our own focus ⇒ the user is interacting with the pet or its Space
-        // is not a fullscreen app's Space. When another window has focus we
-        // can't tell fullscreen-ness directly from JS, so we approximate:
-        // dim only while we are NOT focused AND an expanded card is closed.
-        const focused = await win.isFocused();
-        if (!cancelled) setDimmed(!focused);
-      } catch {
-        /* best-effort */
-      }
-    };
-    const unFocus = win.onFocusChanged(({ payload }) => {
-      // Focused = full presence; unfocused = quiet presence (dim), unless
-      // the card is open (user is actively reading the pet).
-      setDimmed(!payload && !expandedRef.current);
-    });
-    void evaluate();
-    const poll = setInterval(evaluate, 10_000);
-    return () => {
-      cancelled = true;
-      clearInterval(poll);
-      void unFocus.then((f) => f());
-    };
-  }, []);
 
   // Ambient bubble: STICKY — a new notification REPLACES the current bubble
   // in place; it never auto-dismisses. The user closes it by clicking the ×
@@ -489,7 +450,6 @@ export function CompanionApp() {
             <PetSprite
               state={petState}
               badge={badge}
-              dimmed={dimmed}
               onClick={() => setExpanded(true)}
               onContextMenu={() => setMenuOpen((v) => !v)}
             />
