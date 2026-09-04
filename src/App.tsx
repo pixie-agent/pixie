@@ -26,6 +26,7 @@ const ApplicationChat = lazy(() => import("./components/ApplicationChat"));
 const PageFind = lazy(() => import("./components/PageFind"));
 import { useScheduledTasks } from "./hooks/useScheduledTasks";
 import { useCompanionNavigate } from "./hooks/useCompanionNavigate";
+import { useCompanionDispatch } from "./hooks/useCompanionDispatch";
 import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
   AgentEngineId,
@@ -359,14 +360,20 @@ function EngineCard({
 
       {!isBuiltin && notReady && !busy && (
         <div className="space-y-2">
-          <p className="text-xs text-amber-400">{t('engineSetup.messages.notReadyHint')}</p>
+          {authState === "region_blocked" ? (
+            <p className="text-xs text-amber-400">{t('engineSetup.messages.regionBlockedHint')}</p>
+          ) : (
+            <p className="text-xs text-amber-400">{t('engineSetup.messages.notReadyHint')}</p>
+          )}
           <div className="flex gap-2">
-            <button
-              onClick={() => onLogin(engineId)}
-              className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
-            >
-              {t('engineSetup.actions.oneClickLogin')}
-            </button>
+            {authState !== "region_blocked" && (
+              <button
+                onClick={() => onLogin(engineId)}
+                className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
+              >
+                {t('engineSetup.actions.oneClickLogin')}
+              </button>
+            )}
             <button
               onClick={handleProbe}
             disabled={busy}
@@ -375,14 +382,33 @@ function EngineCard({
               {t('engineSetup.actions.reprobe')}
             </button>
           </div>
-          <CommandRow command={info.login} label={t('engineSetup.actions.copyLoginCommand')} />
-          <p className="text-[11px] text-[var(--text-secondary)]">
-            {t(`engineSetup.loginHints.${engineId}`)}
-          </p>
+          {authState === "region_blocked" ? (
+            <CommandRow
+              command="export HTTPS_PROXY=http://127.0.0.1:7890"
+              label={t('engineSetup.actions.copyProxyCommand')}
+            />
+          ) : (
+            <>
+              <CommandRow command={info.login} label={t('engineSetup.actions.copyLoginCommand')} />
+              <p className="text-[11px] text-[var(--text-secondary)]">
+                {t(`engineSetup.loginHints.${engineId}`)}
+              </p>
+            </>
+          )}
           {status?.probe_error && (
             <p className="text-[11px] text-[var(--text-secondary)] break-all">
               {t('engineSetup.messages.engineResponse')}{status.probe_error}
             </p>
+          )}
+          {status?.probe_raw_output && (
+            <details className="text-[11px] text-[var(--text-secondary)]">
+              <summary className="cursor-pointer hover:text-[var(--text-primary)]">
+                {t('settings.viewRawOutput')}
+              </summary>
+              <pre className="mt-1 p-2 rounded-lg bg-[var(--bg-tertiary)] text-[10px] font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto text-[var(--text-primary)]">
+                {status.probe_raw_output}
+              </pre>
+            </details>
           )}
         </div>
       )}
@@ -689,6 +715,9 @@ function AppShell() {
 
   // Companion pet: open the conversation the user clicked in the pet card.
   useCompanionNavigate(switchConversation, setMainView);
+  // Companion pet: dispatch an accepted task proposal into a fresh
+  // conversation (marked origin="companion") and start it immediately.
+  useCompanionDispatch(addWorkspacePath, createConversation, sendMessage, workspaces);
 
   const {
     tasks: loopTasks,

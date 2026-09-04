@@ -181,6 +181,69 @@ const THEME_OPTIONS: { id: AppTheme; labelKey: string }[] = [
   { id: "paper-mint", labelKey: "settings.paperMint" },
 ];
 
+/** Full-screen overlay showing the verbatim probe transcript (stdout + stderr)
+ *  for one engine — the "view raw output" affordance on an engine card. */
+function RawProbeModal({
+  engineId,
+  raw,
+  onClose,
+}: {
+  engineId: AgentEngineId;
+  raw: string;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(raw);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable — user can still select the text manually
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"
+      onClick={onClose}
+    >
+      <div
+        className="flex flex-col max-w-3xl w-full max-h-[70vh] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl overflow-hidden shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)]">
+          <span className="text-sm font-semibold text-[var(--text-primary)]">
+            {t("settings.rawProbeTitle", { engine: engineId })}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={copy}
+              className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-xs text-[var(--text-primary)] transition-colors"
+            >
+              {copied ? t("engineSetup.commands.copyToClipboard") : t("engineSetup.commands.copy")}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+              aria-label={t("common.close")}
+            >
+              <svg width="16" height="16" viewBox="0 0 18 18" fill="currentColor">
+                <path d="M4 4L14 14M14 4L4 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <pre className="flex-1 overflow-auto m-0 p-4 text-[11px] leading-relaxed font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all">
+          {raw}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 interface SettingsProps {
   engineStatuses: EngineStatus[] | null;
   onRefreshStatus: () => void;
@@ -259,6 +322,8 @@ export default function Settings({
   const [appVersion, setAppVersion] = useState("");
   /** Which shortcut row is currently recording a new combo (null = none). */
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | null>(null);
+  /** Engine whose raw probe transcript is open in the RawProbeModal (null = closed). */
+  const [rawProbeEngine, setRawProbeEngine] = useState<AgentEngineId | null>(null);
 
   // Standing conflicts between two actions bound to the same combo (possible
   // via the per-row reset). action → the other action it collides with.
@@ -350,13 +415,23 @@ export default function Settings({
                             {engineLabel(status.id, t)}
                           </span>
                         </div>
-                        <span
-                          className={`text-xs shrink-0 ${
-                            ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
-                          }`}
-                        >
-                          {label}
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {!ready && status.probe_raw_output && (
+                            <button
+                              onClick={() => setRawProbeEngine(status.id)}
+                              className="text-xs px-2 py-0.5 rounded-md bg-[var(--bg-tertiary)] hover:opacity-80 text-[var(--text-secondary)] transition-colors"
+                            >
+                              {t('settings.viewRawOutput')}
+                            </button>
+                          )}
+                          <span
+                            className={`text-xs ${
+                              ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
+                            }`}
+                          >
+                            {label}
+                          </span>
+                        </div>
                       </div>
                     );
                   })}
@@ -811,6 +886,20 @@ export default function Settings({
             </p>
           </section>
         </div>
+
+        {rawProbeEngine &&
+          (() => {
+            const s = engineStatuses?.find((e) => e.id === rawProbeEngine);
+            const raw = s?.probe_raw_output;
+            if (!raw) return null;
+            return (
+              <RawProbeModal
+                engineId={rawProbeEngine}
+                raw={raw}
+                onClose={() => setRawProbeEngine(null)}
+              />
+            );
+          })()}
     </div>
   );
 }

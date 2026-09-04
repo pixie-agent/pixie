@@ -57,6 +57,11 @@ pub fn engine_display_name(id: &str) -> &'static str {
 /// - `Ready` — the ping returned a result; the engine is logged in and usable.
 /// - `NotAuthenticated` — the ping failed with an auth-shaped error (heuristic
 ///   string match; not exact — see `classify_probe_error`).
+/// - `RegionBlocked` — the engine's API rejected the request for network/geo
+///   reasons (403 Cloudflare block page, or an explicit
+///   `unsupported_country_region_territory` code). Credentials are fine —
+///   re-login won't help; the user needs to route the CLI through a
+///   supported-region network/proxy.
 /// - `Error` — the ping failed for some other reason (the raw text is in
 ///   `EngineStatus::probe_error`).
 /// - `NoResponse` — the probe produced no terminal event before the timeout.
@@ -67,6 +72,7 @@ pub enum AuthState {
     Unknown,
     Ready,
     NotAuthenticated,
+    RegionBlocked,
     Error,
     NoResponse,
 }
@@ -91,6 +97,10 @@ pub struct EngineStatus {
     /// Raw engine message accompanying a non-`Ready` probe outcome.
     #[serde(default)]
     pub probe_error: Option<String>,
+    /// Verbatim probe transcript (stdout + stderr) for the raw-output viewer.
+    /// `None` if no child probe ran (binary missing / never probed).
+    #[serde(default)]
+    pub probe_raw_output: Option<String>,
 }
 
 impl EngineStatus {
@@ -114,6 +124,7 @@ impl EngineStatus {
             error,
             auth_state: AuthState::Unknown,
             probe_error: None,
+            probe_raw_output: None,
         }
     }
 }
@@ -301,6 +312,10 @@ pub async fn check_all_engines() -> Vec<EngineStatus> {
 pub struct ProbeOutcome {
     pub state: AuthState,
     pub error: Option<String>,
+    /// Unmodified probe transcript (stdout stream + captured stderr) for the
+    /// "view raw output" affordance. Never summarized — this is exactly what
+    /// the engine printed. None when the probe never ran a child.
+    pub raw_output: Option<String>,
 }
 
 impl ProbeOutcome {
@@ -308,17 +323,21 @@ impl ProbeOutcome {
         Self {
             state: AuthState::Ready,
             error: None,
+            raw_output: None,
         }
     }
 
     /// Classify a free-text failure message (from an `error` stream event or
-    /// captured stderr) into `NotAuthenticated` vs `Error`, keeping the raw text.
+    /// captured stderr) into `NotAuthenticated` / `RegionBlocked` / `Error`,
+    /// keeping a summarized text (HTML noise collapsed — see
+    /// `summarize_probe_error`).
     fn from_message(msg: &str) -> Self {
         let cleaned = shared::strip_ansi_and_controls(msg);
         let trimmed = cleaned.trim();
         Self {
             state: classify_probe_error(trimmed),
-            error: Some(trimmed.to_string()),
+            error: Some(summarize_probe_error(trimmed)),
+            raw_output: None,
         }
     }
 
@@ -326,6 +345,7 @@ impl ProbeOutcome {
         Self {
             state: AuthState::Error,
             error: Some(msg.into()),
+            raw_output: None,
         }
     }
 
@@ -333,6 +353,7 @@ impl ProbeOutcome {
         Self {
             state: AuthState::NoResponse,
             error: Some("engine produced no response within the timeout".to_string()),
+            raw_output: None,
         }
     }
 }
@@ -344,8 +365,28 @@ impl ProbeOutcome {
 /// CLI version may rephrase an auth error, or a non-auth error may happen to
 /// contain a keyword. Callers always surface the raw `probe_error` alongside the
 /// label, so a misclassification stays recoverable for the user.
+///
+/// Region-block errors (403 + Cloudflare HTML, or OpenAI's explicit
+/// `unsupported_country_region_territory`) are checked FIRST and separately:
+/// they also contain "403"/"forbidden", but the fix is a proxy, not a re-login.
 fn classify_probe_error(message: &str) -> AuthState {
     let lower = message.to_lowercase();
+
+    // Geo/network rejection — checked before the auth list so a 403 block page
+    // isn't misread as "go log in again".
+    const REGION: &[&str] = &[
+        "unsupported_country_region_territory",
+        "country, region, or territory not supported",
+    ];
+    if REGION.iter().any(|k| lower.contains(k)) {
+        return AuthState::RegionBlocked;
+    }
+    // A 403 whose body is a Cloudflare/CDN block page (bloated HTML with
+    // viewport/style tags) is a network-level rejection, not a credential one.
+    if lower.contains("403") && is_block_page_html(message) {
+        return AuthState::RegionBlocked;
+    }
+
     const EN: &[&str] = &[
         "auth",
         "credential",
@@ -382,6 +423,62 @@ fn classify_probe_error(message: &str) -> AuthState {
     }
 }
 
+/// Does this look like a CDN/WAF block page rather than a plain API error?
+/// The codex CLI inlines the whole Cloudflare HTML (doctype, viewport meta,
+/// inline CSS) into its error JSON; real API auth errors are short JSON text.
+fn is_block_page_html(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("<html") && (lower.contains("viewport") || lower.contains("<style"))
+}
+
+/// Collapse a raw engine error into something a human can read in one line.
+///
+/// Region-block errors from codex inline an entire Cloudflare block page
+/// (doctype + CSS, tens of KB) into the message. Keep the leading reason and
+/// the target URL, drop the HTML soup: "unexpected status 403 Forbidden …,
+/// url: https://chatgpt.com/backend-api/codex/responses, cf-ray: …".
+pub fn summarize_probe_error(message: &str) -> String {
+    if !is_block_page_html(message) {
+        return message.trim().to_string();
+    }
+
+    // Strategy: keep only fragments that don't contain HTML tags, then keep the
+    // informative ones (status line, url:, cf-ray: — including the token right
+    // after "url:", which is the actual URL).
+    let mut kept: Vec<String> = Vec::new();
+    let mut keep_next = false;
+    for part in message.split_whitespace() {
+        if part.contains('<') && part.contains('>') {
+            keep_next = false;
+            continue; // HTML tag or tag-adjacent soup
+        }
+        let lower = part.to_lowercase();
+        let informative = lower.starts_with("403")
+            || lower.starts_with("forbidden")
+            || lower.starts_with("unexpected")
+            || lower.starts_with("status")
+            || lower.starts_with("url:")
+            || lower.starts_with("cf-ray:")
+            || lower.contains("forbidden");
+        if informative {
+            kept.push(part.to_string());
+            // "url:" is followed by the actual URL — capture that too.
+            keep_next = lower.ends_with("url:");
+        } else if keep_next {
+            // The token right after "url:" — the URL itself (strip a trailing comma).
+            kept.push(part.trim_end_matches(',').to_string());
+            keep_next = false;
+        }
+    }
+
+    if kept.is_empty() {
+        // Fall back to the first tag-free run of the message.
+        message.split('<').next().unwrap_or("").trim().to_string()
+    } else {
+        kept.join(" ")
+    }
+}
+
 /// Read a probe child's stream until a terminal event (`Final`/`Error`) is seen,
 /// the process exits, or the timeout elapses — then classify the outcome.
 ///
@@ -413,9 +510,15 @@ pub async fn run_probe(engine_id: &str, mut child: Child) -> ProbeOutcome {
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
+    // Raw transcript of everything the engine printed on stdout (kept verbatim
+    // for the "view raw output" UI; the classified/summarized error is separate).
+    let mut raw_stdout = String::new();
+
     // Scan stdout for the first terminal event. Bounded by PROBE_TIMEOUT.
     let scanned = tokio::time::timeout(PROBE_TIMEOUT, async {
         while let Some(line) = lines.next_line().await? {
+            raw_stdout.push_str(&line);
+            raw_stdout.push('\n');
             if shared::is_ignorable_stream_line(&line) {
                 continue;
             }
@@ -442,7 +545,7 @@ pub async fn run_probe(engine_id: &str, mut child: Child) -> ProbeOutcome {
         _ => String::new(),
     };
 
-    let outcome = match scanned {
+    let mut outcome = match scanned {
         // A terminal event was seen on stdout.
         Ok(Ok(Some(outcome))) => outcome,
         // EOF with no terminal event: fall back to captured stderr (auth exits).
@@ -466,6 +569,24 @@ pub async fn run_probe(engine_id: &str, mut child: Child) -> ProbeOutcome {
         // Timed out before any terminal event.
         Err(_elapsed) => ProbeOutcome::no_response(),
     };
+
+    // Attach the raw transcript (stdout + captured stderr) so the UI can show
+    // exactly what the engine printed. Bounded so a pathological engine can't
+    // push megabytes through IPC; the head of the output carries the error.
+    const MAX_RAW_OUTPUT_CHARS: usize = 24_000;
+    let mut raw = raw_stdout;
+    if !stderr_buf.trim().is_empty() {
+        raw.push_str("\n--- stderr ---\n");
+        raw.push_str(&stderr_buf);
+    }
+    if raw.len() > MAX_RAW_OUTPUT_CHARS {
+        raw.truncate(MAX_RAW_OUTPUT_CHARS);
+        raw.push_str("\n--- truncated ---\n");
+    }
+    if !raw.trim().is_empty() {
+        outcome.raw_output = Some(raw);
+    }
+
     log::info!(
         "[probe] {engine_id}: {:?} after {}ms (stderr {} bytes, error: {:?})",
         outcome.state,
@@ -536,10 +657,12 @@ pub async fn probe_engine(id: &str) -> EngineStatus {
         Err(e) => ProbeOutcome {
             state: AuthState::Error,
             error: Some(format!("failed to start probe: {e}")),
+            raw_output: None,
         },
     };
     status.auth_state = outcome.state;
     status.probe_error = outcome.error;
+    status.probe_raw_output = outcome.raw_output;
     status
 }
 
@@ -889,5 +1012,51 @@ pub async fn set_conversation_model(
     let mut guard = map.lock().await;
     if let Some(entry) = guard.get_mut(conversation_id) {
         entry.model = model;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real shape captured from codex 0.151.0 hitting OpenAI's region block:
+    /// the CLI inlines the whole Cloudflare HTML page into the error message.
+    const CODEX_403_BLOCK: &str = "unexpected status 403 Forbidden: 19ea\r\n<html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <style global>body{font-family:Arial,Helvetica,sans-serif}.container{align-items:center}</style>\n  </head>\n  <body></body>\n</html>, url: https://chatgpt.com/backend-api/codex/responses, cf-ray: a359135e4ad9cbac-LAX";
+
+    #[test]
+    fn classifies_cloudflare_403_as_region_blocked() {
+        assert_eq!(
+            classify_probe_error(CODEX_403_BLOCK),
+            AuthState::RegionBlocked
+        );
+    }
+
+    #[test]
+    fn classifies_explicit_region_code_as_region_blocked() {
+        let msg = "403 Forbidden: {\"error\":{\"code\":\"unsupported_country_region_territory\",\"message\":\"Country, region, or territory not supported\"}}";
+        assert_eq!(classify_probe_error(msg), AuthState::RegionBlocked);
+    }
+
+    #[test]
+    fn plain_403_still_means_auth() {
+        // A short JSON 403 without block-page HTML is a credential problem.
+        assert_eq!(
+            classify_probe_error("403 Forbidden: invalid api key"),
+            AuthState::NotAuthenticated
+        );
+    }
+
+    #[test]
+    fn summarize_strips_block_page_html() {
+        let out = summarize_probe_error(CODEX_403_BLOCK);
+        assert!(out.contains("403"), "keeps the status: {out}");
+        assert!(out.contains("https://chatgpt.com"), "keeps the url: {out}");
+        assert!(!out.contains("<html"), "drops the html soup: {out}");
+        assert!(!out.contains("font-family"), "drops css: {out}");
+    }
+
+    #[test]
+    fn summarize_keeps_plain_errors_verbatim() {
+        assert_eq!(summarize_probe_error("plain failure"), "plain failure");
     }
 }

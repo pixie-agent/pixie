@@ -135,6 +135,14 @@ const ConversationRow = memo(function ConversationRow({
               {t('sidebar.draftBadge')}
             </span>
           )}
+          {conv.origin === "companion" && (
+            <span
+              className="shrink-0 text-[10px] leading-none text-[var(--accent)]/80"
+              title={t('sidebar.companionOrigin')}
+            >
+              🐾
+            </span>
+          )}
         </div>
         <p className="text-[10px] mt-0.5 opacity-60 truncate flex items-center gap-1.5">
           {workspaceLabel ? (

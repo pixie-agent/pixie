@@ -125,13 +125,15 @@
       "oneClickLogin": "ワンクリックログイン",
       "reprobe": "再検出",
       "manualInstall": "手動インストール（コマンドをターミナルにコピーして実行）",
-      "copyLoginCommand": "ログインコマンドをコピー"
+      "copyLoginCommand": "ログインコマンドをコピー",
+      "copyProxyCommand": "プロキシコマンドをコピー"
     },
     "messages": {
       "probing": "準備状態を確認中...",
       "builtinConfigHint": "設定 → エンジン設定 → Builtin で ANTHROPIC_API_KEY を設定してください。",
       "builtinDesc": "組み込みエンジンは Anthropic Messages API を直接呼び出します。CLI のインストールは不要で、API キーの設定のみが必要です。",
       "notReadyHint": "未準備です。「ワンクリックログイン」でブラウザでログインし、完了したら「再検出」をクリックしてください。",
+      "regionBlockedHint": "ログインは問題ありません — エンジンの API が地域制限 (403) で接続を拒否しました。シェルで HTTPS_PROXY を設定するか、設定済みのターミナルから Pixie を起動してから「再検出」してください。",
       "readyMessage": "準備完了、使用可能です。",
       "installFailed": "インストールに失敗しました。以下のコマンドで手動インストールしてください",
       "engineResponse": "エンジンの応答：",
@@ -191,7 +193,8 @@
     "noAgentsInWorkspace": "このワークスペースには会話がありません",
     "filterAll": "すべてのワークスペース",
     "filterAllHover": "ワークスペースで絞り込み（現在：すべて）",
-    "filterSelected": "ワークスペースで絞り込み（{{name}}）— クリックで変更"
+    "filterSelected": "ワークスペースで絞り込み（{{name}}）— クリックで変更",
+    "companionOrigin": "ペットから依頼されたタスク"
   },
   "newAgent": {
     "engine": "エンジン",
@@ -330,7 +333,9 @@
       "progress": "バックフィル中… {{done}}/{{total}}",
       "complete": "完了！{{done}}/{{total}} 件の会話をナレッジベースに追加しました。",
       "failed": "バックフィル失敗：{{error}}"
-    }
+    },
+    "viewRawOutput": "生の出力を表示",
+    "rawProbeTitle": "{{engine}} 検出の生の出力"
   },
   "tasks": {
     "title": "スケジュールタスク",
@@ -745,7 +750,16 @@
       "askTitle": "質問",
       "askPlaceholder": "進捗は？",
       "askHint": "実行中・最近のアクティビティについて質問できます。",
-      "brainOffline": "ブレインオフライン — ローカル要約を返します。builtin エンジンの API キーを設定してください。"
+      "brainOffline": "ブレインオフライン — ローカル要約を返します。builtin エンジンの API キーを設定してください。",
+      "attachPlaceholder": "このファイルに何をしますか？",
+      "proposalTitle": "お手伝いできます：",
+      "proposalDo": "実行",
+      "proposalEdit": "編集",
+      "proposalDismiss": "やめる",
+      "proposalDispatched": "メインウィンドウへ送信済み",
+      "proposalView": "見る",
+      "proposalCancelEdit": "キャンセル",
+      "proposalFollowUp": "フォロー"
     },
     "menu": {
       "dnd1h": "通知オフ (1時間)",
@@ -753,7 +767,9 @@
       "openMain": "メインウィンドウを開く",
       "hide": "非表示",
       "resetChat": "チャットをリセット",
-      "dndActive": "通知オフ中"
+      "dndActive": "通知オフ中",
+      "captureScreen": "画面を見る",
+      "readClipboard": "クリップボード読み取り"
     },
     "settings": {
       "title": "コンパニオン",

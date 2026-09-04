@@ -125,13 +125,15 @@
       "oneClickLogin": "一键登录",
       "reprobe": "重新检测",
       "manualInstall": "手动安装（复制命令到终端运行）",
-      "copyLoginCommand": "复制登录命令"
+      "copyLoginCommand": "复制登录命令",
+      "copyProxyCommand": "复制代理命令"
     },
     "messages": {
       "probing": "正在检测就绪状态...",
       "builtinConfigHint": "请在设置页面 → 引擎配置 → Builtin 中配置 ANTHROPIC_API_KEY。",
       "builtinDesc": "内置引擎直接调用 Anthropic Messages API，无需安装 CLI，只需配置 API Key。",
       "notReadyHint": "未就绪。点「一键登录」在浏览器登录，完成后点「重新检测」。",
+      "regionBlockedHint": "登录没有问题——是引擎 API 因地区限制 (403) 拒绝了连接。在终端 export HTTPS_PROXY=...（端口换成你代理的）后从该终端启动 Pixie，或让代理以 TUN/增强模式接管，再点「重新检测」。",
       "readyMessage": "已就绪，可以使用。",
       "installFailed": "安装失败，请用下方命令手动安装",
       "engineResponse": "引擎返回：",
@@ -191,7 +193,8 @@
     "noAgentsInWorkspace": "此工作区还没有会话",
     "filterAll": "全部工作区",
     "filterAllHover": "筛选工作区（当前：全部）",
-    "filterSelected": "筛选工作区（当前：{{name}}），点击更改"
+    "filterSelected": "筛选工作区（当前：{{name}}），点击更改",
+    "companionOrigin": "小精灵派发的任务"
   },
   "newAgent": {
     "engine": "引擎",
@@ -330,7 +333,9 @@
       "progress": "回填中… {{done}}/{{total}}",
       "complete": "完成！已将 {{done}}/{{total}} 个对话添加到知识库。",
       "failed": "回填失败：{{error}}"
-    }
+    },
+    "viewRawOutput": "查看原始返回",
+    "rawProbeTitle": "{{engine}} 检测原始返回"
   },
   "tasks": {
     "title": "计划任务",
@@ -745,7 +750,16 @@
       "askTitle": "问答",
       "askPlaceholder": "现在什么进度了？",
       "askHint": "可以问我任何运行中或最近的活动。",
-      "brainOffline": "大脑离线 — 将返回本地摘要。请配置 builtin 引擎的 API Key。"
+      "brainOffline": "大脑离线 — 将返回本地摘要。请配置 builtin 引擎的 API Key。",
+      "attachPlaceholder": "想对这些文件做什么？",
+      "proposalTitle": "可以帮你做：",
+      "proposalDo": "直接做",
+      "proposalEdit": "改指令",
+      "proposalDismiss": "算了",
+      "proposalDispatched": "已派发到主窗口",
+      "proposalView": "查看",
+      "proposalCancelEdit": "取消",
+      "proposalFollowUp": "跟进"
     },
     "menu": {
       "dnd1h": "免打扰 (1小时)",
@@ -753,7 +767,9 @@
       "openMain": "打开主窗口",
       "hide": "隐藏小精灵",
       "resetChat": "清空对话",
-      "dndActive": "免打扰中"
+      "dndActive": "免打扰中",
+      "captureScreen": "看屏幕",
+      "readClipboard": "读剪贴板"
     },
     "settings": {
       "title": "小精灵",

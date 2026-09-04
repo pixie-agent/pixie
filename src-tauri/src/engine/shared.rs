@@ -12,6 +12,17 @@ pub const ENV_EXACT: &[&str] = &[
     "TMPDIR",
     "NODE_EXTRA_CA_CERTS",
     "PATH",
+    // Proxy variables (both cases): engines like codex are geo-restricted, and
+    // without these the engine child can't use the user's proxy even when the
+    // shell has one — the probe then 403s with a region block.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
 ];
 
 async fn load_shell_env() -> HashMap<String, String> {

@@ -1215,20 +1215,25 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     workspaceId?: string,
     engine?: AgentEngineId,
     model?: string,
-    metadata?: Partial<Pick<Conversation, "mode" | "applicationPath" | "templateId">>,
+    metadata?: Partial<Pick<Conversation, "mode" | "applicationPath" | "templateId" | "origin">>,
   ) => {
     // Reuse an existing draft (unbound, no messages) instead of stacking a
     // new one every click — the user's staged engine/model/workspace choices
-    // in that draft are preserved.
+    // in that draft are preserved. Metadata means the conversation is
+    // purpose-built (e.g. a companion dispatch) — never reuse for those,
+    // and never reuse a draft that already carries metadata.
     const drafts = allConversationsRef.current[UNBOUND_WORKSPACE_ID] ?? [];
-    const reusable = drafts.find(
-      (c) =>
-        c.messages.length === 0 &&
-        !c.mode &&
-        !c.applicationPath &&
-        !c.templateId &&
-        !generatingIdsRef.current.has(c.id),
-    );
+    const reusable = metadata
+      ? undefined
+      : drafts.find(
+          (c) =>
+            c.messages.length === 0 &&
+            !c.mode &&
+            !c.applicationPath &&
+            !c.templateId &&
+            !c.origin &&
+            !generatingIdsRef.current.has(c.id),
+        );
     if (reusable) {
       setActiveId(reusable.id);
       setError(null);

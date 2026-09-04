@@ -43,6 +43,18 @@ export interface CompanionChatEntry {
   question: string;
   answer: string;
   at: string;
+  /** File paths attached to the question (drag-and-drop). */
+  attachments?: string[];
+  /** Task proposal the brain appended (pixie-task block), if any. */
+  proposal?: CompanionProposal;
+}
+
+/** Machine-readable task suggestion: what a main-window agent session should
+ * do, and where. Dispatched from the pet's action card. */
+export interface CompanionProposal {
+  task: string;
+  workspace: string;
+  engine: string;
 }
 
 export interface CompanionSnapshot {
@@ -58,7 +70,31 @@ export interface CompanionResponse {
   /** "delta" | "done" | "error" */
   event_type: string;
   brain_offline: boolean;
+  /** Parsed task proposal on "done" events (absent otherwise). */
+  proposal?: CompanionProposal;
+}
+
+/** Payload the pet sends when the user accepts a task proposal — handled by
+ * the main window, which owns conversation state. */
+export interface CompanionDispatch {
+  task: string;
+  workspace: string;
+  engine: string;
+  attachments: string[];
 }
 
 /** Visual state of the sprite, derived from the activity registry. */
 export type PetState = "idle" | "watching" | "alert";
+
+/** A staged attachment chip in the pet's input. `file` covers dragged-in
+ * files AND region captures (a capture is just a fresh file on disk);
+ * `clipboard` carries text read from the pasteboard, inlined into the task
+ * text on send rather than referenced by path. */
+export interface PetAttachment {
+  id: string;
+  kind: "file" | "clipboard";
+  /** File path (kind=file) or the clipboard text itself (kind=clipboard). */
+  value: string;
+  /** Chip label: file basename, or a short clipboard excerpt. */
+  preview: string;
+}

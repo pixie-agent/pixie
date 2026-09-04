@@ -88,6 +88,8 @@ pub struct EngineStatusResponse {
     pub auth_state: engine::AuthState,
     #[serde(default)]
     pub probe_error: Option<String>,
+    #[serde(default)]
+    pub probe_raw_output: Option<String>,
 }
 
 impl From<EngineStatus> for EngineStatusResponse {
@@ -101,6 +103,7 @@ impl From<EngineStatus> for EngineStatusResponse {
             error: s.error,
             auth_state: s.auth_state,
             probe_error: s.probe_error,
+            probe_raw_output: s.probe_raw_output,
         }
     }
 }
@@ -5550,6 +5553,106 @@ async fn save_pasted_image(app: AppHandle, data: String, ext: String) -> Result<
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Interactive screen-region capture for the companion pet ("look at my
+/// screen"): runs macOS `screencapture -i` so the USER draws the region —
+/// the selection gesture is the authorization (no ambient full-screen
+/// capture). The image lands under `<data_dir>/captures/` and the path is
+/// returned to stage as an attachment, exactly like a dragged-in file.
+/// `None` = the user pressed ESC / cancelled the selection.
+#[tauri::command]
+async fn capture_screen_region(app: AppHandle) -> Result<Option<String>, String> {
+    let dir = ensure_application_data_subdir(&get_data_dir(&app)?, "captures", "captures")?;
+    let path = dir.join(format!("capture-{}.png", uuid::Uuid::new_v4()));
+    // -i interactive region selection; -x no shutter sound. Blocking is fine:
+    // the command lives exactly as long as the user's selection gesture.
+    let status = tokio::process::Command::new("screencapture")
+        .arg("-i")
+        .arg("-x")
+        .arg(&path)
+        .status()
+        .await
+        .map_err(|e| format!("Failed to launch screencapture: {e}"))?;
+    if !status.success() || !path.exists() {
+        // Cancelled selection leaves no file — a non-event, not an error.
+        let _ = std::fs::remove_file(&path);
+        return Ok(None);
+    }
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Read the system clipboard as plain text for the companion pet. Returns
+/// `None` when the clipboard is empty or holds non-text content. Only
+/// invoked from an explicit menu gesture — the pet never polls the
+/// clipboard on its own.
+#[tauri::command]
+async fn read_clipboard_text() -> Result<Option<String>, String> {
+    let output = tokio::process::Command::new("pbpaste")
+        .output()
+        .await
+        .map_err(|e| format!("Failed to launch pbpaste: {e}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    // Sanity bound: a giant clipboard dump would swamp the pet prompt.
+    const MAX_CLIPBOARD_CHARS: usize = 8_000;
+    Ok(Some(truncate_plain_chars(&text, MAX_CLIPBOARD_CHARS)))
+}
+
+/// Menu click-away state for the companion: (is the KEY window ours — i.e.
+/// the companion window itself —, cursor is inside the companion window's
+/// frame). The pet window is a borderless floater whose APP-level focus is
+/// meaningless (the main window shares the bundle), so the "clicked
+/// elsewhere" signal must be WINDOW-level: is the companion the key window,
+/// and where is the cursor.
+#[derive(serde::Serialize)]
+#[cfg(target_os = "macos")]
+pub struct MenuClickState {
+    pub companion_is_key: bool,
+    pub cursor_inside: bool,
+}
+
+#[tauri::command]
+#[cfg(target_os = "macos")]
+fn menu_click_state(app: AppHandle) -> Option<MenuClickState> {
+    unsafe {
+        if let Some(win) = app.get_webview_window("companion") {
+            let ns_window: &objc2_app_kit::NSWindow = &*win.ns_window().ok()?.cast();
+            let companion_is_key = ns_window.isKeyWindow();
+            let mouse = objc2_app_kit::NSEvent::mouseLocation();
+            let frame = ns_window.frame();
+            let cursor_inside = mouse.x >= frame.origin.x
+                && mouse.x <= frame.origin.x + frame.size.width
+                && mouse.y >= frame.origin.y
+                && mouse.y <= frame.origin.y + frame.size.height;
+            Some(MenuClickState {
+                companion_is_key,
+                cursor_inside,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+fn menu_click_state(_app: AppHandle) -> Option<()> {
+    None
+}
+
+/// Char-boundary-safe truncation for clipboard text (multi-byte safe).
+fn truncate_plain_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max).collect()
+    }
+}
+
 #[tauri::command]
 async fn get_workspace(
     app: AppHandle,
@@ -8935,6 +9038,9 @@ pub fn run() {
             select_workspace,
             pick_files,
             save_pasted_image,
+            capture_screen_region,
+            read_clipboard_text,
+            menu_click_state,
             get_workspace,
             set_active_workspace,
             load_app_config,

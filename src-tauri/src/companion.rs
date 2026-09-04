@@ -122,7 +122,35 @@ pub struct CompanionChatEntry {
     pub question: String,
     pub answer: String,
     pub at: String,
+    /// File paths the user attached to the question (drag-and-drop), if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
+    /// A runnable-task proposal the brain produced for this answer, if any.
+    /// Rendered as an action card in the pet chat; `None` for plain answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<CompanionProposal>,
 }
+
+/// The machine-readable part of a task suggestion: what the main-window agent
+/// should be told to do, and where. The pet's chat JSON block is parsed into
+/// this and stripped from the displayed text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanionProposal {
+    /// Complete, self-contained instruction for the main agent (it will NOT
+    /// see this pet conversation — the text must carry all context).
+    pub task: String,
+    /// Workspace path the task should run in. Empty → the dispatcher picks
+    /// (attachment parent dir, else the first workspace).
+    #[serde(default)]
+    pub workspace: String,
+    /// Suggested engine id for the new conversation. Empty → app default.
+    #[serde(default)]
+    pub engine: String,
+}
+
+/// Delimiter of the machine-readable block the brain may append to an answer:
+/// ```pixie-task ... ``` carrying the JSON form of `CompanionProposal`.
+const TASK_BLOCK_TAG: &str = "pixie-task";
 
 /// Ambient bubble shown next to the pet sprite whenever a notification fires —
 /// the pet itself is the always-visible surface, independent of the OS
@@ -1033,6 +1061,16 @@ fn create_window(app: &AppHandle, prefs: &CompanionPrefs) -> Result<(), tauri::E
         ns_window.setCollectionBehavior(
             behavior | objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary,
         );
+        // "Second right-click vanishes the window" crash fix (approach: JS
+        // side, not here). tao's set_focus maps to NSApp.activate +
+        // makeKeyAndOrderFront, which on a CanJoinAllSpaces|FullScreenAuxiliary
+        // borderless window can make macOS re-evaluate space membership on the
+        // SECOND activation cycle and order the window away (no JS-visible
+        // error; the trace just stops). The companion frontend no longer calls
+        // setFocus at all — see CompanionApp.tsx's menu-open effect.
+        // NOTE: converting this NSWindow to a NonactivatingPanel via a cast +
+        // setStyleMask was tried here and PANICS at the objc boundary (tao
+        // creates a plain NSWindow, not an NSPanel) — do not reintroduce.
     }
     log::info!("[companion] pet window created at ({x}, {y})");
     Ok(())
@@ -1201,15 +1239,26 @@ pub fn reset_companion_chat(app: AppHandle) -> Result<(), String> {
 
 const COMPANION_SYSTEM_PROMPT: &str = "You are Pixie (小精灵), a desktop companion that \
 watches the user's AI agent activity across all workspaces. You receive an ACTIVITY \
-DIGEST describing every running, waiting, and recently finished conversation/task. \
+DIGEST describing every running, waiting, and recently finished conversation/task, \
+and possibly ATTACHMENTS (file paths the user dragged onto the pet). \
 Answer questions about progress from the digest, general-knowledge questions from \
 your own knowledge, and questions about the user's files with the READ-ONLY tools \
 (read, grep, find, ls). You may LOOK at files to answer accurately, but you can \
-NEVER create, modify, or execute anything — if the user asks you to change \
-something, explain what you found and suggest they ask the main chat agent to do \
-it. Be concise — a few sentences at most unless asked for detail. Reply in the \
-user's language (Chinese gets Chinese). Never fabricate facts about the user's \
-environment: if the digest and your tools don't contain the answer, say so plainly.";
+NEVER create, modify, or execute anything yourself. \
+When the user's request (or an attachment) implies WORK the main agent should do — \
+converting, editing, writing, summarizing into a file, fixing, running code — do \
+NOT just say you cannot: end your reply with a task proposal block so the user can \
+dispatch it with one click: \n```pixie-task\n{\"task\": \"...\", \"workspace\": \"...\", \
+\"engine\": \"\"}\n```\nThe block MUST be the LAST thing in your reply, after a short \
+plain-text explanation. \"task\" is a COMPLETE, self-contained instruction for a \
+fresh agent session that cannot see this chat — restate every needed detail \
+(file paths, desired format, constraints) inside it. \"workspace\" is the directory \
+the work should happen in (an attached file's directory, or the relevant project \
+root; empty string if unclear). \"engine\" is usually an empty string. Only add the \
+block when real work is implied, never for pure questions. Be concise — a few \
+sentences at most unless asked for detail. Reply in the user's language (Chinese \
+gets Chinese). Never fabricate facts about the user's environment: if the digest \
+and your tools don't contain the answer, say so plainly.";
 
 /// Default brain model — small and fast; the pet only summarizes and answers.
 const COMPANION_DEFAULT_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -1375,10 +1424,51 @@ struct CompanionResponse {
     content: String,
     event_type: String, // "delta" | "done" | "error"
     brain_offline: bool,
+    /// Parsed task proposal for "done" events that ended with a pixie-task
+    /// block (absent otherwise; deltas never carry it — the block only makes
+    /// sense once the answer is complete).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposal: Option<CompanionProposal>,
+}
+
+/// Split a finished brain answer into (display text, optional proposal).
+/// The brain is instructed to end action-worthy replies with a fenced
+/// ```pixie-task``` JSON block; strip it from what the user reads and parse
+/// it. Malformed JSON degrades to showing the raw text without a proposal —
+/// a broken card must never eat the answer itself.
+fn split_proposal(text: &str) -> (String, Option<CompanionProposal>) {
+    let fence_open = format!("```{TASK_BLOCK_TAG}");
+    let Some(start) = text.rfind(&fence_open) else {
+        return (text.to_string(), None);
+    };
+    // Only honor a block that runs to the very end of the reply — a fenced
+    // block with text after it is (mis)quoted content, not a proposal.
+    let after = &text[start + fence_open.len()..];
+    let Some(end) = after.rfind("```") else {
+        return (text.to_string(), None);
+    };
+    if !after[end + 3..].trim().is_empty() {
+        return (text.to_string(), None);
+    }
+    let json_body = &after[..end];
+    let proposal = serde_json::from_str::<CompanionProposal>(json_body.trim()).ok();
+    match proposal {
+        Some(p) if !p.task.trim().is_empty() => {
+            let display = format!("{}{}", &text[..start], &after[end + 3..])
+                .trim_end()
+                .to_string();
+            (display, Some(p))
+        }
+        _ => (text.to_string(), None),
+    }
 }
 
 #[tauri::command]
-pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), String> {
+pub async fn companion_ask(
+    app: AppHandle,
+    question: String,
+    attachments: Option<Vec<String>>,
+) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
 
     let store = app.state::<CompanionStateStore>();
@@ -1398,11 +1488,24 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
     let now = now_ms();
 
     let api_key = crate::engine::builtin::get_api_key();
+    // Normalized attachment list: absolute, existing paths only. The pet's
+    // read-only tools are rooted at home, so anything outside is dropped.
+    let attachments: Vec<String> = attachments
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| match std::path::PathBuf::from(&p).canonicalize() {
+            Ok(abs) => Some(abs.to_string_lossy().to_string()),
+            Err(_) => {
+                log::warn!("[companion] dropped non-existing attachment: {p}");
+                None
+            }
+        })
+        .collect();
     if api_key.is_empty() {
         let answer = local_fallback_answer(&activities, now);
         // Persist before the done signal (see the main path: the frontend
         // snapshot-refresh on "done" must observe this entry).
-        append_history(&app, &question, &answer);
+        append_history(&app, &question, &answer, &attachments, None);
         let _ = app.emit(
             "companion-response",
             CompanionResponse {
@@ -1410,6 +1513,7 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
                 content: answer.clone(),
                 event_type: "done".into(),
                 brain_offline: true,
+                proposal: None,
             },
         );
         return Ok(());
@@ -1436,7 +1540,21 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
     }
 
     let digest = build_digest(&activities, now);
-    let prompt = format!("ACTIVITY DIGEST\n{digest}\n\nUSER QUESTION: {question}");
+    let mut prompt = format!("ACTIVITY DIGEST\n{digest}\n");
+    if !attachments.is_empty() {
+        // Paths only — the brain lazily reads contents with its own read-only
+        // tools, so a huge file (or directory) never bloats the prompt.
+        let listed = attachments
+            .iter()
+            .map(|p| format!("- {p}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        prompt.push_str(&format!(
+            "\nATTACHMENTS (paths the user dragged onto the pet — inspect with \
+             your read-only tools as needed):\n{listed}\n"
+        ));
+    }
+    prompt.push_str(&format!("\nUSER QUESTION: {question}"));
 
     let emitter = app.clone();
     let result = {
@@ -1454,6 +1572,7 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
                             content: text.to_string(),
                             event_type: "delta".into(),
                             brain_offline: false,
+                            proposal: None,
                         },
                     );
                 }
@@ -1463,17 +1582,21 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
 
     match result {
         Ok((full_text, had_error)) if !had_error => {
+            // Split off the trailing pixie-task block before the user sees the
+            // text; the parsed proposal rides along on the done event.
+            let (display, proposal) = split_proposal(&full_text);
             // Persist FIRST, then signal done: the frontend refreshes its
             // history snapshot on "done", and if the write lands after the
             // emit the refreshed list is missing exactly this latest turn.
-            append_history(&app, &question, &full_text);
+            append_history(&app, &question, &display, &attachments, proposal.clone());
             let _ = app.emit(
                 "companion-response",
                 CompanionResponse {
                     conversation_id: "__companion__".into(),
-                    content: full_text.clone(),
+                    content: display.clone(),
                     event_type: "done".into(),
                     brain_offline: false,
+                    proposal,
                 },
             );
         }
@@ -1490,6 +1613,7 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
                     content: msg.clone(),
                     event_type: "error".into(),
                     brain_offline: false,
+                    proposal: None,
                 },
             );
             let _ = app
@@ -1503,12 +1627,20 @@ pub async fn companion_ask(app: AppHandle, question: String) -> Result<(), Strin
     Ok(())
 }
 
-fn append_history(app: &AppHandle, question: &str, answer: &str) {
+fn append_history(
+    app: &AppHandle,
+    question: &str,
+    answer: &str,
+    attachments: &[String],
+    proposal: Option<CompanionProposal>,
+) {
     let mut entries = load_history_entries(app);
     entries.push(CompanionChatEntry {
         question: question.to_string(),
         answer: answer.to_string(),
         at: chrono::Utc::now().to_rfc3339(),
+        attachments: attachments.to_vec(),
+        proposal,
     });
     let keep_from = entries.len().saturating_sub(COMPANION_HISTORY_CAP);
     entries.drain(0..keep_from);
@@ -1726,5 +1858,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(task_started.task_name, "nightly");
+    }
+
+    #[test]
+    fn split_proposal_parses_trailing_block() {
+        let text = "I can tidy that CSV up.\n```pixie-task\n{\"task\": \"Sort /tmp/a.csv by date\", \"workspace\": \"/tmp\", \"engine\": \"\"}\n```";
+        let (display, proposal) = split_proposal(text);
+        assert_eq!(display.trim(), "I can tidy that CSV up.");
+        let p = proposal.expect("proposal parsed");
+        assert_eq!(p.task, "Sort /tmp/a.csv by date");
+        assert_eq!(p.workspace, "/tmp");
+
+        // Old history entries deserialize without the new fields.
+        let entry: CompanionChatEntry =
+            serde_json::from_str(r#"{"question":"q","answer":"a","at":"2026"}"#).unwrap();
+        assert!(entry.attachments.is_empty());
+        assert!(entry.proposal.is_none());
+    }
+
+    #[test]
+    fn split_proposal_ignores_quoted_and_malformed_blocks() {
+        // A quoted block mid-text (not at the end) is content, not a proposal.
+        let quoted = "He wrote:\n```pixie-task\n{\"task\": \"x\"}\n```\nthen left.";
+        let (display, proposal) = split_proposal(quoted);
+        assert_eq!(display, quoted);
+        assert!(proposal.is_none());
+
+        // Trailing block with broken JSON degrades to plain display.
+        let broken = "Sure.\n```pixie-task\n{not json\n```";
+        let (display, proposal) = split_proposal(broken);
+        assert_eq!(display, broken);
+        assert!(proposal.is_none());
+
+        // No block at all.
+        let (display, proposal) = split_proposal("plain answer");
+        assert_eq!(display, "plain answer");
+        assert!(proposal.is_none());
     }
 }

@@ -75,6 +75,9 @@ export interface Conversation {
   applicationPath?: string;
   /** Application Studio template id used when the session was created. */
   templateId?: string;
+  /** Set when the companion pet dispatched this conversation (task proposal
+   * accepted in the pet's action card). Sidebar shows a paw badge. */
+  origin?: "companion";
 }
 
 export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex";
@@ -108,6 +111,7 @@ export type AuthState =
   | "unknown"
   | "ready"
   | "not_authenticated"
+  | "region_blocked"
   | "error"
   | "no_response";
 
@@ -122,6 +126,8 @@ export interface EngineStatus {
   auth_state?: AuthState;
   /** Raw engine message for a non-`ready` probe outcome. */
   probe_error?: string | null;
+  /** Verbatim probe transcript (stdout + stderr) for the raw-output viewer. */
+  probe_raw_output?: string | null;
 }
 
 /** @deprecated Use EngineStatus — kept for gradual migration */

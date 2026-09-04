@@ -125,13 +125,15 @@
       "oneClickLogin": "One-click Login",
       "reprobe": "Re-detect",
       "manualInstall": "Manual install (copy command to terminal)",
-      "copyLoginCommand": "Copy login command"
+      "copyLoginCommand": "Copy login command",
+      "copyProxyCommand": "Copy proxy command"
     },
     "messages": {
       "probing": "Checking readiness...",
       "builtinConfigHint": "Please configure ANTHROPIC_API_KEY in Settings → Engine Config → Builtin.",
       "builtinDesc": "Built-in engine directly calls Anthropic Messages API, no CLI installation needed, just configure API Key.",
       "notReadyHint": "Not ready. Click 'One-click Login' to login in browser, then click 'Re-detect' when done.",
+      "regionBlockedHint": "Login is fine — the engine's API rejected the connection for your region (403). Route the CLI through a proxy: set HTTPS_PROXY in your shell (or launch Pixie from a terminal that has it), then click 'Re-detect'.",
       "readyMessage": "Ready and available.",
       "installFailed": "Installation failed, please use the command below to install manually",
       "engineResponse": "Engine response:",
@@ -191,7 +193,8 @@
     "noAgentsInWorkspace": "No conversations in this workspace yet",
     "filterAll": "All workspaces",
     "filterAllHover": "Filter by workspace (showing all)",
-    "filterSelected": "Filter by workspace ({{name}}) — click to change"
+    "filterSelected": "Filter by workspace ({{name}}) — click to change",
+    "companionOrigin": "Dispatched by the pet"
   },
   "newAgent": {
     "engine": "Engine",
@@ -330,7 +333,9 @@
       "progress": "Backfilling… {{done}}/{{total}}",
       "complete": "Done! {{done}}/{{total}} conversations added to knowledge base.",
       "failed": "Backfill failed: {{error}}"
-    }
+    },
+    "viewRawOutput": "View raw output",
+    "rawProbeTitle": "{{engine}} probe raw output"
   },
   "tasks": {
     "title": "Scheduled Tasks",
@@ -745,7 +750,16 @@
       "askTitle": "Ask",
       "askPlaceholder": "What's the progress?",
       "askHint": "Ask me about any running or recent activity.",
-      "brainOffline": "Brain offline — answers will be a local digest. Configure the builtin engine API key."
+      "brainOffline": "Brain offline — answers will be a local digest. Configure the builtin engine API key.",
+      "attachPlaceholder": "What should I do with these files?",
+      "proposalTitle": "I can do this for you:",
+      "proposalDo": "Run it",
+      "proposalEdit": "Edit",
+      "proposalDismiss": "Dismiss",
+      "proposalDispatched": "Dispatched to main window",
+      "proposalView": "View",
+      "proposalCancelEdit": "Cancel",
+      "proposalFollowUp": "Follow up"
     },
     "menu": {
       "dnd1h": "Do not disturb (1h)",
@@ -753,7 +767,9 @@
       "openMain": "Open main window",
       "hide": "Hide pet",
       "resetChat": "Reset chat",
-      "dndActive": "DND active"
+      "dndActive": "DND active",
+      "captureScreen": "Look at screen",
+      "readClipboard": "Read clipboard"
     },
     "settings": {
       "title": "Companion",
