@@ -280,36 +280,6 @@ export const DEFAULT_ENGINE_MODEL_CONFIGS: EngineModelConfigs = {
   codex: {},
 };
 
-export const ENGINE_MODEL_FIELDS: Record<
-  AgentEngineId,
-  { key: string; label: string; secret?: boolean }[]
-> = {
-  claude: [
-    { key: "ANTHROPIC_API_KEY", label: "API Key", secret: true },
-    { key: "ANTHROPIC_BASE_URL", label: "Base URL" },
-    { key: "ANTHROPIC_MODEL", label: "Model" },
-    { key: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "Opus Model" },
-    { key: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "Sonnet Model" },
-    { key: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "Haiku Model" },
-    { key: "CLAUDE_CODE_SUBAGENT_MODEL", label: "Subagent Model" },
-    { key: "CLAUDE_CODE_EFFORT_LEVEL", label: "Effort Level" },
-  ],
-  cursor: [
-    { key: "CURSOR_API_KEY", label: "API Key", secret: true },
-    { key: "CURSOR_MODEL", label: "Model" },
-  ],
-  codebuddy: [{ key: "CODEBUDDY_MODEL", label: "Model" }],
-  builtin: [
-    { key: "ANTHROPIC_API_KEY", label: "API Key", secret: true },
-    { key: "ANTHROPIC_BASE_URL", label: "Base URL" },
-    { key: "ANTHROPIC_MODEL", label: "Model" },
-  ],
-  codex: [
-    { key: "OPENAI_API_KEY", label: "API Key", secret: true },
-    { key: "CODEX_MODEL", label: "Model" },
-  ],
-};
-
 export interface FileEntry {
   name: string;
   path: string;

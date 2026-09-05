@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTranslation } from "../hooks/useTranslation";
 import type { EngineStatus, AgentEngineId, EngineModelConfigs } from "../types";
-import { AGENT_ENGINES, ENGINE_MODEL_FIELDS } from "../types";
-import { engineLabel, modelFieldLabel } from "../lib/i18nFormat";
+import { AGENT_ENGINES } from "../types";
+import { engineLabel } from "../lib/i18nFormat";
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_ACTIONS,
@@ -318,6 +318,18 @@ export default function Settings({
     builtin: false,
     codex: false,
   });
+  // Draft state for a not-yet-committed custom env var per engine (key typed
+  // locally so partial keys don't create junk config entries).
+  const [customDrafts, setCustomDrafts] = useState<
+    Record<AgentEngineId, { key: string; value: string } | null>
+  >({ claude: null, cursor: null, codebuddy: null, builtin: null, codex: null });
+  // Renaming an existing custom key: oldKey -> edited key, committed on blur.
+  const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
+  // Two-step delete confirmation: the row (engine + key) awaiting confirmation.
+  const [pendingDelete, setPendingDelete] = useState<{
+    engine: AgentEngineId;
+    key: string;
+  } | null>(null);
   const updater = useUpdater();
   const [appVersion, setAppVersion] = useState("");
   /** Which shortcut row is currently recording a new combo (null = none). */
@@ -651,9 +663,14 @@ export default function Settings({
             <div className="space-y-2">
               {AGENT_ENGINES.map(({ id }) => {
                 const expanded = expandedEngines[id];
-                const fields = ENGINE_MODEL_FIELDS[id];
                 const config = engineModelConfigs[id] as Record<string, string | undefined>;
-                const filledCount = fields.filter((f) => config[f.key]?.trim()).length;
+                // All env vars are user-managed: every key with a defined value
+                // renders as an editable/removable row (no fixed field list).
+                const envKeys = Object.keys(config).filter(
+                  (k) => typeof config[k] === "string",
+                );
+                const filledCount = envKeys.length;
+                const draft = customDrafts[id];
                 const name = engineLabel(id, t);
 
                 return (
@@ -702,25 +719,212 @@ export default function Settings({
                         <p className="text-[10px] text-[var(--text-secondary)] pt-3">
                           {t('settings.appliesOnly', { name })}
                         </p>
-                        {fields.map(({ key, label: fieldLabel, secret }) => (
-                          <div key={key}>
-                            <label className="block text-xs text-[var(--text-secondary)] mb-1">
-                              {modelFieldLabel(fieldLabel, t)}{" "}
-                              <code className="text-[10px] opacity-60">{key}</code>
-                            </label>
-                            <input
-                              type={secret ? "password" : "text"}
-                              value={config[key] ?? ""}
-                              onChange={(e) =>
-                                onEngineModelConfigChange(id, {
-                                  [key]: e.target.value || undefined,
-                                })
-                              }
-                              placeholder={`$${key}`}
-                              className="w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors font-mono"
-                            />
+                        {/* Environment variables — all user-managed */}
+                        {envKeys.length > 0 && (
+                          <div className="space-y-2">
+                              {envKeys.map((k) => {
+                                const keyNow = renameDrafts[k] ?? k;
+                                // Red flag when a rename collides with another
+                                // existing key of this engine.
+                                const renameDuplicate =
+                                  keyNow.trim() !== k &&
+                                  envKeys.some(
+                                    (other) =>
+                                      other !== k &&
+                                      other.toUpperCase() === keyNow.trim().toUpperCase(),
+                                  );
+                                const commitRename = () => {
+                                  const next = (renameDrafts[k] ?? "").trim();
+                                  setRenameDrafts((prev) => {
+                                    const { [k]: _drop, ...rest } = prev;
+                                    return rest;
+                                  });
+                                  if (!next || next === k) return;
+                                  if (
+                                    envKeys.some(
+                                      (other) =>
+                                        other !== k &&
+                                        other.toUpperCase() === next.toUpperCase(),
+                                    )
+                                  )
+                                    return; // duplicate: refuse to commit
+                                  onEngineModelConfigChange(id, {
+                                    [next]: config[k],
+                                    [k]: undefined,
+                                  });
+                                };
+                                const confirming =
+                                  pendingDelete?.engine === id && pendingDelete.key === k;
+                                return (
+                                  <div key={k} className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={keyNow}
+                                      onChange={(e) =>
+                                        setRenameDrafts((prev) => ({
+                                          ...prev,
+                                          [k]: e.target.value,
+                                        }))
+                                      }
+                                      onBlur={commitRename}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.currentTarget.blur();
+                                        }
+                                      }}
+                                      placeholder="KEY_NAME"
+                                      className={`w-2/5 bg-[var(--bg-secondary)] border rounded-lg px-2 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none transition-colors font-mono uppercase ${
+                                        renameDuplicate
+                                          ? "border-red-500 focus:border-red-500"
+                                          : "border-[var(--border-color)] focus:border-[var(--accent)]"
+                                      }`}
+                                    />
+                                    <input
+                                      type="text"
+                                      value={config[k] ?? ""}
+                                      onChange={(e) =>
+                                        onEngineModelConfigChange(id, {
+                                          [k]: e.target.value || undefined,
+                                        })
+                                      }
+                                      placeholder="value"
+                                      className="flex-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-2 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors font-mono"
+                                    />
+                                    {confirming ? (
+                                      <div className="shrink-0 flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            onEngineModelConfigChange(id, {
+                                              [k]: undefined,
+                                            });
+                                            setPendingDelete(null);
+                                          }}
+                                          className="text-[10px] px-2 py-1 rounded-lg bg-red-500 text-white"
+                                        >
+                                          {t('settings.deleteConfirm')}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setPendingDelete(null)}
+                                          className="text-[10px] px-2 py-1 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                                        >
+                                          {t('settings.cancelEnvVar')}
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        aria-label={t('settings.removeEnvVar')}
+                                        onClick={() =>
+                                          setPendingDelete({ engine: id, key: k })
+                                        }
+                                        className="shrink-0 text-[var(--text-secondary)] hover:text-red-400 transition-colors p-1"
+                                      >
+                                        <svg
+                                          width="14"
+                                          height="14"
+                                          viewBox="0 0 14 14"
+                                          fill="none"
+                                        >
+                                          <path
+                                            d="M3 3l8 8M11 3l-8 8"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                          />
+                                        </svg>
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
                           </div>
-                        ))}
+                        )}
+
+                        {/* Add a custom env var */}
+                        {draft ? (() => {
+                          const draftDuplicate =
+                            draft.key.trim().length > 0 &&
+                            envKeys.some(
+                              (other) =>
+                                other.toUpperCase() === draft.key.trim().toUpperCase(),
+                            );
+                          return (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              autoFocus
+                              value={draft.key}
+                              onChange={(e) =>
+                                setCustomDrafts((prev) => ({
+                                  ...prev,
+                                  [id]: { ...draft, key: e.target.value.toUpperCase() },
+                                }))
+                              }
+                              placeholder="KEY_NAME"
+                              className={`w-2/5 bg-[var(--bg-secondary)] border rounded-lg px-2 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none transition-colors font-mono ${
+                                draftDuplicate
+                                  ? "border-red-500 focus:border-red-500"
+                                  : "border-[var(--border-color)] focus:border-[var(--accent)]"
+                              }`}
+                            />
+                            <input
+                              type="text"
+                              value={draft.value}
+                              onChange={(e) =>
+                                setCustomDrafts((prev) => ({
+                                  ...prev,
+                                  [id]: { ...draft, value: e.target.value },
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && draft.key.trim() && !draftDuplicate) {
+                                  onEngineModelConfigChange(id, {
+                                    [draft.key.trim()]: draft.value || undefined,
+                                  });
+                                  setCustomDrafts((prev) => ({ ...prev, [id]: null }));
+                                }
+                              }}
+                              placeholder="value"
+                              className="flex-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-2 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors font-mono"
+                            />
+                            <button
+                              type="button"
+                              disabled={!draft.key.trim() || draftDuplicate}
+                              onClick={() => {
+                                onEngineModelConfigChange(id, {
+                                  [draft.key.trim()]: draft.value || undefined,
+                                });
+                                setCustomDrafts((prev) => ({ ...prev, [id]: null }));
+                              }}
+                              className="shrink-0 text-xs px-2 py-1.5 rounded-lg bg-[var(--accent)] text-white disabled:opacity-40"
+                            >
+                              {t('settings.saveEnvVar')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setCustomDrafts((prev) => ({ ...prev, [id]: null }))}
+                              className="shrink-0 text-xs px-2 py-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                            >
+                              {t('settings.cancelEnvVar')}
+                            </button>
+                          </div>
+                          );
+                        })() : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCustomDrafts((prev) => ({
+                                ...prev,
+                                [id]: { key: "", value: "" },
+                              }))
+                            }
+                            className="text-xs text-[var(--accent)] hover:underline"
+                          >
+                            + {t('settings.addEnvVar')}
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
