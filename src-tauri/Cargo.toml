@@ -1,6 +1,6 @@
 [package]
 name = "pixie"
-version = "1.1.5"
+version = "1.1.6"
 description = "Pixie - General-Purpose AI Agent Workspace"
 authors = ["white1or1black"]
 license = "MIT"

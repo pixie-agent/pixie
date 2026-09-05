@@ -5,6 +5,21 @@ All notable changes to Pixie will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] - 2026-09-04
+
+### Added
+- Per-engine environment variables in Settings are now fully user-managed: add,
+  edit, rename and remove any key (previously a fixed field list per engine).
+- Two-step delete confirmation for environment variable rows.
+- Duplicate-key detection with a red-border warning; saving/renaming is blocked
+  on conflicts (case-insensitive).
+
+### Changed
+- Custom variables keep flowing through the existing config sync path, so they
+  apply to engine child processes with highest priority and persist across
+  restarts and app updates.
+- Updated zh/en/ja strings for the new environment variable controls.
+
 ## [1.0.1] - 2026-07-12
 
 ### Changed
