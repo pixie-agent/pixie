@@ -6,9 +6,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import SkillsDropdown from "./SkillsDropdown";
 import WorkspaceDropdown from "./WorkspaceDropdown";
-import type { SkillEntry, AgentEngineId, EngineModelConfigs, ModelEntry, WorkspaceState } from "../types";
+import type { MessageUsage, SkillEntry, AgentEngineId, EngineModelConfigs, ModelEntry, WorkspaceState } from "../types";
 import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
-import { engineLabel } from "../lib/i18nFormat";
+import { engineLabel, formatTokenCount } from "../lib/i18nFormat";
+import { contextWindowFor } from "../lib/contextWindow";
 import { getExtension, IMAGE_EXTENSIONS } from "../preview";
 
 interface InputBarProps {
@@ -60,6 +61,16 @@ interface InputBarProps {
   onToggleKb: () => void;
   /** Localized label of the customizable stop-generation shortcut. */
   stopShortcutLabel?: string;
+  /** Active conversation id (probes live-session state for the context menu). */
+  conversationId?: string;
+  /** Latest assistant usage — carries the context-occupancy snapshot. */
+  usage?: MessageUsage;
+  /** True while a /compact turn is in flight on the active conversation. */
+  compacting?: boolean;
+  /** Run /compact on the conversation's live CLI session (claude/codebuddy). */
+  onCompactContext?: () => void;
+  /** Kill the session and rebind to a fresh one (next message starts clean). */
+  onNewSession?: () => void;
 }
 
 const MAX_CHARS = 8000;
@@ -144,6 +155,11 @@ export default function InputBar({
   kbEnabled,
   onToggleKb,
   stopShortcutLabel,
+  conversationId,
+  usage,
+  compacting,
+  onCompactContext,
+  onNewSession,
 }: InputBarProps) {
   const { t, currentLanguage } = useTranslation();
   const numberLocale = appLocale(currentLanguage);
@@ -151,6 +167,8 @@ export default function InputBar({
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [customModelInput, setCustomModelInput] = useState("");
+  const [contextOpen, setContextOpen] = useState(false);
+  const [sessionAlive, setSessionAlive] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
   const [dragActive, setDragActive] = useState(false);
   /** Absolute file paths staged as attachments. On send these become @mentions
@@ -161,6 +179,7 @@ export default function InputBar({
   const workspaceWrapperRef = useRef<HTMLDivElement>(null);
   const modelWrapperRef = useRef<HTMLDivElement>(null);
   const modelDropdownListRef = useRef<HTMLDivElement>(null);
+  const contextWrapperRef = useRef<HTMLDivElement>(null);
 
   const configuredDefaultModelId = useCallback((): string | undefined => {
     if (!engine) return undefined;
@@ -416,6 +435,35 @@ export default function InputBar({
       document.removeEventListener("pointerdown", onDown);
     };
   }, [modelDropdownOpen]);
+
+  // Close the context popover when clicking outside of it.
+  useEffect(() => {
+    if (!contextOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (contextWrapperRef.current && !contextWrapperRef.current.contains(target)) {
+        setContextOpen(false);
+      }
+    };
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("pointerdown", onDown);
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [contextOpen]);
+
+  // Probe live-session state when the context popover opens — it decides
+  // whether /compact can run right now.
+  useEffect(() => {
+    if (!contextOpen || !conversationId) return;
+    let cancelled = false;
+    invoke<boolean>("has_live_session", { conversationId })
+      .then((alive) => { if (!cancelled) setSessionAlive(alive); })
+      .catch(() => { if (!cancelled) setSessionAlive(false); });
+    return () => { cancelled = true; };
+  }, [contextOpen, conversationId]);
 
   // Ensure the model dropdown always opens scrolled to the top (avoid focusing
   // the custom input at the bottom auto-scrolling the list).
@@ -843,6 +891,83 @@ export default function InputBar({
           )}
 
           <span className="flex-1" />
+          {(() => {
+            const ctxTokens = usage?.contextTokens;
+            if (!ctxTokens) return null;
+            const win = contextWindowFor(engine, model ?? configuredDefaultModelId());
+            if (!win) return null;
+            const pct = Math.round((ctxTokens / win) * 100);
+            const tone =
+              pct >= 80 ? "text-red-400" : pct >= 65 ? "text-amber-400" : "text-[var(--text-secondary)] opacity-60";
+            const compactSupported = engine === "claude" || engine === "codebuddy";
+            const compactBlocked = !onCompactContext || !compactSupported || !sessionAlive;
+            return (
+              <div ref={contextWrapperRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setContextOpen((v) => !v)}
+                  title={t('inputBar.contextTitle')}
+                  aria-label={t('inputBar.contextTitle')}
+                  className={`text-[10px] px-1.5 py-0.5 rounded-md hover:bg-[var(--bg-tertiary)] hover:opacity-100 transition-colors tabular-nums ${tone} ${
+                    pct >= 80 ? "opacity-100" : ""
+                  }`}
+                >
+                  {formatTokenCount(ctxTokens, currentLanguage)} · {pct}%
+                </button>
+                {contextOpen && (
+                  <div className="absolute bottom-full right-0 mb-1 w-56 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 py-1">
+                    <div className="px-3 py-1.5 space-y-1">
+                      <div className="flex justify-between text-[10px] text-[var(--text-secondary)]">
+                        <span>{t('messageBubble.usage.input')}</span>
+                        <span>{formatTokenCount(usage?.inputTokens ?? 0, currentLanguage)}</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-[var(--text-secondary)]">
+                        <span>{t('messageBubble.usage.cacheRead')}</span>
+                        <span>{formatTokenCount(usage?.cacheReadTokens ?? 0, currentLanguage)}</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-[var(--text-secondary)]">
+                        <span>{t('messageBubble.usage.cacheWrite')}</span>
+                        <span>{formatTokenCount(usage?.cacheCreationTokens ?? 0, currentLanguage)}</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-[var(--text-secondary)]">
+                        <span>{t('messageBubble.usage.output')}</span>
+                        <span>{formatTokenCount(usage?.outputTokens ?? 0, currentLanguage)}</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] border-t border-[var(--border-color)] pt-1 mt-1">
+                        <span className="text-[var(--text-secondary)]">{t('inputBar.contextWindow')}</span>
+                        <span className={tone}>{formatTokenCount(ctxTokens, currentLanguage)} / {formatTokenCount(win, currentLanguage)}</span>
+                      </div>
+                    </div>
+                    <div className="border-t border-[var(--border-color)] py-1">
+                      <button
+                        type="button"
+                        disabled={compactBlocked || compacting || isGenerating}
+                        title={sessionAlive ? undefined : t('inputBar.contextNoSession')}
+                        onClick={() => {
+                          setContextOpen(false);
+                          onCompactContext?.();
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:hover:bg-transparent"
+                      >
+                        {compacting ? t('inputBar.contextCompacting') : t('inputBar.contextCompact')}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!onNewSession || isGenerating || compacting}
+                        onClick={() => {
+                          setContextOpen(false);
+                          onNewSession?.();
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:hover:bg-transparent"
+                      >
+                        {t('inputBar.contextNewSession')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {charCount > 0 && (
             <span
               className={`text-[10px] ${

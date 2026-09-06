@@ -158,6 +158,9 @@ pub struct UsageInfo {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// Context occupancy snapshot (input + cache_read + cache_creation) for
+    /// "turn" events. Always None on "final" — those are run totals, not occupancy.
+    pub context_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
     pub num_turns: Option<u64>,
@@ -182,6 +185,11 @@ pub enum NormalizedEvent {
     /// Emitted when the CLI assigns its own session id (e.g. Cursor init).
     SessionEstablished {
         session_id: String,
+    },
+    /// The CLI compacted the conversation (stream-json `system`/`compact_boundary`).
+    CompactBoundary {
+        trigger: String,
+        pre_tokens: u64,
     },
     Final {
         text: String,
@@ -943,14 +951,7 @@ pub fn init_conversation_engine_map() -> ConversationEngineMap {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-pub async fn resolve_session_id(
-    map: &ConversationEngineMap,
-    conversation_id: &str,
-    engine_id: &str,
-) -> String {
-    if engine_id == "claude" || engine_id == "codebuddy" {
-        return conversation_id.to_string();
-    }
+pub async fn resolve_session_id(map: &ConversationEngineMap, conversation_id: &str) -> String {
     let guard = map.lock().await;
     guard
         .get(conversation_id)
@@ -964,9 +965,6 @@ pub async fn remember_session_id(
     engine_id: &str,
     session_id: &str,
 ) {
-    if engine_id == "claude" || engine_id == "codebuddy" {
-        return;
-    }
     let mut guard = map.lock().await;
     let entry =
         guard
@@ -978,6 +976,15 @@ pub async fn remember_session_id(
             });
     entry.engine_id = engine_id.to_string();
     entry.external_session_id = Some(session_id.to_string());
+}
+
+/// Drop the stored external session binding so the next spawn starts a fresh
+/// CLI session (used by "new session" / context reset).
+pub async fn clear_session_id(map: &ConversationEngineMap, conversation_id: &str) {
+    let mut guard = map.lock().await;
+    if let Some(entry) = guard.get_mut(conversation_id) {
+        entry.external_session_id = None;
+    }
 }
 
 pub async fn bind_conversation_engine(

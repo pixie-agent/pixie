@@ -241,9 +241,26 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
             </div>
           )}
 
-          {visibleMessages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} onRetry={onRetry} conversationId={displayConversation.id} />
-          ))}
+          {visibleMessages.map((msg, i) => {
+            // One-line divider where the CLI compacted the conversation.
+            const compactedAt = displayConversation.compactedAt ?? 0;
+            const showCompactDivider =
+              compactedAt > 0 &&
+              msg.timestamp >= compactedAt &&
+              (i === 0 || visibleMessages[i - 1].timestamp < compactedAt);
+            return (
+              <div key={msg.id}>
+                {showCompactDivider && (
+                  <div className="flex items-center gap-2 my-3 text-[10px] text-[var(--text-secondary)] opacity-70">
+                    <div className="h-px flex-1 bg-[var(--border-color)]" />
+                    <span>{t("chat.compacted")}</span>
+                    <div className="h-px flex-1 bg-[var(--border-color)]" />
+                  </div>
+                )}
+                <MessageBubble message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} onRetry={onRetry} conversationId={displayConversation.id} />
+              </div>
+            );
+          })}
 
           {/* Show typing indicator when the last message is a user message and we're generating */}
           {isGenerating &&

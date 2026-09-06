@@ -349,6 +349,8 @@ enum ClaudeStreamEvent {
         session_id: Option<String>,
         #[serde(default)]
         estimated_tokens: Option<u64>,
+        #[serde(default, rename = "compact_metadata")]
+        compact_metadata: Option<serde_json::Value>,
     },
 
     #[serde(rename = "assistant")]
@@ -584,6 +586,26 @@ impl ClaudeStreamEvent {
         }
     }
 
+    /// stream-json `system`/`compact_boundary`: the CLI compacted the history.
+    /// `compact_metadata.trigger` is "auto" (threshold) or "manual" (/compact).
+    fn compact_boundary(&self) -> Option<(String, u64)> {
+        match self {
+            ClaudeStreamEvent::System {
+                subtype,
+                compact_metadata,
+                ..
+            } if subtype.as_deref() == Some("compact_boundary") => {
+                let md = compact_metadata.as_ref()?;
+                let trigger = match md.get("trigger").and_then(|t| t.as_str()) {
+                    Some("auto") => "auto".to_string(),
+                    _ => "manual".to_string(),
+                };
+                Some((trigger, shared::u64_field(md, "pre_tokens")))
+            }
+            _ => None,
+        }
+    }
+
     fn usage(&self) -> Option<UsageInfo> {
         match self {
             ClaudeStreamEvent::Assistant { message } => {
@@ -601,6 +623,7 @@ impl ClaudeStreamEvent {
                     output_tokens: output,
                     cache_read_tokens: cache_read,
                     cache_creation_tokens: cache_creation,
+                    context_tokens: Some(input + cache_read + cache_creation),
                     cost_usd: None,
                     duration_ms: None,
                     num_turns: None,
@@ -646,6 +669,7 @@ impl ClaudeStreamEvent {
             output_tokens: output,
             cache_read_tokens: cache_read,
             cache_creation_tokens: cache_creation,
+            context_tokens: None,
             cost_usd: *total_cost_usd,
             duration_ms: *duration_ms,
             num_turns: *num_turns,
@@ -725,6 +749,13 @@ pub fn parse_line(line: &str) -> Vec<NormalizedEvent> {
         out.push(NormalizedEvent::ThinkingTokens { tokens });
     }
 
+    if let Some((trigger, pre_tokens)) = evt.compact_boundary() {
+        out.push(NormalizedEvent::CompactBoundary {
+            trigger,
+            pre_tokens,
+        });
+    }
+
     if let Some(u) = evt.usage() {
         out.push(NormalizedEvent::Usage(u));
     }
@@ -752,4 +783,72 @@ pub fn parse_line(line: &str) -> Vec<NormalizedEvent> {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_boundary_parses_trigger_and_pre_tokens() {
+        let line = r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":123456}}"#;
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NormalizedEvent::CompactBoundary {
+                trigger,
+                pre_tokens,
+            } => {
+                assert_eq!(trigger, "manual");
+                assert_eq!(*pre_tokens, 123_456);
+            }
+            other => panic!("expected CompactBoundary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compact_boundary_defaults_trigger_to_manual() {
+        let line = r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"pre_tokens":99}}"#;
+        let events = parse_line(line);
+        match &events[0] {
+            NormalizedEvent::CompactBoundary { trigger, .. } => assert_eq!(trigger, "manual"),
+            other => panic!("expected CompactBoundary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_boundary_system_events_do_not_emit_compact() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"abc"}"#;
+        let events = parse_line(line);
+        assert!(events
+            .iter()
+            .all(|e| !matches!(e, NormalizedEvent::CompactBoundary { .. })));
+    }
+
+    #[test]
+    fn turn_usage_carries_context_tokens_snapshot() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":700,"cache_creation_input_tokens":200}}}"#;
+        let events = parse_line(line);
+        let usage = events
+            .iter()
+            .find_map(|e| e.usage())
+            .expect("turn usage event");
+        assert_eq!(usage.kind, "turn");
+        assert_eq!(usage.context_tokens, Some(1_000));
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.cache_read_tokens, 700);
+        assert_eq!(usage.cache_creation_tokens, 200);
+    }
+
+    #[test]
+    fn final_usage_has_no_context_tokens() {
+        let line = r#"{"type":"result","result":"done","modelUsage":{"claude-sonnet-4":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":20,"cacheCreationInputTokens":30}}}"#;
+        let events = parse_line(line);
+        let usage = events
+            .iter()
+            .find_map(|e| e.usage())
+            .expect("final usage event");
+        assert_eq!(usage.kind, "final");
+        assert_eq!(usage.context_tokens, None);
+    }
 }

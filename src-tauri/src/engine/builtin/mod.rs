@@ -323,6 +323,7 @@ fn map_agent_event(
                 output_tokens: u.output,
                 cache_read_tokens: u.cache_read,
                 cache_creation_tokens: u.cache_write,
+                context_tokens: Some(u.input + u.cache_read + u.cache_write),
                 cost_usd: None,
                 duration_ms: None,
                 num_turns: None,

@@ -413,6 +413,7 @@ pub fn parse_line(line: &str) -> Vec<NormalizedEvent> {
                 output_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
+                context_tokens: None,
                 cost_usd: None,
                 duration_ms,
                 num_turns: None,

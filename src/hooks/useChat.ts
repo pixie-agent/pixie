@@ -14,6 +14,7 @@ import type {
   ResponseRetry,
   ResponseTool,
   ResponseUsage,
+  ResponseCompact,
   ResponseThinking,
   ResponseThinkingText,
   ResponsePermissionRequest,
@@ -239,6 +240,8 @@ function applyUsage(last: Message, usageEvent: ResponseUsage): MessageUsage {
       outputTokens: usageEvent.output_tokens,
       cacheReadTokens: usageEvent.cache_read_tokens,
       cacheCreationTokens: usageEvent.cache_creation_tokens,
+      // "final" is a run total, not occupancy — carry the last turn snapshot.
+      contextTokens: usageEvent.context_tokens ?? last.usage?.contextTokens,
       costUsd: usageEvent.cost_usd,
       durationMs: usageEvent.duration_ms,
       numTurns: usageEvent.num_turns,
@@ -258,6 +261,8 @@ function applyUsage(last: Message, usageEvent: ResponseUsage): MessageUsage {
     outputTokens: prevUsage.outputTokens + usageEvent.output_tokens,
     cacheReadTokens: prevUsage.cacheReadTokens + usageEvent.cache_read_tokens,
     cacheCreationTokens: prevUsage.cacheCreationTokens + usageEvent.cache_creation_tokens,
+    // Occupancy snapshot: latest call's input+cache, NEVER accumulated.
+    contextTokens: usageEvent.context_tokens ?? prevUsage.contextTokens,
     live: true,
   };
 }
@@ -423,6 +428,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [newConversationWorkspaceId, setNewConversationWorkspaceId] = useState<string | null>(null);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
+  /** Conversations with a /compact turn in flight (no generating marker is
+   *  registered for it, so this gets its own set). */
+  const [compactingIds, setCompactingIds] = useState<Set<string>>(new Set());
   const [engineStatuses, setEngineStatuses] = useState<EngineStatus[] | null>(null);
   /** Engine ids that have passed a readiness probe before (persisted). Lets a
    *  returning user enter the app without re-running a billable ping on launch. */
@@ -441,6 +449,12 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   const allConversationsRef = useRef(allConversations);
   /** Latest generating set for callbacks that must not close over stale state. */
   const generatingIdsRef = useRef<Set<string>>(generatingIds);
+  /** Latest compacting set for listener guards / callbacks (staleness-proof). */
+  const compactingIdsRef = useRef<Set<string>>(compactingIds);
+  /** One-shot fresh-session sends: resetSession records the conv here so the
+   *  very next sendMessage forces a fresh spawn even if it reads stale state
+   *  (the drain path calls sendMessage synchronously before refs re-sync). */
+  const freshSessionSendsRef = useRef<Set<string>>(new Set());
   /**
    * Per-conversation message queue: while a turn is streaming, submitted
    * messages wait here instead of being dropped. When the turn finishes
@@ -538,6 +552,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   useEffect(() => {
     generatingIdsRef.current = generatingIds;
   }, [generatingIds]);
+
+  useEffect(() => {
+    compactingIdsRef.current = compactingIds;
+  }, [compactingIds]);
 
   useEffect(() => {
     messageQueuesRef.current = messageQueues;
@@ -896,6 +914,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     async function setup() {
       const u1 = await listen<ResponseChunk>("agent-response", (event) => {
         const { conversation_id, content, event_type } = event.payload;
+        // Compaction turn: stream silently — the summary is for the CLI's own
+        // history, not for the previous reply's bubble.
+        if (compactingIdsRef.current.has(conversation_id)) return;
         queueStreamUpdate(conversation_id, (batch) => {
           batch.textParts.push({ content, eventType: event_type });
         });
@@ -911,7 +932,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
             if (last && last.role === "assistant") {
               msgs[msgs.length - 1] = { ...last, content: done.full_text, status: "done", timestamp: Date.now() };
             }
-            return { ...conv, messages: msgs, updatedAt: Date.now() };
+            // First post-reset turn completed — later sends may --resume again.
+            return { ...conv, messages: msgs, updatedAt: Date.now(), freshSession: undefined };
           }, convIndexRef),
         );
         setGeneratingIds((prev) => {
@@ -1057,6 +1079,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
 
       const u6 = await listen<ResponseUsage>("agent-usage", (event) => {
         const u = event.payload;
+        // The compact turn's usage is pre-compact occupancy — never apply it.
+        if (compactingIdsRef.current.has(u.conversation_id)) return;
         queueStreamUpdate(u.conversation_id, (batch) => {
           batch.usage = u;
         });
@@ -1064,6 +1088,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
 
       const u7 = await listen<ResponseThinkingText>("agent-thinking-text", (event) => {
         const { conversation_id, content } = event.payload;
+        if (compactingIdsRef.current.has(conversation_id)) return;
         queueStreamUpdate(conversation_id, (batch) => {
           batch.thinkingText = batch.thinkingText
             ? `${batch.thinkingText}\n\n${content}`
@@ -1144,8 +1169,26 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         );
       });
 
-      if (!mounted) { u1(); u2(); u3(); u3b(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); return; }
-      unlistenRefs.current = [u1, u2, u3, u3b, u4, u5, u6, u7, u8, u9, u10];
+      // The CLI compacted the conversation (manual /compact or auto): mark the
+      // boundary for the chat divider and drop the stale occupancy snapshot —
+      // it stays unknown until the next turn's usage arrives.
+      const u11 = await listen<ResponseCompact>("agent-compact", (event) => {
+        const { conversation_id } = event.payload;
+        setAllConversations((prev) =>
+          patchConversation(prev, conversation_id, (conv) => ({
+            ...conv,
+            compactedAt: Date.now(),
+            messages: conv.messages.map((m, i) =>
+              i === conv.messages.length - 1 && m.usage
+                ? { ...m, usage: { ...m.usage, contextTokens: undefined } }
+                : m,
+            ),
+          }), convIndexRef),
+        );
+      });
+
+      if (!mounted) { u1(); u2(); u3(); u3b(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); return; }
+      unlistenRefs.current = [u1, u2, u3, u3b, u4, u5, u6, u7, u8, u9, u10, u11];
     }
 
     setup();
@@ -1518,6 +1561,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
             title: isFirst ? generateTitle(content) : conv.title,
             messages: [...conv.messages, userMsg, assistantMsg],
             updatedAt: Date.now(),
+            freshSession: undefined,
           };
         }),
       }));
@@ -1535,9 +1579,19 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       // Using user-message count alone breaks retries: after a failed first
       // attempt (spawn error / no CodeBuddy session) we'd pass --resume and get
       // "No conversation found with session ID".
-      const isContinue = currentConv
-        ? currentConv.messages.some((m) => m.role === "assistant" && m.status === "done")
-        : false;
+      // "New session" forces the first post-reset send to spawn fresh
+      // (--session-id), not --resume into an empty/nonexistent transcript.
+      const forceFresh = freshSessionSendsRef.current.delete(convId!);
+      const isContinue =
+        !forceFresh &&
+        (currentConv
+          ? currentConv.messages.some((m) => m.role === "assistant" && m.status === "done") &&
+            !currentConv.freshSession
+          : false);
+      // Synchronously clear the marker on the (possibly stale) ref object too:
+      // a queued follow-up send reads this object before the agent-done patch
+      // commits, and must resume rather than re-spawn fresh over the same id.
+      if (currentConv?.freshSession) currentConv.freshSession = undefined;
 
       // Ensure backend cwd matches the conversation's workspace before spawning.
       await invoke("set_active_workspace", { path: wsId }).catch(() => {});
@@ -1652,6 +1706,49 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     );
   }, [activeId, clearQueue]);
 
+  /** Run /compact on the conversation's live CLI session (claude/codebuddy).
+   *  The compaction turn streams silently; agent-compact marks the boundary
+   *  and the next turn's usage refreshes the context indicator. */
+  const compactSession = useCallback(async (convId?: string) => {
+    const targetId = convId ?? activeId;
+    if (!targetId) return;
+    if (generatingIdsRef.current.has(targetId) || compactingIdsRef.current.has(targetId)) return;
+    setCompactingIds((prev) => new Set(prev).add(targetId));
+    try {
+      await invoke("compact_session", { conversationId: targetId });
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setCompactingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+    }
+  }, [activeId]);
+
+  /** Kill the live session and rebind to a fresh CLI session: the next message
+   *  starts with empty context while the chat display/history stays intact.
+   *  Works for every engine (cursor/codex re-establish their binding on spawn). */
+  const resetSession = useCallback(async (convId?: string) => {
+    const targetId = convId ?? activeId;
+    if (!targetId) return;
+    if (generatingIdsRef.current.has(targetId) || compactingIdsRef.current.has(targetId)) return;
+    try {
+      const newId = await invoke<string | null>("reset_session", { conversationId: targetId });
+      freshSessionSendsRef.current.add(targetId);
+      setAllConversations((prev) =>
+        patchConversation(prev, targetId, (conv) => ({
+          ...conv,
+          externalSessionId: newId ?? undefined,
+          freshSession: true,
+        }), convIndexRef),
+      );
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }, [activeId]);
+
   // ---- Message queue (per conversation) ------------------------------------
   // See the state block near the top for the model. enqueueMessage and the
   // drain ref live here (they depend on sendMessage, defined above);
@@ -1675,7 +1772,7 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
       const convId = convIdOverride ?? activeIdRef.current;
       if (!convId) return;
       if (isLoopConversation(convId)) return; // loops: keep the old hard block
-      if (!generatingIdsRef.current.has(convId)) {
+      if (!generatingIdsRef.current.has(convId) && !compactingIdsRef.current.has(convId)) {
         void sendMessage(content, convIdOverride ? convId : undefined, images);
         return;
       }
@@ -1958,6 +2055,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     retryFailedMessage,
     stopGeneration,
     respondPermission,
+    compactSession,
+    resetSession,
+    compactingIds,
     refreshEngineStatuses,
     probeEngineStatus,
     engineLogin,

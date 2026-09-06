@@ -443,6 +443,7 @@ impl CodexStreamEvent {
                     output_tokens: output,
                     cache_read_tokens: cache_read,
                     cache_creation_tokens: 0,
+                    context_tokens: None,
                     cost_usd: None,
                     duration_ms: None,
                     num_turns: None,

@@ -368,6 +368,7 @@ fn parse_result(val: &serde_json::Value) -> Vec<NormalizedEvent> {
         output_tokens: output,
         cache_read_tokens: cache_read,
         cache_creation_tokens: cache_creation,
+        context_tokens: None,
         cost_usd: val.get("total_cost_usd").and_then(|v| v.as_f64()),
         duration_ms: val.get("duration_ms").and_then(|v| v.as_u64()),
         num_turns: val.get("num_turns").and_then(|v| v.as_u64()),

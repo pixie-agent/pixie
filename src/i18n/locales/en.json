@@ -242,7 +242,8 @@
     "queuedCount": "Queued ({{count}})",
     "queueClear": "Clear all",
     "queuePlaceholder": "Generating — Enter to queue",
-    "interruptSend": "Send now (stop current)"
+    "interruptSend": "Send now (stop current)",
+    "compacted": "Context compacted"
   },
   "inputBar": {
     "removeAttachment": "Remove",
@@ -259,7 +260,13 @@
     "workspaceRecent": "Recent workspaces",
     "workspaceBrowse": "Choose another folder…",
     "appliesNextTurn": "applies next turn",
-    "engineLocked": "Engine can't be changed once the conversation has started"
+    "engineLocked": "Engine can't be changed once the conversation has started",
+    "contextTitle": "Context usage",
+    "contextWindow": "Window",
+    "contextCompact": "Compact context",
+    "contextCompacting": "Compacting…",
+    "contextNewSession": "New session",
+    "contextNoSession": "No live session"
   },
   "settings": {
     "title": "Settings",

@@ -12,6 +12,10 @@ export interface MessageUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Context occupancy snapshot (input + cache_read + cache_creation of the
+   *  latest API call). Snapshot, never accumulated; undefined until the first
+   *  turn usage arrives or right after a compaction. */
+  contextTokens?: number;
   costUsd?: number;
   durationMs?: number;
   numTurns?: number;
@@ -78,6 +82,12 @@ export interface Conversation {
   /** Set when the companion pet dispatched this conversation (task proposal
    * accepted in the pet's action card). Sidebar shows a paw badge. */
   origin?: "companion";
+  /** One-shot: the next send spawns a fresh CLI session instead of resuming
+   *  (set by "new session"); cleared after the first successful turn. */
+  freshSession?: boolean;
+  /** Timestamp of the last context compaction (manual /compact or engine
+   *  auto-compact); ChatView renders a divider before the first message at/after it. */
+  compactedAt?: number;
 }
 
 export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex";
@@ -178,11 +188,20 @@ export interface ResponseUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  /** Context occupancy snapshot ("turn" only; absent on "final" run totals). */
+  context_tokens?: number;
   cost_usd?: number;
   duration_ms?: number;
   num_turns?: number;
   model?: string;
   stop_reason?: string;
+}
+
+/** Emitted when the CLI compacts the conversation (manual /compact or auto). */
+export interface ResponseCompact {
+  conversation_id: string;
+  trigger: "manual" | "auto" | string;
+  pre_tokens: number;
 }
 
 export interface ResponseThinking {

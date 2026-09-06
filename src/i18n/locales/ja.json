@@ -242,7 +242,8 @@
     "queuedCount": "キュー中 ({{count}})",
     "queueClear": "すべてクリア",
     "queuePlaceholder": "生成中 — Enter でキューに追加",
-    "interruptSend": "今すぐ送信（現在を停止）"
+    "interruptSend": "今すぐ送信（現在を停止）",
+    "compacted": "コンテキストを圧縮しました"
   },
   "inputBar": {
     "removeAttachment": "削除",
@@ -259,7 +260,13 @@
     "workspaceRecent": "最近のワークスペース",
     "workspaceBrowse": "別のフォルダを選択…",
     "appliesNextTurn": "次のターンで適用",
-    "engineLocked": "会話を開始するとエンジンは変更できません"
+    "engineLocked": "会話を開始するとエンジンは変更できません",
+    "contextTitle": "コンテキスト使用量",
+    "contextWindow": "ウィンドウ",
+    "contextCompact": "コンテキストを圧縮",
+    "contextCompacting": "圧縮中…",
+    "contextNewSession": "新しいセッション",
+    "contextNoSession": "セッションがありません"
   },
   "settings": {
     "title": "設定",

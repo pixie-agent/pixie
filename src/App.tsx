@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useDragRegion } from "./hooks/useDragRegion";
 import { useTranslation } from "./hooks/useTranslation";
@@ -598,6 +598,9 @@ function AppShell() {
     retryFailedMessage,
     stopGeneration,
     respondPermission,
+    compactSession,
+    resetSession,
+    compactingIds,
     refreshEngineStatuses,
     clearError,
     addScheduledRun,
@@ -607,6 +610,17 @@ function AppShell() {
     clearQueue,
     removeQueuedMessage,
   } = useChat(engineModelConfigs);
+
+  // Latest assistant usage carries the context-occupancy snapshot the input
+  // bar's indicator renders (turn usage is refreshed throughout streaming).
+  const lastAssistantUsage = useMemo(() => {
+    const msgs = activeConversation?.messages ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "assistant" && m.usage) return m.usage;
+    }
+    return undefined;
+  }, [activeConversation]);
 
   useEffect(() => {
     if (mainView === displayMainView) {
@@ -1387,6 +1401,11 @@ ${entries}
               engineModelConfigs={engineModelConfigs}
               kbEnabled={kbEnabled}
               onToggleKb={() => setKbEnabled((v) => !v)}
+              conversationId={activeConversation?.id}
+              usage={lastAssistantUsage}
+              compacting={activeId ? compactingIds.has(activeId) : false}
+              onCompactContext={() => void compactSession(activeId ?? undefined)}
+              onNewSession={() => void resetSession(activeId ?? undefined)}
             />
           </>
         )}

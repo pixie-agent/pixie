@@ -11,7 +11,7 @@ use engine::persistent::{
     MAX_SESSIONS, MAX_TURN_RETRIES,
 };
 use engine::{
-    bind_conversation_engine, check_all_engines, conversation_engine_id,
+    bind_conversation_engine, check_all_engines, clear_session_id, conversation_engine_id,
     init_conversation_engine_map, normalize_engine_id, read_child_stream, remember_session_id,
     resolve_session_id, set_conversation_model, spawn_continue, spawn_headless, spawn_single,
     AgentProcess, ConversationEngineMap, EngineStatus, NormalizedEvent, SharedAgentProcess,
@@ -327,11 +327,21 @@ pub struct ResponseUsage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// Context occupancy snapshot ("turn" only; None on "final" run totals).
+    pub context_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
     pub num_turns: Option<u64>,
     pub model: Option<String>,
     pub stop_reason: Option<String>,
+}
+
+/// Emitted when the CLI compacts the conversation (manual /compact or auto).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseCompact {
+    pub conversation_id: String,
+    pub trigger: String,
+    pub pre_tokens: u64,
 }
 
 /// Live thinking-budget token estimate.
@@ -801,11 +811,27 @@ fn emit_agent_events(
                     output_tokens: u.output_tokens,
                     cache_read_tokens: u.cache_read_tokens,
                     cache_creation_tokens: u.cache_creation_tokens,
+                    context_tokens: u.context_tokens,
                     cost_usd: u.cost_usd,
                     duration_ms: u.duration_ms,
                     num_turns: u.num_turns,
                     model: u.model.clone(),
                     stop_reason: u.stop_reason.clone(),
+                },
+            );
+        }
+
+        if let NormalizedEvent::CompactBoundary {
+            trigger,
+            pre_tokens,
+        } = evt
+        {
+            let _ = app.emit(
+                "agent-compact",
+                ResponseCompact {
+                    conversation_id: conversation_id.to_string(),
+                    trigger: trigger.clone(),
+                    pre_tokens: *pre_tokens,
                 },
             );
         }
@@ -916,8 +942,7 @@ async fn send_message(
             workspace: workspace.clone().unwrap_or_default(),
         },
     );
-    let session_id =
-        resolve_session_id(&state.conversation_engines, &conversation_id, engine_id).await;
+    let session_id = resolve_session_id(&state.conversation_engines, &conversation_id).await;
     // Absolute paths of image attachments. Claude/CodeBuddy embed these as native
     // image content blocks; Cursor (no stream-json stdin) gets them as @mentions.
     let images_owned = images.unwrap_or_default();
@@ -1361,9 +1386,7 @@ async fn send_message(
                         // Respawn with --resume and re-send the SAME message.
                         // The resumed session restores prior conversation context
                         // and answers the message with a fresh response.
-                        let resume_sid =
-                            resolve_session_id(&conversation_engines, &conv_id, &engine_id_owned)
-                                .await;
+                        let resume_sid = resolve_session_id(&conversation_engines, &conv_id).await;
                         match PersistentSession::spawn(
                             &engine_id_owned,
                             &resume_sid,
@@ -5484,6 +5507,168 @@ async fn respond_permission(
     }
 }
 
+/// Run /compact on the conversation's live persistent session (Claude /
+/// CodeBuddy only). The compaction turn's events stream to the frontend like
+/// a normal turn; `agent-compact` marks the boundary in the UI. Compaction
+/// rewrites the CLI-side session file, so later `--resume` spawns replay the
+/// smaller transcript.
+#[tauri::command]
+async fn compact_session(
+    app: AppHandle,
+    conversation_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let engine_id = conversation_engine_id(&state.conversation_engines, &conversation_id)
+        .await
+        .unwrap_or_else(|| "claude".to_string());
+    if engine_id != "claude" && engine_id != "codebuddy" {
+        return Err(format!("engine {} does not support compaction", engine_id));
+    }
+
+    // Busy guard: a turn in flight holds the conversation's PID in the kill
+    // registry from spawn until the read loop finishes.
+    if state
+        .kill_registry
+        .lock()
+        .await
+        .contains_key(&conversation_id)
+    {
+        return Err("agent is busy".to_string());
+    }
+
+    let sessions = state_sessions_ref(&app);
+    let stdout = {
+        let mut sessions = sessions.lock().await;
+        let session = sessions
+            .get_mut(&conversation_id)
+            .ok_or_else(|| "no live session".to_string())?;
+        if !session.is_alive() {
+            return Err("no live session".to_string());
+        }
+        session
+            .send_command("/compact")
+            .await
+            .map_err(|e| e.to_string())?;
+        session.stdout()
+    };
+    // Drop the sessions lock before reading: read_persistent_turn polls the
+    // stdout mutex that the idle reaper / send_message also touch.
+    drop(sessions);
+
+    log::info!(
+        "[compact_session] reading compaction turn for {}",
+        conversation_id
+    );
+
+    let mut last_thinking: u64 = 0;
+    let stopped = state_stopped_ref(&app);
+    let stopped_for_read = stopped.clone();
+    let conv_for_stop = conversation_id.clone();
+    let outcome = read_persistent_turn(
+        &engine_id,
+        stdout,
+        |events: &[NormalizedEvent]| {
+            emit_agent_events(&app, &conversation_id, events, &mut last_thinking);
+        },
+        move || {
+            stopped_for_read
+                .try_lock()
+                .map(|g| g.contains(&conv_for_stop))
+                .unwrap_or(false)
+        },
+        || {},
+    )
+    .await;
+
+    match outcome {
+        TurnOutcome::Done(_) | TurnOutcome::Stopped { .. } => Ok(()),
+        TurnOutcome::Errored(e) => Err(e),
+        TurnOutcome::Crashed { reason, .. } => {
+            // Dead session: remove so the next send_message respawns cleanly.
+            let sessions = state_sessions_ref(&app);
+            sessions.lock().await.remove(&conversation_id);
+            state.kill_registry.lock().await.remove(&conversation_id);
+            Err(reason)
+        }
+    }
+}
+
+/// Kill the conversation's live session and rebind it to a fresh external
+/// session id, so the next message starts with empty context. Returns the new
+/// session id (claude/codebuddy) or None (cursor/codex re-establish their own
+/// binding on the next spawn via SessionEstablished).
+#[tauri::command]
+async fn reset_session(
+    app: AppHandle,
+    conversation_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let engine_id = conversation_engine_id(&state.conversation_engines, &conversation_id)
+        .await
+        .unwrap_or_else(|| "claude".to_string());
+
+    // Mirror update_conversation_model's teardown: mark any in-flight turn
+    // stopped so it finalizes silently on the kill-induced EOF.
+    let had_session = state.sessions.lock().await.contains_key(&conversation_id);
+    if had_session {
+        let _ = app.emit(
+            "agent-stopped",
+            ResponseStopped {
+                conversation_id: conversation_id.clone(),
+            },
+        );
+    }
+    {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&conversation_id) {
+            log::info!(
+                "[reset_session] killing persistent session for conv {}",
+                conversation_id
+            );
+            state
+                .stopped_convs
+                .lock()
+                .await
+                .insert(conversation_id.clone());
+            session.kill().await;
+            sessions.remove(&conversation_id);
+        }
+    }
+    state.kill_registry.lock().await.remove(&conversation_id);
+
+    if engine_id == "claude" || engine_id == "codebuddy" {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        remember_session_id(
+            &state.conversation_engines,
+            &conversation_id,
+            &engine_id,
+            &new_id,
+        )
+        .await;
+        log::info!(
+            "[reset_session] conv {} rebound to fresh session {}",
+            conversation_id,
+            new_id
+        );
+        Ok(Some(new_id))
+    } else {
+        clear_session_id(&state.conversation_engines, &conversation_id).await;
+        Ok(None)
+    }
+}
+
+/// Whether a live persistent session exists for the conversation (drives the
+/// compact button's enabled state in the UI).
+#[tauri::command]
+async fn has_live_session(app: AppHandle, conversation_id: String) -> Result<bool, String> {
+    let sessions = state_sessions_ref(&app);
+    let mut sessions = sessions.lock().await;
+    Ok(sessions
+        .get_mut(&conversation_id)
+        .map(|s| s.is_alive())
+        .unwrap_or(false))
+}
+
 #[tauri::command]
 async fn select_workspace(
     app: AppHandle,
@@ -9032,6 +9217,9 @@ pub fn run() {
             pty_kill,
             stop_generation,
             respond_permission,
+            compact_session,
+            reset_session,
+            has_live_session,
             get_default_workspace_path,
             set_default_workspace_path,
             pick_folder,

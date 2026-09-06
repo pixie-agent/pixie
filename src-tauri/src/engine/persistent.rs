@@ -325,6 +325,31 @@ impl PersistentSession {
         Ok(())
     }
 
+    /// Write a bare slash-command (e.g. "/compact") as a user message, using
+    /// the plain-string `content` form the CLI accepts in stream-json input
+    /// mode — the verified working shape for built-in commands.
+    pub async fn send_command(&mut self, command: &str) -> Result<()> {
+        let jsonl = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":{}}}}}"#,
+            serde_json::to_string(command).context("failed to serialize command")?
+        );
+        log::info!("[persistent] sending command: {command}");
+        self.stdin
+            .write_all(jsonl.as_bytes())
+            .await
+            .with_context(|| "failed to write command to stdin")?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .with_context(|| "failed to write newline to stdin")?;
+        self.stdin
+            .flush()
+            .await
+            .with_context(|| "failed to flush stdin")?;
+        self.touch();
+        Ok(())
+    }
+
     /// Write a permission response to the process stdin (approve or deny a
     /// tool permission request). The CLI emits a `permission_request` event
     /// and blocks until it receives this response via stdin.
