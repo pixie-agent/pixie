@@ -1,12 +1,12 @@
 [package]
 name = "pixie"
-version = "1.1.7"
+version = "1.1.8"
 description = "Pixie - General-Purpose AI Agent Workspace"
 authors = ["white1or1black"]
 license = "MIT"
 repository = "https://github.com/white1or1black/pixie"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.80.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
