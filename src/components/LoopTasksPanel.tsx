@@ -10,7 +10,7 @@ import type {
   WorkspaceState,
   AgentEngineId,
 } from "../types";
-import { AGENT_ENGINES } from "../types";
+import { useAcpAgents } from "../hooks/useAcpAgents";
 import { useDragRegion } from "../hooks/useDragRegion";
 import { useTranslation } from "../hooks/useTranslation";
 import { formatSchedule, relativeFromIso, engineLabel } from "../lib/i18nFormat";
@@ -242,6 +242,7 @@ export default function LoopTasksPanel({
 }: LoopTasksPanelProps) {
   const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
+  const { engines: allEngines } = useAcpAgents();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -478,7 +479,7 @@ export default function LoopTasksPanel({
                 value={draft.engine}
                 onChange={(e) => setDraft({ ...draft, engine: e.target.value as AgentEngineId })}
               >
-                {AGENT_ENGINES.map((e) => (
+                {allEngines.map((e) => (
                   <option key={e.id} value={e.id}>{engineLabel(e.id, t)}</option>
                 ))}
               </select>

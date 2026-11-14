@@ -27,6 +27,7 @@ import type {
   LoopIterationRecord,
 } from "../types";
 import { AGENT_ENGINES } from "../types";
+import { ACP_AGENTS_CHANGED_EVENT } from "./useAcpAgents";
 import { getConfig, getHistory, setHistory, updateConfig } from "../lib/storage";
 
 function basename(p: string): string {
@@ -234,6 +235,15 @@ function applyToolEvent(tools: ToolStep[], tool: ResponseTool): ToolStep[] {
 }
 
 function applyUsage(last: Message, usageEvent: ResponseUsage): MessageUsage {
+  // ACP `usage_update` reports the real context window through the model slot
+  // as `__ctx__{used}/{size}` (acp.rs) — parse it out so the occupancy
+  // indicator uses the agent's own window instead of a static table.
+  const ctxHint =
+    usageEvent.model && usageEvent.model.startsWith("__ctx__")
+      ? usageEvent.model
+      : undefined;
+  const ctxWindow = ctxHint ? Number(ctxHint.slice(7).split("/")[1]) : undefined;
+  const model = ctxHint ? undefined : usageEvent.model;
   if (usageEvent.kind === "final") {
     return {
       inputTokens: usageEvent.input_tokens,
@@ -242,10 +252,11 @@ function applyUsage(last: Message, usageEvent: ResponseUsage): MessageUsage {
       cacheCreationTokens: usageEvent.cache_creation_tokens,
       // "final" is a run total, not occupancy — carry the last turn snapshot.
       contextTokens: usageEvent.context_tokens ?? last.usage?.contextTokens,
+      contextWindow: ctxWindow ?? last.usage?.contextWindow,
       costUsd: usageEvent.cost_usd,
       durationMs: usageEvent.duration_ms,
       numTurns: usageEvent.num_turns,
-      model: usageEvent.model,
+      model,
       stopReason: usageEvent.stop_reason,
       live: false,
     };
@@ -263,6 +274,7 @@ function applyUsage(last: Message, usageEvent: ResponseUsage): MessageUsage {
     cacheCreationTokens: prevUsage.cacheCreationTokens + usageEvent.cache_creation_tokens,
     // Occupancy snapshot: latest call's input+cache, NEVER accumulated.
     contextTokens: usageEvent.context_tokens ?? prevUsage.contextTokens,
+    contextWindow: ctxWindow ?? prevUsage.contextWindow,
     live: true,
   };
 }
@@ -314,7 +326,11 @@ function applyStreamBatch(
     }
 
     msgs[msgs.length - 1] = updated;
-    return { ...conv, messages: msgs, updatedAt: Date.now() };
+    // Do NOT re-stamp updatedAt here. The sidebar orders by it, so stamping on
+    // every ~50ms flush reshuffles rows while the agent streams. The
+    // conversation already moved to the front when the user sent the message
+    // (sendMessage); streaming must never reorder the list.
+    return { ...conv, messages: msgs };
   }, indexRef);
 }
 
@@ -616,16 +632,15 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
 
   const isGenerating = activeId ? generatingIds.has(activeId) : false;
 
-  // Sync per-engine model config to Rust backend
+  // Sync the builtin engine's env overrides to the Rust backend. It is the
+  // only non-ACP engine left: every CLI engine's launch env is managed by the
+  // ACP registry (save_acp_agents).
   useEffect(() => {
-    for (const { id } of AGENT_ENGINES) {
-      const cfg = engineModelConfigs[id];
-      const config: Record<string, string> = {};
-      for (const [k, v] of Object.entries(cfg)) {
-        if (v) config[k] = v;
-      }
-      invoke("set_engine_model_config", { engine: id, config }).catch(() => {});
+    const config: Record<string, string> = {};
+    for (const [k, v] of Object.entries(engineModelConfigs)) {
+      if (v) config[k] = v;
     }
+    invoke("set_engine_model_config", { engine: "builtin", config }).catch(() => {});
   }, [engineModelConfigs]);
 
   // Load data
@@ -836,18 +851,37 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   }, [activeWorkspace?.path]);
 
   useEffect(() => {
-    invoke<EngineStatus[]>("check_engines_available")
-      .then((statuses) => setEngineStatuses(statuses))
-      .catch(() =>
-        setEngineStatuses(
-          AGENT_ENGINES.map((e) => ({
-            id: e.id,
-            display_name: i18n.t(`engines.${e.id}`, { defaultValue: e.label }),
-            available: false,
-            error: i18n.t("engineSetup.messages.failedCheckEngines"),
-          })),
+    const load = () =>
+      invoke<EngineStatus[]>("check_engines_available")
+        .then((statuses) =>
+          setEngineStatuses((prev) => {
+            if (!prev) return statuses;
+            // On registry-change reloads, keep already-resolved auth_state so
+            // adding an agent doesn't re-probe (billable ping) every engine.
+            return statuses.map((s) => {
+              const old = prev.find((p) => p.id === s.id);
+              if (old && old.available === s.available) {
+                return { ...s, auth_state: old.auth_state, probe_error: old.probe_error };
+              }
+              return s;
+            });
+          })
         )
-      );
+        .catch(() =>
+          setEngineStatuses(
+            AGENT_ENGINES.map((e) => ({
+              id: e.id,
+              display_name: i18n.t(`engines.${e.id}`, { defaultValue: e.label }),
+              available: false,
+              error: i18n.t("engineSetup.messages.failedCheckEngines"),
+            })),
+          )
+        );
+    load();
+    // The ACP registry is editable in Settings; when it changes, re-check so
+    // newly enabled agents flow into statuses → probe → readyEngineIds.
+    window.addEventListener(ACP_AGENTS_CHANGED_EVENT, load);
+    return () => window.removeEventListener(ACP_AGENTS_CHANGED_EVENT, load);
   }, []);
 
   // Mirror session/settings state owned by this hook into config.json (merged
@@ -933,7 +967,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
               msgs[msgs.length - 1] = { ...last, content: done.full_text, status: "done", timestamp: Date.now() };
             }
             // First post-reset turn completed — later sends may --resume again.
-            return { ...conv, messages: msgs, updatedAt: Date.now(), freshSession: undefined };
+            // updatedAt is intentionally NOT re-stamped: a background turn
+            // finishing late must not jump over the conversation the user is
+            // currently reading. The row's time shows when the user last sent.
+            return { ...conv, messages: msgs, freshSession: undefined };
           }, convIndexRef),
         );
         setGeneratingIds((prev) => {

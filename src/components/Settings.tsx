@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTranslation } from "../hooks/useTranslation";
-import type { EngineStatus, AgentEngineId, EngineModelConfigs } from "../types";
-import { AGENT_ENGINES } from "../types";
+import type { AgentEngineId, EngineModelConfigs, AcpAgentConfig, AcpCatalogEntry } from "../types";
+import { useAcpAgents } from "../hooks/useAcpAgents";
 import { engineLabel } from "../lib/i18nFormat";
 import {
   DEFAULT_SHORTCUTS,
@@ -181,74 +181,7 @@ const THEME_OPTIONS: { id: AppTheme; labelKey: string }[] = [
   { id: "paper-mint", labelKey: "settings.paperMint" },
 ];
 
-/** Full-screen overlay showing the verbatim probe transcript (stdout + stderr)
- *  for one engine — the "view raw output" affordance on an engine card. */
-function RawProbeModal({
-  engineId,
-  raw,
-  onClose,
-}: {
-  engineId: AgentEngineId;
-  raw: string;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(raw);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard unavailable — user can still select the text manually
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"
-      onClick={onClose}
-    >
-      <div
-        className="flex flex-col max-w-3xl w-full max-h-[70vh] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl overflow-hidden shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)]">
-          <span className="text-sm font-semibold text-[var(--text-primary)]">
-            {t("settings.rawProbeTitle", { engine: engineId })}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={copy}
-              className="px-2.5 py-1 rounded-lg bg-[var(--bg-tertiary)] hover:opacity-80 text-xs text-[var(--text-primary)] transition-colors"
-            >
-              {copied ? t("engineSetup.commands.copyToClipboard") : t("engineSetup.commands.copy")}
-            </button>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-              aria-label={t("common.close")}
-            >
-              <svg width="16" height="16" viewBox="0 0 18 18" fill="currentColor">
-                <path d="M4 4L14 14M14 4L4 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <pre className="flex-1 overflow-auto m-0 p-4 text-[11px] leading-relaxed font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all">
-          {raw}
-        </pre>
-      </div>
-    </div>
-  );
-}
-
 interface SettingsProps {
-  engineStatuses: EngineStatus[] | null;
-  onRefreshStatus: () => void;
-  /** Open the engine-setup modal (install / detect-ready / one-click login). */
-  onOpenSetup: () => void;
   /** Engines that are installed + ready; the Preferred Engine picker is limited to these. */
   readyEngineIds: AgentEngineId[];
   defaultEngine: AgentEngineId;
@@ -281,9 +214,6 @@ interface SettingsProps {
 }
 
 export default function Settings({
-  engineStatuses,
-  onRefreshStatus,
-  onOpenSetup,
   readyEngineIds,
   defaultEngine,
   onDefaultEngineChange,
@@ -310,7 +240,7 @@ export default function Settings({
 }: SettingsProps) {
   const { t } = useTranslation();
   const handleDragRegion = useDragRegion();
-  const [_checking, setChecking] = useState(false);
+  const { engines: allEngines } = useAcpAgents();
   const [expandedEngines, setExpandedEngines] = useState<Record<AgentEngineId, boolean>>({
     claude: false,
     cursor: false,
@@ -334,8 +264,6 @@ export default function Settings({
   const [appVersion, setAppVersion] = useState("");
   /** Which shortcut row is currently recording a new combo (null = none). */
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | null>(null);
-  /** Engine whose raw probe transcript is open in the RawProbeModal (null = closed). */
-  const [rawProbeEngine, setRawProbeEngine] = useState<AgentEngineId | null>(null);
 
   // Standing conflicts between two actions bound to the same combo (possible
   // via the per-row reset). action → the other action it collides with.
@@ -360,12 +288,6 @@ export default function Settings({
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
   }, []);
-
-  const handleRefresh = async () => {
-    setChecking(true);
-    await onRefreshStatus();
-    setChecking(false);
-  };
 
   return (
     <div className="settings-enter flex flex-col flex-1 min-h-0 bg-[var(--bg-secondary)]">
@@ -394,81 +316,6 @@ export default function Settings({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 xl:grid-cols-2 gap-x-6 gap-y-5 content-start">
-          {/* Agent engines */}
-          <section className="xl:col-span-2">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              {t('settings.agentEngines')}
-            </h3>
-            <div className="space-y-3">
-              {engineStatuses ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {engineStatuses.map((status) => {
-                    const ready = status.available && status.auth_state === "ready";
-                    const label = !status.available
-                      ? t('engineSetup.status.notInstalled')
-                      : ready
-                        ? t('engineSetup.status.ready')
-                        : status.auth_state === "unknown"
-                          ? t('engineSetup.status.probing')
-                          : t('engineSetup.status.notReady');
-                    const dot = !status.available
-                      ? "bg-red-400"
-                      : ready
-                        ? "bg-green-400"
-                        : "bg-amber-400";
-                    return (
-                      <div
-                        key={status.id}
-                        className="flex items-center justify-between bg-[var(--bg-primary)] rounded-xl px-4 py-3 border border-[var(--border-color)]"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot}`} />
-                          <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                            {engineLabel(status.id, t)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {!ready && status.probe_raw_output && (
-                            <button
-                              onClick={() => setRawProbeEngine(status.id)}
-                              className="text-xs px-2 py-0.5 rounded-md bg-[var(--bg-tertiary)] hover:opacity-80 text-[var(--text-secondary)] transition-colors"
-                            >
-                              {t('settings.viewRawOutput')}
-                            </button>
-                          )}
-                          <span
-                            className={`text-xs ${
-                              ready ? "text-emerald-400" : "text-[var(--text-secondary)]"
-                            }`}
-                          >
-                            {label}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-sm text-[var(--text-secondary)]">{t('common.loading')}</p>
-              )}
-              <div className="flex gap-2">
-                <button
-                  onClick={onOpenSetup}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
-                >
-                  {t('common.configure')}
-                </button>
-                <button
-                  onClick={handleRefresh}
-                  disabled={_checking}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent)]/20 text-xs text-[var(--text-primary)] transition-colors disabled:opacity-50"
-                >
-                  {_checking ? t('updater.checking') : t('common.refresh')}
-                </button>
-              </div>
-            </div>
-          </section>
-
           {/* Preferred engine for new sessions */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
@@ -479,11 +326,13 @@ export default function Settings({
               onChange={(e) => onDefaultEngineChange(e.target.value as AgentEngineId)}
               className="w-full text-sm rounded-xl px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)]"
             >
-              {AGENT_ENGINES.filter((e) => readyEngineIds.includes(e.id)).map((e) => (
-                <option key={e.id} value={e.id}>
-                  {engineLabel(e.id, t)}
-                </option>
-              ))}
+              {allEngines
+                .filter((e) => readyEngineIds.includes(e.id))
+                .map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {engineLabel(e.id, t)}
+                  </option>
+                ))}
             </select>
             <p className="text-xs text-[var(--text-secondary)] mt-2">
               {t('settings.preferredEngineHint')}
@@ -652,7 +501,8 @@ export default function Settings({
             </p>
           </section>
 
-          {/* Model Configuration (per engine, collapsed by default) */}
+          {/* Builtin engine env (the one non-ACP engine). CLI engines' env
+              lives in each ACP agent's launch config below. */}
           <section className="xl:col-span-2">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
               {t('settings.modelConfig')}
@@ -661,9 +511,10 @@ export default function Settings({
               {t('settings.modelConfigHint')}
             </p>
             <div className="space-y-2">
-              {AGENT_ENGINES.map(({ id }) => {
+              {(() => {
+                const id: AgentEngineId = "builtin";
                 const expanded = expandedEngines[id];
-                const config = engineModelConfigs[id] as Record<string, string | undefined>;
+                const config = (engineModelConfigs ?? {}) as Record<string, string | undefined>;
                 // All env vars are user-managed: every key with a defined value
                 // renders as an editable/removable row (no fixed field list).
                 const envKeys = Object.keys(config).filter(
@@ -736,7 +587,8 @@ export default function Settings({
                                 const commitRename = () => {
                                   const next = (renameDrafts[k] ?? "").trim();
                                   setRenameDrafts((prev) => {
-                                    const { [k]: _drop, ...rest } = prev;
+                                    const rest = { ...prev };
+                                    delete rest[k];
                                     return rest;
                                   });
                                   if (!next || next === k) return;
@@ -929,8 +781,19 @@ export default function Settings({
                     )}
                   </div>
                 );
-              })}
+              })()}
             </div>
+          </section>
+
+          {/* ACP agents (Agent Client Protocol registry) */}
+          <section className="xl:col-span-2">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+              {t('settings.acpAgents')}
+            </h3>
+            <p className="text-xs text-[var(--text-secondary)] mb-3">
+              {t('settings.acpAgentsHint')}
+            </p>
+            <AcpAgentsEditor t={t} />
           </section>
 
           {/* System Prompt */}
@@ -1090,20 +953,334 @@ export default function Settings({
             </p>
           </section>
         </div>
+    </div>
+  );
+}
 
-        {rawProbeEngine &&
-          (() => {
-            const s = engineStatuses?.find((e) => e.id === rawProbeEngine);
-            const raw = s?.probe_raw_output;
-            if (!raw) return null;
-            return (
-              <RawProbeModal
-                engineId={rawProbeEngine}
-                raw={raw}
-                onClose={() => setRawProbeEngine(null)}
+// ---------------------------------------------------------------------------
+// ACP agents registry editor
+// ---------------------------------------------------------------------------
+
+type TFunc = ReturnType<typeof useTranslation>["t"];
+
+/** One editable ACP agent row. Launch configs are data (Zed's agent_servers
+ *  model): command + args + env, no per-agent code. */
+function AcpAgentRow({
+  agent,
+  onChange,
+  onDelete,
+  t,
+}: {
+  agent: AcpAgentConfig;
+  onChange: (next: AcpAgentConfig) => void;
+  onDelete: () => void;
+  t: TFunc;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const inputCls =
+    "bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-2 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors font-mono";
+  return (
+    <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={agent.key}
+          onChange={(e) => onChange({ ...agent, key: e.target.value.trim().replace(/\s+/g, "-") })}
+          placeholder="key"
+          title={t('settings.acpKeyTitle')}
+          className={`${inputCls} w-28`}
+        />
+        <input
+          type="text"
+          value={agent.label}
+          onChange={(e) => onChange({ ...agent, label: e.target.value })}
+          placeholder={t('settings.acpLabelPlaceholder')}
+          className={`${inputCls} w-40`}
+        />
+        <input
+          type="text"
+          value={agent.command}
+          onChange={(e) => onChange({ ...agent, command: e.target.value })}
+          placeholder={t('settings.acpCommandPlaceholder')}
+          className={`${inputCls} flex-1`}
+        />
+        {confirming ? (
+          <div className="shrink-0 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onDelete}
+              className="text-[10px] px-2 py-1 rounded-lg bg-red-500 text-white"
+            >
+              {t('settings.deleteConfirm')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="text-[10px] px-2 py-1 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            >
+              {t('settings.cancelEnvVar')}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            aria-label={t('settings.acpRemoveAgent')}
+            onClick={() => setConfirming(true)}
+            className="shrink-0 text-[var(--text-secondary)] hover:text-red-400 transition-colors p-1"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+      </div>
+      <input
+        type="text"
+        value={agent.args.join(" ")}
+        onChange={(e) =>
+          // Shell-style split preserving quoted args (simple: no escapes).
+          onChange({
+            ...agent,
+            args: e.target.value.match(/"[^"]*"|\S+/g)?.map((s) => s.replace(/^"|"$/g, "")) ?? [],
+          })
+        }
+        placeholder={t('settings.acpArgsPlaceholder')}
+        className={`${inputCls} w-full`}
+      />
+      <p className="text-[10px] text-[var(--text-secondary)]">
+        {t('settings.acpEngineId', { id: `acp/${agent.key}` })}
+      </p>
+    </div>
+  );
+}
+
+/** One catalog entry row from the official ACP registry. Launchable entries
+ *  (npx/uvx) enable in one click; binary ones link out. */
+function AcpCatalogRow({
+  entry,
+  enabled,
+  onEnable,
+  enabling,
+}: {
+  entry: AcpCatalogEntry;
+  enabled: boolean;
+  onEnable: () => void;
+  enabling: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
+      {entry.icon ? (
+        <img src={entry.icon} alt="" className="w-4 h-4 mt-0.5 shrink-0" draggable={false} />
+      ) : (
+        <span className="w-4 h-4 mt-0.5 shrink-0 rounded bg-sky-500/20 text-sky-300 grid place-items-center text-[9px] font-mono">
+          {entry.name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-[var(--text-primary)] truncate">
+            {entry.name}
+          </span>
+          <span className="text-[10px] font-mono text-[var(--text-secondary)]">
+            v{entry.version}
+          </span>
+          {!entry.launchable && (
+            <span className="text-[10px] text-amber-400">
+              {t('settings.acpBinaryOnly')}
+            </span>
+          )}
+        </div>
+        {entry.description && (
+          <p className="text-xs text-[var(--text-secondary)] line-clamp-2 mt-0.5">
+            {entry.description}
+          </p>
+        )}
+      </div>
+      {enabled ? (
+        <span className="shrink-0 text-[10px] px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-300">
+          {t('settings.acpEnabled')}
+        </span>
+      ) : (
+        <button
+          type="button"
+          disabled={!entry.launchable || enabling}
+          onClick={onEnable}
+          title={entry.launchable ? undefined : entry.description}
+          className="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[var(--accent)] text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {enabling ? t('settings.acpEnabling') : t('settings.acpEnable')}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AcpAgentsEditor({ t }: { t: TFunc }) {
+  const { acpAgents, refresh } = useAcpAgents();
+  const [catalog, setCatalog] = useState<AcpCatalogEntry[] | null>(null);
+  const [catalogError, setCatalogError] = useState(false);
+  const [query, setQuery] = useState("");
+  const [enablingId, setEnablingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [manualAgents, setManualAgents] = useState<AcpAgentConfig[] | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const entries = await invoke<AcpCatalogEntry[]>("list_acp_catalog");
+        if (!cancelled) setCatalog(Array.isArray(entries) ? entries : []);
+      } catch {
+        if (!cancelled) setCatalogError(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const enabledKeys = new Set(
+    (manualAgents ?? acpAgents).map((a) => a.key),
+  );
+
+  const enable = async (entry: AcpCatalogEntry) => {
+    setEnablingId(entry.id);
+    setError(null);
+    try {
+      await invoke("enable_acp_catalog_agent", { entry });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setEnablingId(null);
+    }
+  };
+
+  const q = query.trim().toLowerCase();
+  const filtered = (catalog ?? []).filter(
+    (e) =>
+      !q ||
+      e.name.toLowerCase().includes(q) ||
+      e.id.toLowerCase().includes(q) ||
+      e.description.toLowerCase().includes(q),
+  );
+
+  const commitManual = async (next: AcpAgentConfig[]) => {
+    setManualAgents(next);
+    setSaving(true);
+    setError(null);
+    try {
+      await invoke<AcpAgentConfig[]>("save_acp_agents", { agents: next });
+      await refresh();
+      setManualAgents(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addManual = () => {
+    setManualAgents([
+      ...(manualAgents ?? acpAgents),
+      {
+        key: `agent-${Date.now().toString(36)}`,
+        label: "",
+        command: "",
+        args: [],
+        env: {},
+        probe_message: "ping",
+      },
+    ]);
+  };
+
+  return (
+    <div className="space-y-3">
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      {/* Official catalog */}
+      {catalog === null ? (
+        <p className="text-xs text-[var(--text-secondary)]">
+          {catalogError
+            ? t('settings.acpCatalogUnavailable')
+            : t('settings.acpCatalogLoading')}
+        </p>
+      ) : (
+        <>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('settings.acpCatalogSearch')}
+            className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors"
+          />
+          <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {filtered.map((entry) => (
+              <AcpCatalogRow
+                key={entry.id}
+                entry={entry}
+                enabled={enabledKeys.has(entry.id)}
+                enabling={enablingId === entry.id}
+                onEnable={() => void enable(entry)}
               />
-            );
-          })()}
+            ))}
+            {filtered.length === 0 && (
+              <p className="text-xs text-[var(--text-secondary)] py-2">
+                {t('settings.acpCatalogNoMatch')}
+              </p>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Manual launch configs (fallback / binary agents) */}
+      <details className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2">
+        <summary className="text-xs text-[var(--text-secondary)] cursor-pointer select-none">
+          {t('settings.acpManual')}
+        </summary>
+        <div className="space-y-2 pt-2">
+          {(manualAgents ?? acpAgents).map((a, i) => (
+            <AcpAgentRow
+              // Index, not a.key: the key field is editable, and keying on it
+              // would remount the row (dropping input focus) every keystroke.
+              // The list only appends/deletes in place, so index identity is
+              // stable; row lookup in the handlers below still matches by value.
+              key={i}
+              agent={a}
+              t={t}
+              onChange={(next) =>
+                setManualAgents(
+                  (manualAgents ?? acpAgents).map((x) => (x.key === a.key ? next : x)),
+                )
+              }
+              onDelete={() =>
+                commitManual((manualAgents ?? acpAgents).filter((x) => x.key !== a.key))
+              }
+            />
+          ))}
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={addManual}
+              className="text-xs text-[var(--accent)] hover:underline"
+            >
+              + {t('settings.acpAddAgent')}
+            </button>
+            {manualAgents && (
+              <button
+                type="button"
+                disabled={saving || manualAgents.some((a) => !a.key || !a.command)}
+                onClick={() => commitManual(manualAgents)}
+                className="text-xs px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white disabled:opacity-40"
+              >
+                {saving ? t('settings.acpSaving') : t('settings.acpSave')}
+              </button>
+            )}
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

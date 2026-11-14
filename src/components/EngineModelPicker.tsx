@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEngineId, EngineModelConfigs, ModelEntry } from "../types";
-import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
+import type { AgentEngineId, BuiltinModelConfig, EngineModelConfigs, ModelEntry } from "../types";
+import { useAcpAgents } from "../hooks/useAcpAgents";
 import { engineLabel } from "../lib/i18nFormat";
 import { useTranslation } from "../hooks/useTranslation";
 
@@ -36,6 +36,7 @@ export default function EngineModelPicker({
   className,
 }: EngineModelPickerProps) {
   const { t } = useTranslation();
+  const { engines: allEngines } = useAcpAgents();
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [customModel, setCustomModel] = useState("");
@@ -124,15 +125,17 @@ export default function EngineModelPicker({
   };
 
   const defaultModelLabel = (() => {
-    const cfg = engineModelConfigs[engine] as Record<string, string | undefined> | undefined;
-    const configured = cfg?.[ENGINE_MODEL_ENV_KEY[engine]];
+    // Only builtin reads a default model from the env map; CLI engines
+    // (native ids execute through ACP) pick models via configOptions.
+    const configured =
+      engine === "builtin" ? (engineModelConfigs as BuiltinModelConfig).ANTHROPIC_MODEL : undefined;
     const trimmed = typeof configured === "string" ? configured.trim() : "";
     const id = trimmed || availableModels[0]?.id;
     if (!id) return t("common.auto");
     return availableModels.find((m) => m.id === id)?.label ?? id;
   })();
 
-  const availableEngines = AGENT_ENGINES.filter((e) => readyEngineIds.includes(e.id));
+  const availableEngines = allEngines.filter((e) => readyEngineIds.includes(e.id));
 
   return (
     <div className={`flex items-center gap-1.5 ${className ?? ""}`}>

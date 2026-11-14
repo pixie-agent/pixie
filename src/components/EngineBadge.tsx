@@ -9,6 +9,11 @@ const BUILTIN_ICON = new URL("../assets/engine-icons/builtin.svg", import.meta.u
 const CODEX_ICON = new URL("../assets/engine-icons/codex.svg", import.meta.url).href;
 
 function engineAbbr(id: AgentEngineId): string {
+  // ACP agents get their registry key's first two letters (e.g. "acp/gemini" → "Ge").
+  if (id.startsWith("acp/")) {
+    const key = id.slice(4);
+    return key.slice(0, 2).toUpperCase() || "Ac";
+  }
   if (id === "builtin") return "Px";
   if (id === "claude") return "Cl";
   if (id === "cursor") return "Cu";
@@ -17,6 +22,7 @@ function engineAbbr(id: AgentEngineId): string {
 }
 
 function engineColorClasses(id: AgentEngineId): string {
+  if (id.startsWith("acp/")) return "bg-sky-500/15 text-sky-200 ring-sky-400/30";
   if (id === "builtin") return "bg-violet-500/15 text-violet-200 ring-violet-400/30";
   if (id === "claude") return "bg-violet-500/15 text-violet-200 ring-violet-400/30";
   if (id === "cursor") return "bg-emerald-500/15 text-emerald-200 ring-emerald-400/30";

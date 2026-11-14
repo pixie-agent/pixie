@@ -20,7 +20,6 @@ import type {
   EngineModelConfigs,
   WorkspaceState,
 } from "../types";
-import { DEFAULT_ENGINE_MODEL_CONFIGS } from "../types";
 import { DEFAULT_SHORTCUTS, normalizeShortcuts, type ShortcutsConfig } from "./shortcuts";
 
 export type AppTheme = "dark" | "light" | "cyber-teal" | "paper-mint";
@@ -55,13 +54,7 @@ const EMPTY_CONFIG: AppConfig = {
   uiScale: 1,
   systemPrompt: "",
   defaultEngine: "builtin",
-  engineModelConfigs: {
-    claude: { ...DEFAULT_ENGINE_MODEL_CONFIGS.claude },
-    cursor: { ...DEFAULT_ENGINE_MODEL_CONFIGS.cursor },
-    codebuddy: { ...DEFAULT_ENGINE_MODEL_CONFIGS.codebuddy },
-    builtin: { ...DEFAULT_ENGINE_MODEL_CONFIGS.builtin },
-    codex: { ...DEFAULT_ENGINE_MODEL_CONFIGS.codex },
-  },
+  engineModelConfigs: {},
   workspaces: [],
   activeWorkspaceId: null,
   knownReadyEngines: ["builtin"],
@@ -153,7 +146,14 @@ interface ConfigWire {
 }
 
 function isValidEngine(v: unknown): v is AgentEngineId {
-  return v === "claude" || v === "cursor" || v === "codebuddy" || v === "builtin" || v === "codex";
+  return (
+    v === "claude" ||
+    v === "cursor" ||
+    v === "codebuddy" ||
+    v === "builtin" ||
+    v === "codex" ||
+    (typeof v === "string" && v.startsWith("acp/"))
+  );
 }
 
 function isValidTheme(v: unknown): v is AppTheme {
@@ -169,25 +169,20 @@ function coerceEngineIds(raw: unknown): AgentEngineId[] {
   return Array.isArray(raw) ? raw.filter(isValidEngine) : [];
 }
 
-/** Merge a possibly-null/partial per-engine config blob over the defaults. */
+/** Env overrides now only exist for the builtin engine. Legacy configs stored
+ *  per-engine (claude/cursor/…) are handled by the backend's startup
+ *  migration, which moves them onto the matching ACP registry entry before the
+ *  frontend ever loads — here we simply drop non-builtin keys. */
 function coerceEngineModelConfigs(raw: unknown): EngineModelConfigs {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const r = raw as Partial<EngineModelConfigs>;
-    return {
-      claude: { ...DEFAULT_ENGINE_MODEL_CONFIGS.claude, ...r.claude },
-      cursor: { ...DEFAULT_ENGINE_MODEL_CONFIGS.cursor, ...r.cursor },
-      codebuddy: { ...DEFAULT_ENGINE_MODEL_CONFIGS.codebuddy, ...r.codebuddy },
-      builtin: { ...DEFAULT_ENGINE_MODEL_CONFIGS.builtin, ...r.builtin },
-      codex: { ...DEFAULT_ENGINE_MODEL_CONFIGS.codex, ...r.codex },
-    };
+    const r = raw as Record<string, unknown>;
+    const builtin =
+      r.builtin && typeof r.builtin === "object" && !Array.isArray(r.builtin)
+        ? (r.builtin as EngineModelConfigs)
+        : {};
+    return { ...builtin };
   }
-  return {
-    claude: { ...DEFAULT_ENGINE_MODEL_CONFIGS.claude },
-    cursor: { ...DEFAULT_ENGINE_MODEL_CONFIGS.cursor },
-    codebuddy: { ...DEFAULT_ENGINE_MODEL_CONFIGS.codebuddy },
-    builtin: { ...DEFAULT_ENGINE_MODEL_CONFIGS.builtin },
-    codex: { ...DEFAULT_ENGINE_MODEL_CONFIGS.codex },
-  };
+  return {};
 }
 
 function coerceWorkspaces(raw: unknown): WorkspaceState[] {
@@ -302,7 +297,10 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
     }
   }
 
-  // Engine model configs: prefer the multi-engine key, fall back to legacy single.
+  // Engine model configs: builtin-only now (CLI engines take env from their
+  // ACP registry launch config). Legacy per-engine localStorage blobs collapse
+  // to their builtin slice; other engines' values are dropped here — the
+  // backend's startup migration already carried them into the registry.
   let engineModelConfigs = EMPTY_CONFIG.engineModelConfigs;
   try {
     const multi = localStorage.getItem("pixie-engine-model-configs");
@@ -311,9 +309,14 @@ function migrateFromLocalStorage(): { config: AppConfig; history: HistoryEntry[]
     } else {
       const legacy = localStorage.getItem("pixie-model-config");
       if (legacy) {
+        const parsed = JSON.parse(legacy) as Record<string, unknown>;
         engineModelConfigs = {
-          ...EMPTY_CONFIG.engineModelConfigs,
-          claude: { ...DEFAULT_ENGINE_MODEL_CONFIGS.claude, ...JSON.parse(legacy) },
+          ANTHROPIC_API_KEY:
+            typeof parsed.ANTHROPIC_API_KEY === "string" ? parsed.ANTHROPIC_API_KEY : undefined,
+          ANTHROPIC_BASE_URL:
+            typeof parsed.ANTHROPIC_BASE_URL === "string" ? parsed.ANTHROPIC_BASE_URL : undefined,
+          ANTHROPIC_MODEL:
+            typeof parsed.ANTHROPIC_MODEL === "string" ? parsed.ANTHROPIC_MODEL : undefined,
         };
       }
     }

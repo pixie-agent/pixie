@@ -30,17 +30,13 @@ import { useCompanionDispatch } from "./hooks/useCompanionDispatch";
 import { useLoopTasks } from "./hooks/useLoopTasks";
 import type {
   AgentEngineId,
-  AuthState,
   EngineModelConfigs,
   KbSearchResult,
   PreviewRequest,
   PreviewTarget,
   SkillEntry,
   TaskRunRecord,
-  EngineStatus,
 } from "./types";
-import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "./types";
-import { engineLabel } from "./lib/i18nFormat";
 import type { ApplicationChatTarget } from "./components/ApplicationChat";
 import { bootstrap, getConfig, getHistory, updateConfig, UI_SCALE_OPTIONS, type AppTheme, type UiScale } from "./lib/storage";
 
@@ -126,392 +122,6 @@ function SplashScreen() {
   );
 }
 
-/// Per-engine install + login commands shown on the setup screen. Cursor has no
-/// official npm package — its install is the curl script from cursor.com/cli.
-const ENGINE_SETUP_INFO: Record<
-  AgentEngineId,
-  { install: string; login: string; docs: string }
-> = {
-  claude: {
-    install: "npm install -g @anthropic-ai/claude-code",
-    login: "claude auth login",
-    docs: "https://docs.claude.com/en/docs/claude-code",
-  },
-  cursor: {
-    install: "curl https://cursor.com/install -fsS | bash",
-    login: "cursor-agent login",
-    docs: "https://cursor.com/cli",
-  },
-  codebuddy: {
-    install: "npm install -g @tencent-ai/codebuddy-code",
-    login: "cbc login",
-    docs: "https://www.codebuddy.ai/docs/cli/quickstart",
-  },
-  builtin: {
-    install: "",
-    login: "",
-    docs: "https://docs.anthropic.com/en/api",
-  },
-  codex: {
-    install: "npm install -g @openai/codex",
-    login: "codex login",
-    docs: "https://platform.openai.com/docs/cli",
-  },
-};
-
-function CommandRow({ command, label }: { command: string; label: string }) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="flex items-center gap-2">
-      <code className="flex-1 text-xs font-mono text-[var(--text-primary)] bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 overflow-x-auto whitespace-nowrap">
-        {command}
-      </code>
-      <button
-        onClick={() => {
-          navigator.clipboard
-            .writeText(command)
-            .then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            })
-            .catch(() => {});
-        }}
-        className="shrink-0 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80"
-      >
-        {copied ? t('common.copied') : label}
-      </button>
-    </div>
-  );
-}
-
-function EngineCard({
-  engineId,
-  label,
-  status,
-  modelConfig,
-  onModelConfigChange,
-  onProbe,
-  onLogin,
-  onInstall,
-}: {
-  engineId: AgentEngineId;
-  label: string;
-  status: EngineStatus | undefined;
-  modelConfig: Record<string, string | undefined>;
-  onModelConfigChange: (
-    engine: AgentEngineId,
-    patch: Record<string, string | undefined>,
-  ) => void;
-  onProbe: (id: AgentEngineId) => void | Promise<void>;
-  onLogin: (id: AgentEngineId) => void;
-  onInstall: (id: AgentEngineId) => Promise<{ success: boolean; output: string }>;
-}) {
-  const { t } = useTranslation();
-  const isBuiltin = engineId === "builtin";
-  const info = ENGINE_SETUP_INFO[engineId];
-  const installed = isBuiltin || !!status?.available;
-  const authState: AuthState = status?.auth_state ?? "unknown";
-  const ready = installed && authState === "ready";
-  const notReady = installed && !ready;
-  const probing = installed && authState === "unknown" && (!isBuiltin || !!status?.available);
-  const [installing, setInstalling] = useState(false);
-  const [installError, setInstallError] = useState<string | null>(null);
-  /** Local in-flight marker for a user-initiated re-probe. The derived
-   *  `probing` flag only covers auth_state === "unknown" (initial check), so a
-   *  re-probe click on an engine that already has a state would otherwise show
-   *  zero feedback until the result lands. */
-  const [probingNow, setProbingNow] = useState(false);
-  const modelEnvKey = ENGINE_MODEL_ENV_KEY[engineId];
-
-  const handleInstall = async () => {
-    setInstalling(true);
-    setInstallError(null);
-    try {
-      const res = await onInstall(engineId);
-      if (!res.success) setInstallError(res.output || t('engineSetup.messages.installFailed'));
-    } catch (e) {
-      setInstallError(String(e));
-    } finally {
-      setInstalling(false);
-    }
-  };
-
-  const handleProbe = async () => {
-    setProbingNow(true);
-    try {
-      await onProbe(engineId);
-    } finally {
-      setProbingNow(false);
-    }
-  };
-
-  const busy = probing || probingNow;
-
-  return (
-    <div className="border border-[var(--border-color)] rounded-xl p-4 bg-[var(--bg-primary)]">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-semibold text-[var(--text-primary)] truncate">{label}</span>
-          {!isBuiltin && installed && status?.version && (
-            <span className="text-[10px] text-[var(--text-secondary)] shrink-0">v{status.version}</span>
-          )}
-        </div>
-        {installed ? (
-          <span
-            className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${
-              ready
-                ? "text-emerald-400 bg-emerald-500/10"
-                : "text-amber-400 bg-amber-500/10"
-            }`}
-          >
-            {isBuiltin ? t('engineSetup.status.builtin') : ready ? t('engineSetup.status.ready') : probing ? t('engineSetup.status.probing') : t('engineSetup.status.notReady')}
-          </span>
-        ) : (
-          <span className="text-xs font-medium px-2 py-0.5 rounded-full text-[var(--text-secondary)] bg-[var(--bg-tertiary)] shrink-0">
-            {t('engineSetup.status.notInstalled')}
-          </span>
-        )}
-      </div>
-
-      {/* Model override used by the readiness probe (and normal turns): when
-          the CLI's default model is unavailable (e.g. gateway accounts),
-          configure it here so the probe doesn't fail on the default. */}
-      <div className="mb-3">
-        <label className="block text-xs text-[var(--text-secondary)] mb-1">
-          {t('engineSetup.probeModel.label')}{" "}
-          <code className="text-[10px] opacity-60">{modelEnvKey}</code>
-        </label>
-        <input
-          type="text"
-          value={modelConfig[modelEnvKey] ?? ""}
-          onChange={(e) =>
-            onModelConfigChange(engineId, {
-              [modelEnvKey]: e.target.value || undefined,
-            })
-          }
-          placeholder={t('engineSetup.probeModel.placeholder')}
-          className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-secondary)] outline-none focus:border-[var(--accent)] transition-colors font-mono"
-        />
-        <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
-          {t('engineSetup.probeModel.hint')}
-        </p>
-      </div>
-
-      {isBuiltin && notReady && !busy && (
-        <div className="space-y-2">
-          <p className="text-xs text-amber-400">
-            {t('engineSetup.messages.builtinConfigHint')}
-          </p>
-          <p className="text-[11px] text-[var(--text-secondary)]">
-            {t('engineSetup.messages.builtinDesc')}
-          </p>
-          <button
-            onClick={handleProbe}
-            disabled={busy}
-            className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span className="flex items-center gap-1.5">
-              {busy && (
-                <span className="w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-              )}
-              {t('engineSetup.actions.reprobe')}
-            </span>
-          </button>
-        </div>
-      )}
-
-      {!isBuiltin && !installed && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleInstall}
-              disabled={installing}
-              className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors disabled:opacity-50"
-            >
-              {installing ? t('engineSetup.actions.installing') : t('engineSetup.actions.oneClickInstall')}
-            </button>
-            {installing && (
-              <div className="w-3.5 h-3.5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-            )}
-          </div>
-          {installError && (
-            <p className="text-xs text-red-400 break-all whitespace-pre-wrap">{installError}</p>
-          )}
-          <details className="text-[11px] text-[var(--text-secondary)]">
-            <summary className="cursor-pointer hover:text-[var(--text-primary)]">
-              {t('engineSetup.actions.manualInstall')}
-            </summary>
-            <div className="mt-1">
-              <CommandRow command={info.install || t('engineSetup.installNotes.builtin')} label={t('engineSetup.commands.copy')} />
-            </div>
-          </details>
-        </div>
-      )}
-
-      {busy && (
-        <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
-          <div className="w-3.5 h-3.5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-          {t('engineSetup.messages.probing')}
-        </div>
-      )}
-
-      {ready && <p className="text-xs text-emerald-400">{t('engineSetup.messages.readyMessage')}</p>}
-
-      {!isBuiltin && notReady && !busy && (
-        <div className="space-y-2">
-          {authState === "region_blocked" ? (
-            <p className="text-xs text-amber-400">{t('engineSetup.messages.regionBlockedHint')}</p>
-          ) : (
-            <p className="text-xs text-amber-400">{t('engineSetup.messages.notReadyHint')}</p>
-          )}
-          <div className="flex gap-2">
-            {authState !== "region_blocked" && (
-              <button
-                onClick={() => onLogin(engineId)}
-                className="px-3 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors"
-              >
-                {t('engineSetup.actions.oneClickLogin')}
-              </button>
-            )}
-            <button
-              onClick={handleProbe}
-            disabled={busy}
-              className="px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs font-medium transition-colors hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {t('engineSetup.actions.reprobe')}
-            </button>
-          </div>
-          {authState === "region_blocked" ? (
-            <CommandRow
-              command="export HTTPS_PROXY=http://127.0.0.1:7890"
-              label={t('engineSetup.actions.copyProxyCommand')}
-            />
-          ) : (
-            <>
-              <CommandRow command={info.login} label={t('engineSetup.actions.copyLoginCommand')} />
-              <p className="text-[11px] text-[var(--text-secondary)]">
-                {t(`engineSetup.loginHints.${engineId}`)}
-              </p>
-            </>
-          )}
-          {status?.probe_error && (
-            <p className="text-[11px] text-[var(--text-secondary)] break-all">
-              {t('engineSetup.messages.engineResponse')}{status.probe_error}
-            </p>
-          )}
-          {status?.probe_raw_output && (
-            <details className="text-[11px] text-[var(--text-secondary)]">
-              <summary className="cursor-pointer hover:text-[var(--text-primary)]">
-                {t('settings.viewRawOutput')}
-              </summary>
-              <pre className="mt-1 p-2 rounded-lg bg-[var(--bg-tertiary)] text-[10px] font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto text-[var(--text-primary)]">
-                {status.probe_raw_output}
-              </pre>
-            </details>
-          )}
-        </div>
-      )}
-
-      {installed && ready && (
-        <div className="flex justify-end mt-1">
-          <button
-            onClick={handleProbe}
-            disabled={busy}
-            className="text-xs px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium transition-colors hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span className="flex items-center gap-1.5">
-              {busy && (
-                <span className="w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-              )}
-              {t('engineSetup.actions.reprobe')}
-            </span>
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EngineSetup({
-  statuses,
-  engineModelConfigs,
-  onEngineModelConfigChange,
-  onProbe,
-  onLogin,
-  onInstall,
-  onClose,
-}: {
-  statuses: EngineStatus[];
-  engineModelConfigs: EngineModelConfigs;
-  onEngineModelConfigChange: (
-    engine: keyof EngineModelConfigs,
-    patch: Record<string, string | undefined>,
-  ) => void;
-  onProbe: (id: AgentEngineId) => void | Promise<void>;
-  onLogin: (id: AgentEngineId) => void;
-  onInstall: (id: AgentEngineId) => Promise<{ success: boolean; output: string }>;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const anyReady = statuses.some((s) => s.available && s.auth_state === "ready");
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl max-h-[90vh] flex flex-col bg-[var(--bg-secondary)] rounded-2xl border border-[var(--border-color)] shadow-2xl">
-        <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]">
-          <div className="flex items-center gap-2">
-            <img src={iconUrl} alt={t('app.name')} className="w-7 h-7 rounded-lg" />
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{t('engineSetup.title')}</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-            aria-label={t('common.close')}
-          >
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <path d="M4 4L14 14M14 4L4 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          <p className="text-sm text-[var(--text-secondary)] mb-2">
-            {t('engineSetup.description')}
-          </p>
-          {AGENT_ENGINES.map((e) => (
-            <EngineCard
-              key={e.id}
-              engineId={e.id}
-              label={engineLabel(e.id, t)}
-              status={statuses.find((s) => s.id === e.id)}
-              modelConfig={engineModelConfigs[e.id] as Record<string, string | undefined>}
-              onModelConfigChange={onEngineModelConfigChange}
-              onProbe={onProbe}
-              onLogin={onLogin}
-              onInstall={onInstall}
-            />
-          ))}
-          <p className="text-[11px] text-[var(--text-secondary)] pt-1">
-            {t('engineSetup.hint')}
-          </p>
-        </div>
-
-        <div className="shrink-0 flex items-center justify-between px-5 py-3 border-t border-[var(--border-color)]">
-          <span className={`text-xs ${anyReady ? "text-emerald-400" : "text-[var(--text-secondary)]"}`}>
-            {anyReady ? t('engineSetup.anyReady') : t('engineSetup.noneReady')}
-          </span>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-colors"
-          >
-            {t('engineSetup.enterApp')}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AppShell() {
   const { t, currentLanguage } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -551,16 +161,8 @@ function AppShell() {
   // switching between them never clears what you've typed.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  /** Engine-setup modal visibility. Auto-opens on first launch when no engine is
-   *  ready; otherwise opened manually from Settings. Does NOT auto-close when an
-   *  engine becomes ready — the user closes it (so they can see the state flip). */
-  const [setupOpen, setSetupOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [kbEnabled, setKbEnabled] = useState(false);
-  /** Has the first-launch "auto-open if nothing ready" check run yet. Tracked
-   *  with state (not a ref) so it can drive a render-time setState — the React
-   *  "adjust state during render" pattern — without tripping effect/ref rules. */
-  const [initialChecked, setInitialChecked] = useState(false);
 
   const {
     unifiedConversations,
@@ -569,11 +171,7 @@ function AppShell() {
     isGenerating,
     generatingIds,
     engineStatuses,
-    anyEngineReady,
     readyEngineIds,
-    probeEngineStatus,
-    engineLogin,
-    installEngine,
     defaultEngine,
     setDefaultEngine,
     defaultWorkspacePath,
@@ -601,7 +199,7 @@ function AppShell() {
     compactSession,
     resetSession,
     compactingIds,
-    refreshEngineStatuses,
+    probeEngineStatus,
     clearError,
     addScheduledRun,
     addRunningTask,
@@ -649,33 +247,21 @@ function AppShell() {
     setMainViewLoading(false);
   }, [displayMainView]);
 
-  // On first launch: if no engine is ready (none installed, or none logged in),
-  // pop the engine-setup modal automatically. Evaluated exactly once via the
-  // React "adjust state during render" pattern — after this the modal is only
-  // opened manually from Settings, and it does NOT auto-close when an engine
-  // later becomes ready.
-  if (!initialChecked && engineStatuses !== null) {
-    setInitialChecked(true);
-    if (!anyEngineReady) setSetupOpen(true);
-  }
+  // Stable sidebar callbacks: the sidebar's rows are memoized, but App
+  // re-renders on every stream flush (useChat state lives here). Inline arrows
+  // would hand every row a fresh callback each flush and defeat that memo.
+  const handleSelectConversation = useCallback((id: string, workspaceId: string) => {
+    setMainView("chat");
+    switchConversation(id, workspaceId);
+  }, [switchConversation]);
 
-  // Probe any installed engine whose readiness is still unknown — on first load
-  // and whenever the setup modal opens (so a dropped/stale probe is retried
-  // instead of leaving the card stuck on "检测中"). The in-flight guard prevents
-  // concurrent duplicate pings; resolved engines (auth_state != unknown) are
-  // skipped, so there is no re-probe loop.
-  const probingSetupRef = useRef<Set<string>>(new Set());
+  const handleNewConversation = useCallback((opts?: { workspaceId?: string; engine?: AgentEngineId; model?: string }) => {
+    setMainView("chat");
+    createConversation(opts?.workspaceId, opts?.engine ?? defaultEngine, opts?.model);
+  }, [createConversation, defaultEngine]);
 
-  useEffect(() => {
-    if (!engineStatuses) return;
-    for (const s of engineStatuses) {
-      if (!s.available) continue;
-      if ((s.auth_state ?? "unknown") !== "unknown") continue;
-      if (probingSetupRef.current.has(s.id)) continue;
-      probingSetupRef.current.add(s.id);
-      void probeEngineStatus(s.id).finally(() => probingSetupRef.current.delete(s.id));
-    }
-  }, [engineStatuses, setupOpen, probeEngineStatus]);
+  const openMainView = useCallback((view: MainView) => setMainView(view), []);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   // Per-conversation composer draft. Keyed by the active conversation id so each
   // session keeps its own input; a workspace-level scratch key covers the brief
@@ -686,6 +272,25 @@ function AppShell() {
     (value: string) => setDrafts((prev) => ({ ...prev, [draftKey]: value })),
     [draftKey]
   );
+
+  // Probe any installed engine whose readiness is still unknown — on first load
+  // and whenever the engine list changes (so an agent enabled in Settings or a
+  // dropped/stale probe is retried instead of staying stuck on "unknown" and
+  // hidden from the pickers). The in-flight guard prevents concurrent duplicate
+  // pings; resolved engines (auth_state != unknown) are skipped, so there is no
+  // re-probe loop.
+  const probingEnginesRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!engineStatuses) return;
+    for (const s of engineStatuses) {
+      if (!s.available) continue;
+      if ((s.auth_state ?? "unknown") !== "unknown") continue;
+      if (probingEnginesRef.current.has(s.id)) continue;
+      probingEnginesRef.current.add(s.id);
+      void probeEngineStatus(s.id).finally(() => probingEnginesRef.current.delete(s.id));
+    }
+  }, [engineStatuses, probeEngineStatus]);
 
   const isApplicationStudioSession =
     activeConversation?.mode === "application-studio" ||
@@ -896,11 +501,9 @@ function AppShell() {
   const handleUiScaleChange = useCallback((scale: UiScale) => setUiScale(scale), []);
   const handleSystemPromptChange = useCallback((prompt: string) => setSystemPrompt(prompt), []);
   const handleEngineModelConfigChange = useCallback(
-    (engine: keyof EngineModelConfigs, patch: Record<string, string | undefined>) => {
-      setEngineModelConfigs((prev) => ({
-        ...prev,
-        [engine]: { ...prev[engine], ...patch },
-      }));
+    (_engine: AgentEngineId, patch: Record<string, string | undefined>) => {
+      // Only builtin carries env overrides now; the patch merges into it.
+      setEngineModelConfigs((prev) => ({ ...prev, ...patch }));
     },
     [],
   );
@@ -1105,42 +708,25 @@ ${entries}
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)]">
-      {setupOpen && (
-        <EngineSetup
-          statuses={engineStatuses}
-          engineModelConfigs={engineModelConfigs}
-          onEngineModelConfigChange={handleEngineModelConfigChange}
-          onProbe={probeEngineStatus}
-          onLogin={engineLogin}
-          onInstall={installEngine}
-          onClose={() => setSetupOpen(false)}
-        />
-      )}
         <Sidebar
           entries={unifiedConversations}
           workspaces={workspaces}
           defaultWorkspacePath={defaultWorkspacePath}
           activeId={activeId}
           generatingIds={generatingIds}
-        onSelect={(id, workspaceId) => {
-          setMainView("chat");
-          switchConversation(id, workspaceId);
-        }}
-        onNew={(opts) => {
-          setMainView("chat");
-          createConversation(opts?.workspaceId, opts?.engine ?? defaultEngine, opts?.model);
-        }}
+        onSelect={handleSelectConversation}
+        onNew={handleNewConversation}
         defaultEngine={defaultEngine}
         readyEngineIds={readyEngineIds}
         onDelete={deleteConversation}
         onRename={renameConversation}
-        onOpenSettings={() => setMainView("settings")}
-        onOpenTasks={() => setMainView("tasks")}
-        onOpenLoops={() => setMainView("loops")}
-        onOpenSkills={() => setMainView("skills")}
-        onOpenApplications={() => setMainView("applications")}
+        onOpenSettings={() => openMainView("settings")}
+        onOpenTasks={() => openMainView("tasks")}
+        onOpenLoops={() => openMainView("loops")}
+        onOpenSkills={() => openMainView("skills")}
+        onOpenApplications={() => openMainView("applications")}
         isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        onClose={closeSidebar}
         loopTasks={loopTasks}
       />
 
@@ -1499,10 +1085,7 @@ ${entries}
         {!mainViewLoading && displayMainView === "settings" && (
           <Suspense fallback={<LoadingPanel />}>
           <Settings
-            engineStatuses={engineStatuses}
             readyEngineIds={readyEngineIds}
-            onRefreshStatus={refreshEngineStatuses}
-            onOpenSetup={() => setSetupOpen(true)}
             defaultEngine={defaultEngine}
             onDefaultEngineChange={setDefaultEngine}
             theme={theme}

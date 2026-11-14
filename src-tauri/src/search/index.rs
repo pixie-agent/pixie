@@ -164,7 +164,7 @@ impl SearchIndex {
         let doc_count = self.docs.len();
         let mut scored: Vec<(usize, f64)> = Vec::with_capacity(candidates.len());
 
-        for (&doc_idx, _) in &candidates {
+        for &doc_idx in candidates.keys() {
             let doc = &self.docs[doc_idx];
             let doc_len = doc.body_tokens.len();
 
@@ -275,7 +275,7 @@ fn extract_snippet(body: &str, query_terms: &[String], max_len: usize) -> String
             let ci_end = (ci + match_len).min(char_count);
             // Center the window around the match.
             let half = max_len / 2;
-            let s = if ci > half { ci - half } else { 0 };
+            let s = ci.saturating_sub(half);
             let e = (s + max_len).min(char_count);
             // Ensure the match itself is included.
             let s = s.min(ci);

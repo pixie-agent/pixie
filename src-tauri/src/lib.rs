@@ -5,6 +5,7 @@ mod search;
 mod summarizer;
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use engine::acp::{AcpSession, AcpSessionMap};
 use engine::builtin::{init_builtin_sessions, BuiltinSession, BuiltinSessionMap};
 use engine::persistent::{
     self as ps, read_persistent_turn, PersistentSession, SessionMap, TurnOutcome, IDLE_TIMEOUT,
@@ -65,6 +66,85 @@ pub struct AppConfig {
     /// frontend owns the schema; stored opaquely so it round-trips untouched.
     #[serde(default)]
     pub keyboard_shortcuts: serde_json::Value,
+    /// ACP (Agent Client Protocol) agent registry entries — launch configs for
+    /// protocol-compatible agents. Deserialized into `engine::acp::AcpAgentConfig`.
+    /// Backend-owned: only `save_acp_agents` ever writes `Some`. Omitted from
+    /// serialization when absent so a stale `null` never round-trips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_agents: Option<serde_json::Value>,
+}
+
+/// One-time migration: since the unified-ACP switch, every CLI engine launches
+/// through the ACP registry, so per-engine env vars belong to each registry
+/// agent's launch config — not a separate `engine_model_configs` map keyed by
+/// native engine id. Move any stored overrides onto the matching registry
+/// entry (registry `env` wins on conflict: it is the more specific source) and
+/// drop the moved keys from the old map. `builtin` stays where it is: it is
+/// the one engine that never spawns a child process, so it has no registry
+/// entry to receive env vars.
+///
+/// When a native key has no user registry entry yet (most users never edited
+/// the registry — the alias lives in the built-in list), one is cloned from
+/// the built-in config and added to `agents`, so the env has somewhere to land
+/// and round-trips through `config.json`.
+///
+/// Runs at startup before the registry is handed to `load_registry`, and
+/// rewrites `config.json` only when something actually moved. Returns the
+/// (possibly emptied) remaining engine_model_configs blob for the caller to
+/// persist.
+fn migrate_engine_env_into_acp_registry(
+    mut engine_configs: serde_json::Value,
+    agents: &mut Vec<engine::acp::AcpAgentConfig>,
+) -> serde_json::Value {
+    let Some(obj) = engine_configs.as_object_mut() else {
+        return engine_configs;
+    };
+    let mut moved_total: Vec<(String, String, usize)> = Vec::new();
+    for (engine_id, cfg) in obj.iter_mut() {
+        let Some(map) = cfg.as_object_mut() else {
+            continue;
+        };
+        if map.is_empty() {
+            continue;
+        }
+        let Some(key) = engine::native_engine_acp_key(engine_id) else {
+            continue; // builtin / unknown: leave untouched
+        };
+        // Land on the existing user entry, or clone the built-in alias entry
+        // so the migrated env has a persistent home.
+        if !agents.iter().any(|a| a.key == key) {
+            if let Some(builtin) = engine::acp::builtin_acp_agents()
+                .into_iter()
+                .find(|a| a.key == key)
+            {
+                agents.push(builtin);
+            } else {
+                continue; // no built-in alias either; keep as legacy fallback
+            }
+        }
+        let Some(agent) = agents.iter_mut().find(|a| a.key == key) else {
+            continue;
+        };
+        // Non-empty values are moved; empty ones ("unset") are just dropped.
+        // Every key of an aliased engine is drained — the map has no role for
+        // ACP-executed engines after migration.
+        let mut count = 0usize;
+        for (k, v) in map.iter() {
+            let val = v.as_str().unwrap_or_default();
+            if !val.is_empty() && !agent.env.contains_key(k) {
+                agent.env.insert(k.clone(), val.to_string());
+                count += 1;
+            }
+        }
+        map.clear();
+        moved_total.push((engine_id.clone(), agent.key.clone(), count));
+    }
+    for (engine_id, agent_key, count) in &moved_total {
+        log::info!(
+            "[migrate] moved {count} env var(s) from engine_model_configs.{engine_id} to ACP agent '{agent_key}'"
+        );
+    }
+    engine_configs
 }
 
 /// One line of `history.jsonl`: a conversation (full, with messages) and the
@@ -667,6 +747,8 @@ pub struct AppState {
     kill_registry: KillRegistry,
     /// Persistent (long-lived) sessions for Claude/CodeBuddy
     sessions: SessionMap,
+    /// Persistent ACP (Agent Client Protocol) sessions for registry agents.
+    acp_sessions: AcpSessionMap,
     /// Builtin engine sessions (in-process agent loop)
     builtin_sessions: BuiltinSessionMap,
     /// Conversations whose current persistent turn was deliberately stopped.
@@ -715,6 +797,10 @@ fn usage_is_empty(u: &engine::UsageInfo) -> bool {
         && u.cost_usd.is_none()
         && u.duration_ms.is_none()
         && u.num_turns.is_none()
+        // ACP `usage_update` carries occupancy via context_tokens (+ the
+        // __ctx__ window hint in the model slot) with all counters at 0 —
+        // that is real signal, not an empty event.
+        && u.context_tokens.is_none()
 }
 
 fn emit_agent_events(
@@ -883,7 +969,11 @@ async fn send_message(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let is_continue = is_continue.unwrap_or(false);
-    let engine_id = match engine.as_deref() {
+    // The BOUND id (what the conversation/UI remembers) stays whatever the
+    // user picked; the EXEC id may differ since native engines now route
+    // through the ACP path (resolve_exec_engine_id). Keeping them distinct
+    // preserves history, the engine badge, and per-engine config lookups.
+    let bound_engine_id = match engine.as_deref() {
         Some(e) => normalize_engine_id(e).map_err(|e| e.to_string())?,
         None => {
             if let Some(existing) =
@@ -895,28 +985,45 @@ async fn send_message(
             }
         }
     };
+    let engine_id = engine::resolve_exec_engine_id(bound_engine_id).map_err(|e| e.to_string())?;
 
-    bind_conversation_engine(&state.conversation_engines, &conversation_id, engine_id).await;
+    bind_conversation_engine(
+        &state.conversation_engines,
+        &conversation_id,
+        bound_engine_id,
+    )
+    .await;
     if let Some(session_id) = session_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        remember_session_id(
-            &state.conversation_engines,
-            &conversation_id,
-            engine_id,
-            session_id,
-        )
-        .await;
+        // Remember under the BOUND id so the stored key matches what the
+        // frontend sent and what resolve_session_id later looks up — but only
+        // when exec follows the same id. For aliased native ids the frontend's
+        // value is a LEGACY-format session id (stream-json transcript id), not
+        // an agent-side ACP id; overwriting the ACP id remembered by a prior
+        // ACP turn would corrupt resume. The ACP turn path re-remembers the
+        // real ACP session id under the bound id after handshake (remembering
+        // keyed by bound id below keeps one source of truth).
+        if bound_engine_id == engine_id {
+            remember_session_id(
+                &state.conversation_engines,
+                &conversation_id,
+                engine_id,
+                session_id,
+            )
+            .await;
+        }
     }
 
     // Store per-conversation model override on the backend.
     set_conversation_model(&state.conversation_engines, &conversation_id, model.clone()).await;
 
     log::info!(
-        "[send_message] start: conv_id={}, engine={}, is_continue={}, model={:?}, msg_len={}",
+        "[send_message] start: conv_id={}, engine={} (exec={}), is_continue={}, model={:?}, msg_len={}",
         conversation_id,
+        bound_engine_id,
         engine_id,
         is_continue,
         model,
@@ -938,10 +1045,12 @@ async fn send_message(
         "agent-turn-started",
         ResponseTurnStarted {
             conversation_id: conversation_id.clone(),
-            engine: engine_id.to_string(),
+            engine: bound_engine_id.to_string(),
             workspace: workspace.clone().unwrap_or_default(),
         },
     );
+    // Resume id for the ACP path. Remembered under the BOUND id (one source
+    // of truth for the conversation), whatever exec id the turn dispatches to.
     let session_id = resolve_session_id(&state.conversation_engines, &conversation_id).await;
     // Absolute paths of image attachments. Claude/CodeBuddy embed these as native
     // image content blocks; Cursor (no stream-json stdin) gets them as @mentions.
@@ -986,10 +1095,7 @@ async fn send_message(
                     return;
                 }
                 let base_url = engine::builtin::get_base_url();
-                let cwd = match workspace_owned.as_deref() {
-                    Some(path) => path,
-                    None => ".",
-                };
+                let cwd = workspace_owned.as_deref().unwrap_or(".");
                 let session = BuiltinSession::new(
                     &conv_id,
                     model_owned.as_deref(),
@@ -1065,6 +1171,321 @@ async fn send_message(
                         ResponseError {
                             conversation_id: conv_id.clone(),
                             error: e.to_string(),
+                        },
+                    );
+                }
+            }
+        });
+
+        return Ok(());
+    }
+
+    // --- ACP (Agent Client Protocol) registry agents ---
+    // Zed-style: one generic persistent-session path drives every registry
+    // agent (launch config in the ACP registry, protocol handled by acp.rs).
+    if engine::acp::is_acp_engine_id(engine_id) {
+        let acp_sessions = state.acp_sessions.clone();
+        let kill_registry = state.kill_registry.clone();
+        let conversation_engines = state.conversation_engines.clone();
+        let app_handle = app.clone();
+        let conv_id = conversation_id.clone();
+        let engine_id_owned = engine_id.to_string();
+        let bound_id_owned = bound_engine_id.to_string();
+        let message_owned = message.clone();
+        let workspace_owned = workspace.clone();
+        // The conversation's persisted model choice becomes the session's
+        // initial config option (UNSTABLE initial-session configOptions) —
+        // selecting a model behaves exactly like the CLI's --model flag. An
+        // agent that doesn't know the id/value ignores it per spec.
+        let initial_model_options: Vec<(String, serde_json::Value)> = model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(|m| {
+                vec![(
+                    "model".to_string(),
+                    serde_json::Value::String(m.to_string()),
+                )]
+            })
+            .unwrap_or_default();
+
+        tokio::spawn(async move {
+            let mut sessions = acp_sessions.lock().await;
+
+            // Reuse the live session, or spawn a fresh one. The ACP session id
+            // is created by the agent on first `session/new`; later turns reuse
+            // the same live process (no load needed). A resume (`is_continue`)
+            // connects to a PREVIOUSLY remembered agent-side id instead.
+            let needs_spawn = match sessions.get_mut(&conv_id) {
+                Some(session) => {
+                    if session.is_alive() {
+                        log::info!("[send_message] reusing ACP session for {}", conv_id);
+                        false
+                    } else {
+                        log::info!("[send_message] ACP session dead, will respawn");
+                        sessions.remove(&conv_id);
+                        true
+                    }
+                }
+                None => true,
+            };
+
+            let prompt_id;
+            if needs_spawn {
+                let config = match engine::acp::agent_by_engine_id(&engine_id_owned) {
+                    Some(c) => c,
+                    None => {
+                        let _ = app_handle.emit(
+                            "agent-error",
+                            ResponseError {
+                                conversation_id: conv_id.clone(),
+                                error: format!("Unknown ACP agent: {engine_id_owned}"),
+                            },
+                        );
+                        return;
+                    }
+                };
+                match AcpSession::spawn(config, workspace_owned.as_deref()).await {
+                    Ok(mut session) => {
+                        // resume: load the remembered agent-side session id.
+                        // An empty id means "nothing usable" — resolve_session_id
+                        // falls back to the conversation id, which is NOT an
+                        // agent-side ACP id, so never feed that to session/load.
+                        let resume_id = if is_continue {
+                            let remembered =
+                                resolve_session_id(&conversation_engines, &conv_id).await;
+                            (remembered != conv_id).then_some(remembered)
+                        } else {
+                            None
+                        };
+                        let mut setup_result = session
+                            .ensure_session(
+                                workspace_owned.as_deref(),
+                                resume_id.as_deref(),
+                                &initial_model_options,
+                            )
+                            .await;
+                        // Legacy-format session id (a conversation created
+                        // before the ACP unification carries a stream-json
+                        // transcript id the ACP agent can't load): fall back to
+                        // a fresh session/new so the turn still proceeds.
+                        if setup_result.is_err() && resume_id.is_some() {
+                            log::warn!(
+                                "[send_message] ACP session/load failed for {conv_id}; retrying with a fresh session"
+                            );
+                            session.acp_session_id = None;
+                            setup_result = session
+                                .ensure_session(
+                                    workspace_owned.as_deref(),
+                                    None,
+                                    &initial_model_options,
+                                )
+                                .await;
+                        }
+                        if let Err(ref e) = setup_result {
+                            let diagnosis = session.stderr_tail();
+                            log::error!(
+                                "[send_message] ACP session setup failed: {} ({})",
+                                e,
+                                diagnosis
+                            );
+                            let _ = app_handle.emit(
+                                "agent-error",
+                                ResponseError {
+                                    conversation_id: conv_id.clone(),
+                                    error: format!(
+                                        "Failed to establish ACP session: {e}. {diagnosis}"
+                                    ),
+                                },
+                            );
+                            return;
+                        }
+                        if let Err(e) = session.send_message(&message_owned, &images_owned).await {
+                            log::error!("[send_message] ACP prompt send failed: {}", e);
+                            let _ = app_handle.emit(
+                                "agent-error",
+                                ResponseError {
+                                    conversation_id: conv_id.clone(),
+                                    error: format!("Failed to send message: {e}"),
+                                },
+                            );
+                            return;
+                        }
+                        if let Some(pid) = session.pid() {
+                            log::info!("[send_message] ACP pid {} for conv {}", pid, conv_id);
+                            kill_registry.lock().await.insert(conv_id.clone(), pid);
+                        }
+                        if let Some(sid) = session.acp_session_id.clone() {
+                            // Remember under the BOUND engine id: the ACP session
+                            // id belongs to the conversation the user sees, and
+                            // for aliased native ids `engine_id_owned`
+                            // ("acp/<key>") must not overwrite the badge binding.
+                            remember_session_id(
+                                &conversation_engines,
+                                &conv_id,
+                                &bound_id_owned,
+                                &sid,
+                            )
+                            .await;
+                        }
+                        prompt_id = session.last_prompt_id();
+                        sessions.insert(conv_id.clone(), session);
+                    }
+                    Err(e) => {
+                        log::error!("[send_message] ACP spawn failed: {}", e);
+                        let _ = app_handle.emit(
+                            "agent-error",
+                            ResponseError {
+                                conversation_id: conv_id.clone(),
+                                error: format!("Failed to start {engine_id_owned}: {e}"),
+                            },
+                        );
+                        return;
+                    }
+                }
+            } else {
+                // Reused session: send the message through the live one.
+                let session = sessions.get_mut(&conv_id).expect("checked above");
+                if let Err(e) = session.send_message(&message_owned, &images_owned).await {
+                    log::error!("[send_message] ACP prompt send failed on reuse: {}", e);
+                    let _ = app_handle.emit(
+                        "agent-error",
+                        ResponseError {
+                            conversation_id: conv_id.clone(),
+                            error: format!("Failed to send message: {e}"),
+                        },
+                    );
+                    return;
+                }
+                prompt_id = session.last_prompt_id();
+            }
+
+            let turn_ctx = sessions.get(&conv_id).map(|s| s.turn_ctx()).unwrap();
+            let activity = sessions.get(&conv_id).map(|s| s.activity()).unwrap();
+            drop(sessions);
+
+            let engines_after = conversation_engines.clone();
+            let conv_id_after = conv_id.clone();
+            // Session-id events during streaming are remembered under the
+            // BOUND id (see the spawn-path comment above).
+            let engine_for_stream = bound_id_owned.clone();
+            let mut last_thinking_ref: u64 = 0;
+
+            // Clear any "stopped" marker left over from a PRIOR turn.
+            {
+                let stopped = state_stopped_ref(&app_handle);
+                stopped.lock().await.remove(&conv_id);
+            }
+
+            let stopped_set = state_stopped_ref(&app_handle);
+            let stopped_for_read = stopped_set.clone();
+            let conv_for_stop = conv_id.clone();
+            let got_output = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            // Build a temporary read-only view for read_acp_turn: it needs
+            // stdout + pending map, not the whole session (which is owned by
+            // the sessions map we just released).
+            let read_result = {
+                let session_ref = turn_ctx;
+                let app_inner = app_handle.clone();
+                let conv_inner = conv_id.clone();
+                let engines_inner = engines_after.clone();
+                let eng_inner = engine_for_stream.clone();
+                let got = Arc::clone(&got_output);
+                let outcome = engine::acp::read_acp_turn(
+                    &session_ref,
+                    prompt_id,
+                    |events: &[NormalizedEvent]| {
+                        got.store(true, std::sync::atomic::Ordering::Relaxed);
+                        for evt in events {
+                            if let Some(sid) = evt.session_id() {
+                                let engines = engines_inner.clone();
+                                let conv = conv_inner.clone();
+                                let eng = eng_inner.clone();
+                                tokio::spawn(async move {
+                                    remember_session_id(&engines, &conv, &eng, &sid).await;
+                                });
+                            }
+                        }
+                        emit_agent_events(&app_inner, &conv_inner, events, &mut last_thinking_ref);
+                    },
+                    move || {
+                        stopped_for_read
+                            .try_lock()
+                            .map(|g| g.contains(&conv_for_stop))
+                            .unwrap_or(false)
+                    },
+                    move || {
+                        if let Ok(mut t) = activity.lock() {
+                            *t = std::time::Instant::now();
+                        }
+                    },
+                )
+                .await;
+                outcome
+            };
+
+            kill_registry.lock().await.remove(&conv_id_after);
+
+            match read_result {
+                TurnOutcome::Done(full_text) => {
+                    log::info!("[send_message] ACP done, total_len={}", full_text.len());
+                    let _ = app_handle.emit(
+                        "agent-done",
+                        ResponseDone {
+                            conversation_id: conv_id_after,
+                            full_text,
+                        },
+                    );
+                }
+                TurnOutcome::Errored(_) => {
+                    log::info!(
+                        "[send_message] ACP turn ended with an error event for conv {}",
+                        conv_id_after
+                    );
+                }
+                TurnOutcome::Stopped { .. } => {
+                    let _ = app_handle.emit(
+                        "agent-stopped",
+                        ResponseStopped {
+                            conversation_id: conv_id_after.clone(),
+                        },
+                    );
+                    log::info!(
+                        "[send_message] ACP turn finalized as stopped for conv {}",
+                        conv_id_after
+                    );
+                }
+                TurnOutcome::Crashed { reason, .. } => {
+                    // Tear down the dead session (a LIVE entry here is a
+                    // different session that a follow-up already respawned).
+                    {
+                        let sessions_map = state_acp_sessions_ref(&app_handle);
+                        let mut sessions = sessions_map.lock().await;
+                        if let Some(s) = sessions.get_mut(&conv_id_after) {
+                            if !s.is_alive() {
+                                s.kill().await;
+                                sessions.remove(&conv_id_after);
+                            }
+                        }
+                    }
+                    // A user stop manifests as EOF here too — drain the marker.
+                    let was_stopped = stopped_set.lock().await.remove(&conv_id_after);
+                    if was_stopped {
+                        let _ = app_handle.emit(
+                            "agent-stopped",
+                            ResponseStopped {
+                                conversation_id: conv_id_after,
+                            },
+                        );
+                        return;
+                    }
+                    log::error!("[send_message] ACP stream failed: {}", reason);
+                    let _ = app_handle.emit(
+                        "agent-error",
+                        ResponseError {
+                            conversation_id: conv_id_after,
+                            error: reason,
                         },
                     );
                 }
@@ -1663,6 +2084,11 @@ fn state_sessions_ref(app: &AppHandle) -> SessionMap {
 /// reason as `state_sessions_ref` (spawned tasks have no `state` parameter).
 fn state_stopped_ref(app: &AppHandle) -> StoppedSet {
     app.state::<AppState>().stopped_convs.clone()
+}
+
+/// Helper to get the ACP session map from the AppHandle (same rationale).
+fn state_acp_sessions_ref(app: &AppHandle) -> AcpSessionMap {
+    app.state::<AppState>().acp_sessions.clone()
 }
 
 #[tauri::command]
@@ -4693,9 +5119,7 @@ fn upsert_application_registry(
     let mut registry = load_application_registry(app)?;
     registry.apps.retain(|a| a.id != entry.id);
     registry.apps.push(entry.clone());
-    registry
-        .apps
-        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    registry.apps.sort_by_key(|a| a.name.to_lowercase());
     save_application_registry(app, &registry)?;
     Ok(entry)
 }
@@ -4978,6 +5402,14 @@ fn resolve_application_action(
     Err("Application has no action for chat".to_string())
 }
 
+/// Everything needed to run an action that is derived from locating the
+/// installed application (as opposed to the caller-supplied run parameters).
+struct ApplicationLoadContext {
+    install_path: PathBuf,
+    manifest: PixieApplicationManifest,
+    source_commit: Option<String>,
+}
+
 async fn run_application_action(
     app: AppHandle,
     id: String,
@@ -4985,12 +5417,10 @@ async fn run_application_action(
     inputs: serde_json::Value,
     engine: Option<String>,
     model: Option<String>,
-    install_path: PathBuf,
-    manifest: PixieApplicationManifest,
-    source_commit: Option<String>,
+    load: ApplicationLoadContext,
 ) -> Result<PixieApplicationRunRecord, String> {
     let id = sanitize_application_id(&id)?;
-    let action = resolve_application_action(&manifest, &action_id)?;
+    let action = resolve_application_action(&load.manifest, &action_id)?;
     let mut input_obj = inputs
         .as_object()
         .ok_or_else(|| "Application inputs must be an object".to_string())?
@@ -4999,7 +5429,8 @@ async fn run_application_action(
         satisfy_chat_required_inputs(&action, &mut input_obj);
     }
     for input_id in &action.inputs {
-        let field = manifest
+        let field = load
+            .manifest
             .inputs
             .iter()
             .find(|input| &input.id == input_id)
@@ -5022,26 +5453,37 @@ async fn run_application_action(
         }
     }
 
-    let agent = manifest
+    let agent = load
+        .manifest
         .agent
         .as_deref()
         .ok_or_else(|| "Application agent is required".to_string())?;
-    let agent_path = validate_application_relative_file(&install_path, agent, "agent")?;
+    let agent_path = validate_application_relative_file(&load.install_path, agent, "agent")?;
     let agent_instructions = read_regular_file_no_symlink(&agent_path, "agent")?;
     let run_id = uuid::Uuid::new_v4().to_string();
     let engine_id = normalize_engine_id(engine.as_deref().unwrap_or("builtin"))
         .map_err(|e| e.to_string())?
         .to_string();
+    // Native ids are aliases now: execution goes through the ACP registry.
+    let exec_engine_id = engine::resolve_exec_engine_id(&engine_id)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    if engine_id != exec_engine_id {
+        log::warn!(
+            "[applications] engine {engine_id} has no read-only headless mode through ACP; \
+             running with default permissions confined to the app data directory"
+        );
+    }
     let model_override = model.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let data_path =
         ensure_application_data_child_dir(&application_data_root(&app)?, &id, "storage")?;
     let prompt = build_application_run_prompt(
-        &manifest,
+        &load.manifest,
         &action,
         &agent_instructions,
         &serde_json::Value::Object(input_obj.clone()),
         &data_path,
-        &install_path,
+        &load.install_path,
     )?;
     let started = Utc::now();
     // Use-mode runs are read-only: the agent works from the app's data
@@ -5109,6 +5551,55 @@ async fn run_application_action(
                 Err(e) => Err(e.to_string()),
             }
         }
+    } else if engine::acp::is_acp_engine_id(&exec_engine_id) {
+        // Aliased native id or direct acp/<key>: run through the shared ACP
+        // session path. Read-only enforcement isn't available over ACP — the
+        // warning above covers it; the cwd is the app data directory.
+        let app_for_stream = app.clone();
+        let run_id_for_stream = run_id.clone();
+        let mut stream_text = String::new();
+        match run_acp_headless_turn(
+            &app,
+            &exec_engine_id,
+            &format!("application:{run_id}"),
+            &prompt,
+            Some(data_path_string.as_str()),
+            None,
+            |events| {
+                for evt in events {
+                    if let NormalizedEvent::TextDelta { text, .. } = evt {
+                        stream_text.push_str(text);
+                    }
+                }
+                let _ = app_for_stream.emit(
+                    "application-run-event",
+                    serde_json::json!({
+                        "run_id": run_id_for_stream,
+                        "events": events.iter().map(|evt| match evt {
+                            NormalizedEvent::TextDelta { text, event_type } => serde_json::json!({
+                                "kind": "text", "text": text, "event_type": event_type,
+                            }),
+                            NormalizedEvent::ThinkingText { content } => serde_json::json!({
+                                "kind": "thinking", "text": content,
+                            }),
+                            NormalizedEvent::Tool(tool) => serde_json::json!({
+                                "kind": "tool", "id": tool.id,
+                            }),
+                            NormalizedEvent::Error { message } => serde_json::json!({
+                                "kind": "error", "message": message,
+                            }),
+                            _ => serde_json::json!({"kind": "other"}),
+                        }).collect::<Vec<_>>(),
+                    }),
+                );
+            },
+        )
+        .await
+        {
+            AcpHeadlessOutcome::Done(text) => Ok(text),
+            AcpHeadlessOutcome::Errored(msg) => Err(msg),
+            AcpHeadlessOutcome::Stopped => Err("Application agent turn was cancelled".to_string()),
+        }
     } else {
         let child = spawn_headless(
             &engine_id,
@@ -5131,7 +5622,7 @@ async fn run_application_action(
         Err(message) => ("error".to_string(), String::new(), Some(message)),
     };
     let outputs = if status == "ok" {
-        let parsed_outputs = parse_application_outputs(&raw_result, &action, &manifest);
+        let parsed_outputs = parse_application_outputs(&raw_result, &action, &load.manifest);
         status = parsed_outputs.status;
         error = parsed_outputs.error;
         parsed_outputs.outputs
@@ -5141,9 +5632,9 @@ async fn run_application_action(
     let record = PixieApplicationRunRecord {
         id: run_id,
         app_id: id,
-        app_name: manifest.name,
-        app_version: manifest.version,
-        source_commit,
+        app_name: load.manifest.name,
+        app_version: load.manifest.version,
+        source_commit: load.source_commit,
         action_id: action.id,
         engine: engine_id,
         model: model_override.map(str::to_string),
@@ -5187,9 +5678,11 @@ async fn application_run(
         inputs,
         engine,
         model,
-        install_path,
-        manifest,
-        source_commit,
+        ApplicationLoadContext {
+            install_path,
+            manifest,
+            source_commit,
+        },
     )
     .await
 }
@@ -5215,9 +5708,11 @@ async fn application_studio_run(
         inputs,
         engine,
         model,
-        app_dir,
-        manifest,
-        source_commit,
+        ApplicationLoadContext {
+            install_path: app_dir,
+            manifest,
+            source_commit,
+        },
     )
     .await
 }
@@ -5340,6 +5835,47 @@ async fn update_conversation_model(
         model
     );
 
+    // ACP path: apply the model on the LIVE session via
+    // `session/set_config_option` — the ACP-native equivalent of typing /model
+    // in the CLI. No kill/respawn: ACP sessions survive model switches. A
+    // session that isn't up yet just persists the choice; the next
+    // send_message applies it as the initial config option. If the live
+    // application fails (agent rejected the value), keep the persisted choice
+    // and let the respawn path retry, but surface the error.
+    let exec_engine = engine::resolve_exec_engine_id(engine_id).unwrap_or(engine_id);
+    if engine::acp::is_acp_engine_id(exec_engine) {
+        if let Some(value) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            let mut sessions = state.acp_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&conversation_id) {
+                if session.is_alive() && session.acp_session_id.is_some() {
+                    let wanted = serde_json::Value::String(value.to_string());
+                    // Skip the round-trip when the agent already reports this
+                    // value as current.
+                    let already = session
+                        .model_option()
+                        .and_then(|m| m.current().cloned())
+                        .map(|c| engine::acp::value_to_config_string(&c) == value)
+                        .unwrap_or(false);
+                    if !already {
+                        session
+                            .set_config_option("model", &wanted)
+                            .await
+                            .map_err(|e| {
+                                log::warn!(
+                                    "[set_conversation_model] live set_config_option failed for {conversation_id}: {e}"
+                                );
+                                e.to_string()
+                            })?;
+                        log::info!(
+                            "[set_conversation_model] live model switch applied for conv {conversation_id}: {value}"
+                        );
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
     // Kill any existing persistent session so the next send_message will
     // respawn with the new model. Only Claude/CodeBuddy use persistent
     // sessions; Cursor spawns per-message so no cleanup needed.
@@ -5442,6 +5978,33 @@ async fn stop_generation(
         }
     }
 
+    // ACP agents: cancel the in-flight prompt turn via session/cancel, then
+    // answer any pending permission requests with `cancelled` (spec-required).
+    {
+        let acp_sessions = state.acp_sessions.clone();
+        let mut sessions = acp_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&conversation_id) {
+            log::info!(
+                "[stop_generation] cancelling ACP turn for conv {}",
+                conversation_id
+            );
+            // Mark the turn stopped BEFORE cancelling so the reader's EOF/crash
+            // path finalizes silently (same contract as the persistent path).
+            state
+                .stopped_convs
+                .lock()
+                .await
+                .insert(conversation_id.clone());
+            if let Err(e) = session.cancel().await {
+                log::warn!("[stop_generation] ACP session/cancel failed: {}", e);
+            }
+            session.cancel_pending_permissions().await;
+            // The turn ends via the cancelled stopReason; kill_registry entry
+            // is dropped by the turn task when the response arrives.
+            return Ok(());
+        }
+    }
+
     // Legacy path (Cursor / fallback).
     let pid = {
         let registry = state.kill_registry.lock().await;
@@ -5487,6 +6050,22 @@ async fn respond_permission(
     message: Option<String>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // ACP agents: answer the oldest pending session/request_permission with
+    // the stored option id. (The frontend passes only the conversation id.)
+    let acp_sessions = state_acp_sessions_ref(&app);
+    if let Some(session) = acp_sessions.lock().await.get_mut(&conversation_id) {
+        if !session.is_alive() {
+            return Err("Session is no longer alive".to_string());
+        }
+        let request_id = session
+            .first_pending_permission()
+            .ok_or_else(|| "No pending ACP permission request".to_string())?;
+        return session
+            .respond_permission(request_id, allow)
+            .await
+            .map_err(|e| format!("Failed to send ACP permission response: {}", e));
+    }
+
     let sessions = state_sessions_ref(&app);
     let mut sessions = sessions.lock().await;
 
@@ -5596,7 +6175,9 @@ async fn compact_session(
 /// Kill the conversation's live session and rebind it to a fresh external
 /// session id, so the next message starts with empty context. Returns the new
 /// session id (claude/codebuddy) or None (cursor/codex re-establish their own
-/// binding on the next spawn via SessionEstablished).
+/// binding on the next spawn via SessionEstablished). Covers both the native
+/// persistent-session map and the ACP session map (native engines aliased
+/// through the registry live there).
 #[tauri::command]
 async fn reset_session(
     app: AppHandle,
@@ -5609,7 +6190,12 @@ async fn reset_session(
 
     // Mirror update_conversation_model's teardown: mark any in-flight turn
     // stopped so it finalizes silently on the kill-induced EOF.
-    let had_session = state.sessions.lock().await.contains_key(&conversation_id);
+    let had_session = state.sessions.lock().await.contains_key(&conversation_id)
+        || state
+            .acp_sessions
+            .lock()
+            .await
+            .contains_key(&conversation_id);
     if had_session {
         let _ = app.emit(
             "agent-stopped",
@@ -5634,7 +6220,33 @@ async fn reset_session(
             sessions.remove(&conversation_id);
         }
     }
+    {
+        // ACP sessions (registry agents + aliased native ids): kill the
+        // process and drop the entry so the next send_message spawns fresh.
+        // The remembered agent-side ACP session id is cleared too — resuming
+        // it would restore the very context the user asked to discard.
+        let mut acp_sessions = state.acp_sessions.lock().await;
+        if let Some(session) = acp_sessions.get_mut(&conversation_id) {
+            log::info!(
+                "[reset_session] killing ACP session for conv {}",
+                conversation_id
+            );
+            state
+                .stopped_convs
+                .lock()
+                .await
+                .insert(conversation_id.clone());
+            session.kill().await;
+            acp_sessions.remove(&conversation_id);
+        }
+    }
     state.kill_registry.lock().await.remove(&conversation_id);
+    if engine::acp::is_acp_engine_id(
+        engine::resolve_exec_engine_id(&engine_id).unwrap_or(&engine_id),
+    ) {
+        clear_session_id(&state.conversation_engines, &conversation_id).await;
+        return Ok(None);
+    }
 
     if engine_id == "claude" || engine_id == "codebuddy" {
         let new_id = uuid::Uuid::new_v4().to_string();
@@ -5658,12 +6270,24 @@ async fn reset_session(
 }
 
 /// Whether a live persistent session exists for the conversation (drives the
-/// compact button's enabled state in the UI).
+/// compact button's enabled state in the UI). Checks both the native
+/// persistent-session map and the ACP session map (native engines aliased
+/// through the registry live there).
 #[tauri::command]
 async fn has_live_session(app: AppHandle, conversation_id: String) -> Result<bool, String> {
     let sessions = state_sessions_ref(&app);
     let mut sessions = sessions.lock().await;
-    Ok(sessions
+    if sessions
+        .get_mut(&conversation_id)
+        .map(|s| s.is_alive())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+    drop(sessions);
+    let acp_sessions = state_acp_sessions_ref(&app);
+    let mut acp_sessions = acp_sessions.lock().await;
+    Ok(acp_sessions
         .get_mut(&conversation_id)
         .map(|s| s.is_alive())
         .unwrap_or(false))
@@ -5897,9 +6521,23 @@ async fn load_app_config(app: AppHandle) -> Result<Option<AppConfig>, String> {
 }
 
 /// Persist the full app config to `config.json` atomically.
+///
+/// `acp_agents` is backend-owned (written only by `save_acp_agents`, whose
+/// payload always round-trips it), so a generic save that arrives without the
+/// field — e.g. every frontend save, whose wire schema doesn't carry it — must
+/// inherit the previously persisted value instead of clobbering it with `None`.
 #[tauri::command]
 async fn save_app_config(config: AppConfig, app: AppHandle) -> Result<(), String> {
     let path = local_data_file_path(&app, APP_CONFIG_FILE, "config")?;
+    let mut config = config;
+    if config.acp_agents.is_none() {
+        if let Some(persisted) = read_local_data_file_if_exists(&app, APP_CONFIG_FILE, "config")?
+            .and_then(|c| serde_json::from_str::<AppConfig>(&c).ok())
+            .and_then(|c| c.acp_agents)
+        {
+            config.acp_agents = Some(persisted);
+        }
+    }
     let json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {e}"))?;
     atomic_write(&path, &json)
@@ -5909,6 +6547,10 @@ async fn save_app_config(config: AppConfig, app: AppHandle) -> Result<(), String
 /// Returns immediately after spawning a background task; errors are logged,
 /// never surfaced to the caller.
 #[tauri::command]
+// Argument count is fixed by the IPC wire format shared with the frontend
+// invoke() call sites (App.tsx / useChat.ts); folding them into a struct
+// would change the command's serialized shape.
+#[allow(clippy::too_many_arguments)]
 async fn summarize_conversation(
     _app: AppHandle,
     conversation_id: String,
@@ -6412,6 +7054,71 @@ async fn check_engine_available(engine: String) -> Result<EngineStatusResponse, 
     Ok(engine::check_engine(&engine).await.into())
 }
 
+#[tauri::command]
+async fn list_acp_agents() -> Result<Vec<engine::acp::AcpAgentConfig>, String> {
+    Ok(engine::acp::registry_agents())
+}
+
+/// Fetch the official ACP registry (cdn.agentclientprotocol.com, hourly
+/// updated, CI-verified) so Settings can offer one-click enablement of
+/// npx/uvx-distributed agents instead of manual command entry.
+#[tauri::command]
+async fn list_acp_catalog() -> Result<Vec<engine::acp::AcpCatalogEntry>, String> {
+    engine::acp::fetch_catalog()
+        .await
+        .map_err(|e| format!("Failed to fetch ACP catalog: {e:#}"))
+}
+
+/// Enable a catalog agent: install it into the user registry as a launch
+/// config (npx/uvx resolve the binary at spawn time) and persist.
+#[tauri::command]
+async fn enable_acp_catalog_agent(
+    entry: engine::acp::AcpCatalogEntry,
+    env: Option<std::collections::HashMap<String, String>>,
+    app: AppHandle,
+) -> Result<Vec<engine::acp::AcpAgentConfig>, String> {
+    if !entry.launchable {
+        return Err(format!(
+            "Agent '{}' is distributed as a binary — install it from the agent's own docs first, then add it manually.",
+            entry.name
+        ));
+    }
+    let mut agents = load_app_config(app.clone())
+        .await?
+        .and_then(|c| c.acp_agents)
+        .and_then(|v| serde_json::from_value::<Vec<engine::acp::AcpAgentConfig>>(v).ok())
+        .unwrap_or_default();
+    if agents.iter().any(|a| a.key == entry.id) {
+        return Err(format!("Agent '{}' is already enabled", entry.id));
+    }
+    agents.push(engine::acp::AcpAgentConfig {
+        key: entry.id,
+        label: entry.name,
+        command: entry.command,
+        args: entry.args,
+        env: env.unwrap_or_default(),
+        probe_message: "ping".to_string(),
+    });
+    save_acp_agents(agents, app).await
+}
+
+/// Replace the user-authored portion of the ACP registry (settings UI) and
+/// persist it to config.json. Returns the merged registry.
+#[tauri::command]
+async fn save_acp_agents(
+    agents: Vec<engine::acp::AcpAgentConfig>,
+    app: AppHandle,
+) -> Result<Vec<engine::acp::AcpAgentConfig>, String> {
+    // Persist the user list (registry_agents() also contains built-ins; the
+    // user blob is what round-trips — load_registry re-adds built-ins).
+    let user_blob = serde_json::to_value(&agents).map_err(|e| e.to_string())?;
+    engine::acp::load_registry(agents);
+    let mut cfg = load_app_config(app.clone()).await?.unwrap_or_default();
+    cfg.acp_agents = Some(user_blob);
+    save_app_config(cfg, app.clone()).await?;
+    Ok(engine::acp::registry_agents())
+}
+
 /// Probe one engine's readiness by sending a tiny "ping" turn and classifying
 /// the outcome. Cheap-checks the binary first; if absent, returns immediately
 /// with `available=false` (no probe). Otherwise this is a real, billable model
@@ -6759,6 +7466,201 @@ fn basename(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Outcome of a headless ACP turn (scheduled task / loop iteration).
+enum AcpHeadlessOutcome {
+    Done(String),
+    Stopped,
+    Errored(String),
+}
+
+/// Run one headless ACP turn for a conversation id, reusing the same session
+/// map as interactive `send_message` (so a live session keeps its process and
+/// a dead one respawns with `session/load` when the agent supports it).
+///
+/// Permissions: there is no UI in the headless path, so requests are answered
+/// automatically with the first allow-ish option (`allow_once` semantics —
+/// scoped to this one tool call, never persisted as allow_always). This
+/// matches the pre-existing security posture: headless engines run with
+/// permissions bypassed inside the task's workspace, and the ACP agent is
+/// additionally confined by the session cwd.
+///
+/// `on_events` receives every normalized event live (loop iterations stream
+/// into their conversation; scheduled tasks pass a no-op).
+async fn run_acp_headless_turn<F>(
+    app: &AppHandle,
+    engine_id: &str,
+    conversation_id: &str,
+    prompt: &str,
+    workspace: Option<&str>,
+    model: Option<&str>,
+    mut on_events: F,
+) -> AcpHeadlessOutcome
+where
+    F: FnMut(&[NormalizedEvent]),
+{
+    // The conversation's persisted model choice becomes the session's initial
+    // config option — same contract as the interactive path (behaves like the
+    // CLI's --model flag).
+    let initial_model_options: Vec<(String, serde_json::Value)> = model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(|m| {
+            vec![(
+                "model".to_string(),
+                serde_json::Value::String(m.to_string()),
+            )]
+        })
+        .unwrap_or_default();
+    let acp_sessions = state_acp_sessions_ref(app);
+    let conversation_engines = app.state::<AppState>().conversation_engines.clone();
+    let kill_registry = app.state::<AppState>().kill_registry.clone();
+
+    // Serialize session setup with any concurrent turn on the same map, then
+    // release before the (long) read, mirroring send_message's locking shape.
+    let setup = {
+        let mut sessions = acp_sessions.lock().await;
+        let needs_spawn = match sessions.get_mut(conversation_id) {
+            Some(session) => {
+                if session.is_alive() {
+                    false
+                } else {
+                    sessions.remove(conversation_id);
+                    true
+                }
+            }
+            None => true,
+        };
+
+        if needs_spawn {
+            let config = match engine::acp::agent_by_engine_id(engine_id) {
+                Some(c) => c,
+                None => {
+                    return AcpHeadlessOutcome::Errored(format!("Unknown ACP agent: {engine_id}"));
+                }
+            };
+            match AcpSession::spawn(config, workspace).await {
+                Ok(mut session) => {
+                    // Resume a previously remembered agent-side id when there
+                    // is one (loop continuity). Never feed the bare
+                    // conversation id to session/load — only real ACP ids.
+                    let remembered =
+                        resolve_session_id(&conversation_engines, conversation_id).await;
+                    let resume_id = (remembered != conversation_id).then_some(remembered);
+                    let mut setup_result = session
+                        .ensure_session(workspace, resume_id.as_deref(), &initial_model_options)
+                        .await;
+                    if setup_result.is_err() && resume_id.is_some() {
+                        // Legacy-format id: start fresh (same fallback as the
+                        // interactive path).
+                        session.acp_session_id = None;
+                        setup_result = session
+                            .ensure_session(workspace, None, &initial_model_options)
+                            .await;
+                    }
+                    if let Err(e) = setup_result {
+                        let diagnosis = session.stderr_tail();
+                        return AcpHeadlessOutcome::Errored(format!(
+                            "Failed to establish ACP session: {e}. {diagnosis}"
+                        ));
+                    }
+                    if let Err(e) = session.send_message(prompt, &[]).await {
+                        return AcpHeadlessOutcome::Errored(format!("Failed to send message: {e}"));
+                    }
+                    if let Some(pid) = session.pid() {
+                        kill_registry
+                            .lock()
+                            .await
+                            .insert(conversation_id.to_string(), pid);
+                    }
+                    if let Some(sid) = session.acp_session_id.clone() {
+                        remember_session_id(
+                            &conversation_engines,
+                            conversation_id,
+                            engine_id,
+                            &sid,
+                        )
+                        .await;
+                    }
+                    sessions.insert(conversation_id.to_string(), session);
+                }
+                Err(e) => {
+                    return AcpHeadlessOutcome::Errored(format!(
+                        "Failed to start {engine_id}: {e}"
+                    ));
+                }
+            }
+        } else if let Err(e) = sessions
+            .get_mut(conversation_id)
+            .expect("checked above")
+            .send_message(prompt, &[])
+            .await
+        {
+            return AcpHeadlessOutcome::Errored(format!("Failed to send message: {e}"));
+        }
+
+        let session = sessions.get(conversation_id).expect("present");
+        (
+            session.turn_ctx(),
+            session.last_prompt_id(),
+            session.activity(),
+        )
+    };
+
+    let prompt_id = setup.1;
+    let activity = setup.2;
+
+    // Auto-allow: answer permission requests with the first allow-ish option
+    // the moment they arrive, before forwarding the event (the forwarded
+    // PermissionRequest is informational for the transcript; answering here
+    // keeps the turn unattended).
+    let ctx = setup.0;
+    let ctx_for_events = ctx.clone();
+    let outcome = engine::acp::read_acp_turn(
+        &ctx,
+        prompt_id,
+        |events: &[NormalizedEvent]| {
+            // Auto-allow every permission request in this batch.
+            for evt in events {
+                if let NormalizedEvent::PermissionRequest { id, .. } = evt {
+                    if let Ok(req_id) = id.parse::<i64>() {
+                        let ctx = ctx_for_events.clone();
+                        tokio::spawn(async move {
+                            ctx.respond_allow(req_id).await;
+                        });
+                    }
+                }
+            }
+            on_events(events);
+        },
+        || false,
+        || {
+            if let Ok(mut t) = activity.lock() {
+                *t = std::time::Instant::now();
+            }
+        },
+    )
+    .await;
+
+    kill_registry.lock().await.remove(conversation_id);
+
+    match outcome {
+        TurnOutcome::Done(text) => AcpHeadlessOutcome::Done(text),
+        TurnOutcome::Stopped { .. } => AcpHeadlessOutcome::Stopped,
+        TurnOutcome::Errored(msg) => AcpHeadlessOutcome::Errored(msg),
+        TurnOutcome::Crashed { reason, .. } => {
+            // Tear down the dead session so the next turn respawns fresh.
+            let mut sessions = acp_sessions.lock().await;
+            if let Some(s) = sessions.get_mut(conversation_id) {
+                if !s.is_alive() {
+                    s.kill().await;
+                    sessions.remove(conversation_id);
+                }
+            }
+            AcpHeadlessOutcome::Errored(reason)
+        }
+    }
+}
+
 /// Run a task's prompt against its workspace headlessly: fire a notification on start,
 /// spawn a standalone ClaudeProcess (isolated from interactive chat state), read the
 /// full result, record it, fire a completion notification, and emit a `task-run-complete`
@@ -7000,6 +7902,113 @@ async fn run_task_headless(app: AppHandle, mut task: ScheduledTask, conversation
 
     if task.engine == "builtin" {
         run_builtin_task_headless(app, task, conversation_id, started, title).await;
+        return;
+    }
+
+    // ACP path: native engines are aliased through the ACP registry, and
+    // acp/* ids never had a spawn_headless path — both route here.
+    let exec_engine = engine::resolve_exec_engine_id(&task.engine).unwrap_or(task.engine.as_str());
+    if engine::acp::is_acp_engine_id(exec_engine) {
+        let engine_id_owned = exec_engine.to_string();
+        let conv = conversation_id.clone();
+        let workspace_owned = task.workspace.clone();
+        let prompt_owned = task.prompt.clone();
+        let app_for_run = app.clone();
+        let result = run_acp_headless_turn(
+            &app_for_run,
+            &engine_id_owned,
+            &conv,
+            &prompt_owned,
+            Some(workspace_owned.as_str()),
+            None, // ScheduledTask carries no per-task model choice yet
+            |_| {},
+        )
+        .await;
+        let finished = Utc::now();
+        match result {
+            AcpHeadlessOutcome::Done(full_text) => {
+                let preview = if full_text.is_empty() {
+                    "Completed (no output).".to_string()
+                } else {
+                    full_text.chars().take(160).collect::<String>()
+                };
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(&title)
+                    .body(preview)
+                    .show();
+                record_task_run(
+                    &app,
+                    TaskRunRecord {
+                        id: conversation_id.clone(),
+                        task_id: task.id.clone(),
+                        task_name: task.name.clone(),
+                        workspace: task.workspace.clone(),
+                        prompt: task.prompt.clone(),
+                        result: full_text,
+                        status: "ok".into(),
+                        started_at: started.to_rfc3339(),
+                        finished_at: finished.to_rfc3339(),
+                    },
+                );
+                let _ = app.emit(
+                    "task-run-complete",
+                    serde_json::json!({ "task_id": task.id, "conversation_id": conversation_id, "status": "ok" }),
+                );
+            }
+            AcpHeadlessOutcome::Stopped => {
+                record_task_run(
+                    &app,
+                    TaskRunRecord {
+                        id: conversation_id.clone(),
+                        task_id: task.id.clone(),
+                        task_name: task.name.clone(),
+                        workspace: task.workspace.clone(),
+                        prompt: task.prompt.clone(),
+                        result: String::new(),
+                        status: "error".into(),
+                        started_at: started.to_rfc3339(),
+                        finished_at: finished.to_rfc3339(),
+                    },
+                );
+                let _ = app.emit(
+                    "task-run-complete",
+                    serde_json::json!({ "task_id": task.id, "conversation_id": conversation_id, "status": "error" }),
+                );
+            }
+            AcpHeadlessOutcome::Errored(message) => {
+                log::error!(
+                    "[scheduled] ACP turn failed for '{}': {}",
+                    task.name,
+                    message
+                );
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(&title)
+                    .body(format!("Error: {}", message))
+                    .show();
+                record_task_run(
+                    &app,
+                    TaskRunRecord {
+                        id: conversation_id.clone(),
+                        task_id: task.id.clone(),
+                        task_name: task.name.clone(),
+                        workspace: task.workspace.clone(),
+                        prompt: task.prompt.clone(),
+                        result: String::new(),
+                        status: "error".into(),
+                        started_at: started.to_rfc3339(),
+                        finished_at: finished.to_rfc3339(),
+                    },
+                );
+                let _ = app.emit(
+                    "task-run-complete",
+                    serde_json::json!({ "task_id": task.id, "conversation_id": conversation_id, "status": "error" }),
+                );
+            }
+        }
         return;
     }
 
@@ -7670,7 +8679,7 @@ fn extract_changes_summary(result: &str) -> Option<String> {
         let unique: Vec<_> = files_edited.iter().map(|s| s.as_str()).collect();
         let unique: HashSet<_> = unique.into_iter().collect();
         if unique.len() == 1 {
-            summary_parts.push(format!("Edited 1 file"));
+            summary_parts.push("Edited 1 file".to_string());
         } else {
             summary_parts.push(format!("Edited {} files", unique.len()));
         }
@@ -7679,7 +8688,7 @@ fn extract_changes_summary(result: &str) -> Option<String> {
         let unique: Vec<_> = files_created.iter().map(|s| s.as_str()).collect();
         let unique: HashSet<_> = unique.into_iter().collect();
         if unique.len() == 1 {
-            summary_parts.push(format!("Created 1 file"));
+            summary_parts.push("Created 1 file".to_string());
         } else {
             summary_parts.push(format!("Created {} files", unique.len()));
         }
@@ -7703,10 +8712,10 @@ fn extract_file_path(line: &str) -> Option<String> {
         let after = line[idx + 1..].trim();
         if !after.is_empty() && (after.contains("/") || after.contains("\\")) {
             Some(after.to_string())
-        } else if let Some(rest) = line.split("file:").nth(1) {
-            Some(rest.trim().to_string())
         } else {
-            None
+            line.split("file:")
+                .nth(1)
+                .map(|rest| rest.trim().to_string())
         }
     } else {
         None
@@ -7717,10 +8726,10 @@ fn extract_file_path(line: &str) -> Option<String> {
 fn extract_command(line: &str) -> Option<String> {
     if let Some(idx) = line.find("$") {
         Some(line[idx + 1..].trim().to_string())
-    } else if let Some(rest) = line.split("Command:").nth(1) {
-        Some(rest.trim().to_string())
     } else {
-        None
+        line.split("Command:")
+            .nth(1)
+            .map(|rest| rest.trim().to_string())
     }
 }
 
@@ -7764,6 +8773,33 @@ async fn cancel_active_loop_iteration(app: &AppHandle, task_id: &str) {
         );
         token.cancel();
         return;
+    }
+
+    // ACP iteration: cancel through the session (session/cancel + discharge
+    // pending permissions), mirroring stop_generation's ACP branch. Marking
+    // the conversation stopped FIRST makes the reader finalize silently; the
+    // headless runner maps the resulting Stopped outcome to a failed
+    // iteration without emitting a stray agent-error.
+    {
+        let acp_sessions = state_acp_sessions_ref(app);
+        let mut sessions = acp_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&conversation_id) {
+            log::info!(
+                "[loop] cancelling ACP iteration for task {} conv {}",
+                task_id,
+                conversation_id
+            );
+            app.state::<AppState>()
+                .stopped_convs
+                .lock()
+                .await
+                .insert(conversation_id.clone());
+            if let Err(e) = session.cancel().await {
+                log::warn!("[loop] ACP session/cancel failed: {}", e);
+            }
+            session.cancel_pending_permissions().await;
+            return;
+        }
     }
 
     let state = app.state::<AppState>();
@@ -8020,6 +9056,123 @@ async fn run_loop_iteration(
     if engine_id == "builtin" {
         return run_builtin_loop_iteration(app, task, &workspace, conversation_id, prompt, started)
             .await;
+    }
+
+    // ACP path: native engines are aliased through the ACP registry, and
+    // acp/* ids never had a spawn_headless path — both route here. Events
+    // stream live into the iteration's conversation, like the child-process
+    // path below.
+    let exec_engine = engine::resolve_exec_engine_id(engine_id).unwrap_or(engine_id);
+    if engine::acp::is_acp_engine_id(exec_engine) {
+        let engine_id_owned = exec_engine.to_string();
+        let app_for_stream = app.clone();
+        let conv_id_for_stream = conversation_id.clone();
+        let mut stream_had_error = false;
+        let mut last_thinking: u64 = 0;
+        let result = run_acp_headless_turn(
+            &app_for_stream,
+            &engine_id_owned,
+            &conversation_id,
+            &prompt,
+            Some(workspace.as_str()),
+            None, // LoopTask carries no per-task model choice yet
+            |events| {
+                for evt in events {
+                    if matches!(evt, NormalizedEvent::Error { .. }) {
+                        stream_had_error = true;
+                    }
+                }
+                emit_agent_events(
+                    &app_for_stream,
+                    &conv_id_for_stream,
+                    events,
+                    &mut last_thinking,
+                );
+            },
+        )
+        .await;
+
+        app.state::<AppState>()
+            .kill_registry
+            .lock()
+            .await
+            .remove(&conversation_id);
+        if let Ok(mut active) = active_loop_conversations().lock() {
+            active.remove(&task.id);
+        }
+
+        let (full_text, status) = match result {
+            AcpHeadlessOutcome::Done(text) if !stream_had_error => {
+                let _ = app.emit(
+                    "agent-done",
+                    ResponseDone {
+                        conversation_id: conversation_id.clone(),
+                        full_text: text.clone(),
+                    },
+                );
+                (text, "ok")
+            }
+            AcpHeadlessOutcome::Done(text) => (text, "error"),
+            AcpHeadlessOutcome::Stopped => (String::new(), "error"),
+            AcpHeadlessOutcome::Errored(message) => {
+                let _ = app.emit(
+                    "agent-error",
+                    ResponseError {
+                        conversation_id: conversation_id.clone(),
+                        error: message.clone(),
+                    },
+                );
+                (message, "error")
+            }
+        };
+
+        let finished = Utc::now();
+        let prev = normalize_for_compare(task.last_result.as_deref().unwrap_or(""));
+        let new_streak: u32 =
+            if status == "ok" && !prev.is_empty() && prev == normalize_for_compare(&full_text) {
+                task.unchanged_streak.saturating_add(1)
+            } else {
+                0
+            };
+        let exit_met = check_exit_conditions(
+            &task.exit_conditions,
+            task.iteration + 1,
+            &full_text,
+            new_streak,
+        );
+        log::info!(
+            "[loop] '{}' iter {} (acp): status={}, result_len={}, unchanged_streak={}, exit_met={}",
+            task.name,
+            task.iteration + 1,
+            status,
+            full_text.len(),
+            new_streak,
+            exit_met,
+        );
+        let progress_snapshot = read_progress_md(&workspace);
+        let truncated: String = full_text.chars().take(50_000).collect();
+        record_loop_iteration(
+            app,
+            LoopIterationRecord {
+                id: conversation_id,
+                loop_task_id: task.id.clone(),
+                iteration: task.iteration + 1,
+                prompt: prompt.clone(),
+                result: truncated.clone(),
+                status: status.into(),
+                started_at: started.to_rfc3339(),
+                finished_at: finished.to_rfc3339(),
+                exit_met,
+                progress_snapshot,
+            },
+        );
+        return LoopIterationOutcome {
+            prompt,
+            result: truncated,
+            status: status.into(),
+            exit_met,
+            unchanged_streak: new_streak,
+        };
     }
 
     let child = match spawn_headless(
@@ -8970,6 +10123,59 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Load the ACP agent registry from config.json (user-defined launch
+            // configs) before any engine command can reference an acp/* id.
+            match read_local_data_file_if_exists(app.handle(), APP_CONFIG_FILE, "config") {
+                Ok(Some(content)) => {
+                    let mut cfg: AppConfig = serde_json::from_str(&content).unwrap_or_default();
+                    let entries: Vec<engine::acp::AcpAgentConfig> = cfg
+                        .acp_agents
+                        .as_ref()
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    // One-time migration: per-engine env overrides move onto
+                    // the matching registry agent's launch env.
+                    let mut entries = entries;
+                    let original_configs = cfg.engine_model_configs.clone();
+                    cfg.engine_model_configs =
+                        migrate_engine_env_into_acp_registry(cfg.engine_model_configs, &mut entries);
+                    let migrated = cfg.engine_model_configs != original_configs;
+                    if migrated {
+                        // The receiving agent entries changed too — persist
+                        // them so the moved env survives restarts.
+                        if let Ok(v) = serde_json::to_value(&entries) {
+                            cfg.acp_agents = Some(v);
+                        } else {
+                            log::warn!("[migrate] failed to serialize migrated ACP agents");
+                        }
+                    }
+                    engine::acp::load_registry(entries);
+                    log::info!(
+                        "[setup] ACP registry loaded: {} agents",
+                        engine::acp::registry_agents().len()
+                    );
+                    // Persist the migration so it runs only once.
+                    if migrated {
+                        if let Ok(json) = serde_json::to_string_pretty(&cfg) {
+                            match local_data_file_path(app.handle(), APP_CONFIG_FILE, "config") {
+                                Ok(path) => {
+                                    if let Err(e) = atomic_write(&path, &json) {
+                                        log::warn!("[migrate] failed to persist config: {e}");
+                                    }
+                                }
+                                Err(e) => log::warn!("[migrate] failed to resolve config path: {e}"),
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    engine::acp::load_registry(Vec::new());
+                }
+                Err(e) => {
+                    log::warn!("[setup] failed to read config for ACP registry: {e}");
+                    engine::acp::load_registry(Vec::new());
+                }
+            }
             // Logging: always write to a rotating file in the app data dir
             // (alongside config.json / loop_tasks.json) so every run — including
             // release and scheduled loops — is observable. Debug builds also
@@ -9110,6 +10316,64 @@ pub fn run() {
                 });
             }
 
+            // --- Idle ACP session cleanup (same policy as persistent sessions) ---
+            {
+                let acp_sessions: engine::acp::AcpSessionMap = app
+                    .state::<AppState>()
+                    .acp_sessions
+                    .clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        interval.tick().await;
+                        let mut sessions = acp_sessions.lock().await;
+                        let idle_keys: Vec<String> = sessions
+                            .iter()
+                            .filter(|(_, s)| {
+                                let active = s
+                                    .activity()
+                                    .lock()
+                                    .map(|t| *t)
+                                    .unwrap_or_else(|_| std::time::Instant::now());
+                                active.elapsed() > IDLE_TIMEOUT
+                            })
+                            .map(|(k, _)| k.clone())
+                            .collect();
+                        for key in idle_keys {
+                            log::info!("[cleanup] idle timeout: closing ACP session for {key}");
+                            if let Some(mut s) = sessions.remove(&key) {
+                                s.kill().await;
+                            }
+                        }
+                        if sessions.len() > MAX_SESSIONS {
+                            let mut entries: Vec<(String, std::time::Instant)> = sessions
+                                .iter()
+                                .map(|(k, s)| {
+                                    let active = s
+                                        .activity()
+                                        .lock()
+                                        .map(|t| *t)
+                                        .unwrap_or_else(|_| std::time::Instant::now());
+                                    (k.clone(), active)
+                                })
+                                .collect();
+                            entries.sort_by_key(|(_, t)| *t);
+                            while sessions.len() > MAX_SESSIONS {
+                                if let Some((oldest_id, _)) = entries.first() {
+                                    if let Some(mut s) = sessions.remove(oldest_id) {
+                                        log::info!(
+                                            "[cleanup] evicting LRU ACP session for {}",
+                                            oldest_id
+                                        );
+                                        s.kill().await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
             // --- System tray (keeps the app resident when the window is hidden) ---
             // Companion ("小精灵") observer: manages its own state, listens to
             // existing events, and owns the floating pet window. self-contained.
@@ -9170,6 +10434,7 @@ pub fn run() {
             pty_map: pty::init_pty_map(),
             kill_registry: Arc::new(Mutex::new(HashMap::new())),
             sessions: ps::init_session_map(),
+            acp_sessions: engine::acp::init_acp_session_map(),
             builtin_sessions: init_builtin_sessions(),
             stopped_convs: Arc::new(Mutex::new(HashSet::new())),
             builtin_cancels: Arc::new(StdMutex::new(HashMap::new())),
@@ -9237,6 +10502,10 @@ pub fn run() {
             save_history,
             check_engines_available,
             check_engine_available,
+            list_acp_agents,
+            save_acp_agents,
+            list_acp_catalog,
+            enable_acp_catalog_agent,
             probe_engine,
             engine_login,
             install_engine,
@@ -9285,6 +10554,64 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrate_moves_env_vars_into_matching_registry_agents() {
+        let engine_configs = serde_json::json!({
+            "claude": {
+                "ANTHROPIC_BASE_URL": "https://relay.example.com",
+                "ANTHROPIC_MODEL": "",
+                "OLD_KEY": "v"
+            },
+            "builtin": { "ANTHROPIC_API_KEY": "sk-stays" },
+            "cursor": {}
+        });
+        let mut agents = vec![engine::acp::AcpAgentConfig {
+            key: "claude".into(),
+            label: "Claude Code".into(),
+            command: "npx".into(),
+            args: vec![],
+            // Pre-existing registry env wins over the migrated value.
+            env: [(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://kept.example.com".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            probe_message: "ping".into(),
+        }];
+        let out = migrate_engine_env_into_acp_registry(engine_configs, &mut agents);
+        let claude_agent = agents.iter().find(|a| a.key == "claude").unwrap();
+        assert_eq!(
+            claude_agent.env.get("ANTHROPIC_BASE_URL").unwrap(),
+            "https://kept.example.com"
+        );
+        assert_eq!(claude_agent.env.get("OLD_KEY").unwrap(), "v");
+        let obj = out.as_object().unwrap();
+        let claude_map = obj.get("claude").unwrap().as_object().unwrap();
+        assert!(claude_map.is_empty(), "moved keys must be removed");
+        // builtin has no registry key — untouched.
+        assert_eq!(
+            obj.get("builtin")
+                .unwrap()
+                .get("ANTHROPIC_API_KEY")
+                .unwrap(),
+            "sk-stays"
+        );
+    }
+
+    #[test]
+    fn migrate_ignores_non_object_and_empty_maps() {
+        let mut no_agents: Vec<engine::acp::AcpAgentConfig> = vec![];
+        let out =
+            migrate_engine_env_into_acp_registry(serde_json::json!("garbage"), &mut no_agents);
+        assert_eq!(out, serde_json::json!("garbage"));
+        let out = migrate_engine_env_into_acp_registry(
+            serde_json::json!({ "claude": {} }),
+            &mut no_agents,
+        );
+        assert!(out.as_object().unwrap().contains_key("claude"));
+    }
 
     #[test]
     fn application_run_record_deserializes_without_model_field() {
@@ -10614,10 +11941,20 @@ mod tests {
         let two = OutputUnchanged { streak: 2 };
 
         // streak 0 → not yet converged → keep going.
-        assert!(!check_exit_conditions(&[one.clone()], 5, "anything", 0));
+        assert!(!check_exit_conditions(
+            std::slice::from_ref(&one),
+            5,
+            "anything",
+            0
+        ));
         // streak meets threshold → stop.
         assert!(check_exit_conditions(&[one], 5, "anything", 1));
-        assert!(!check_exit_conditions(&[two.clone()], 5, "anything", 1));
+        assert!(!check_exit_conditions(
+            std::slice::from_ref(&two),
+            5,
+            "anything",
+            1
+        ));
         assert!(check_exit_conditions(&[two], 5, "anything", 2));
     }
 

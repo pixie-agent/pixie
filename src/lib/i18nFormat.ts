@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { ScheduleSpec, AgentEngineId } from "../types";
+import { isAcpEngineId, type ScheduleSpec, type AgentEngineId } from "../types";
 import { AGENT_ENGINES } from "../types";
 
 const MODEL_FIELD_LABEL_KEYS: Record<string, string> = {
@@ -37,9 +37,21 @@ export function appLocale(language: string): string {
 }
 
 export function engineLabel(id: AgentEngineId, t: TFunction): string {
+  const acpLabel = isAcpEngineId(id) ? acpEngineLabel(id) : undefined;
   return t(`engines.${id}`, {
-    defaultValue: AGENT_ENGINES.find((e) => e.id === id)?.label ?? id,
+    defaultValue:
+      AGENT_ENGINES.find((e) => e.id === id)?.label ??
+      acpLabel ??
+      id,
   });
+}
+
+/** Label for an ACP agent id ("acp/gemini" → "Gemini"), derived from the key.
+ *  Prefer the `display_name` from check_engines_available when available. */
+export function acpEngineLabel(id: `acp/${string}` | string): string {
+  const key = id.startsWith("acp/") ? id.slice(4) : id;
+  if (!key) return String(id);
+  return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
 export function modelFieldLabel(label: string, t: TFunction): string {

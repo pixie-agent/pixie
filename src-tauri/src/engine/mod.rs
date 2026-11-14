@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod builtin;
 pub mod claude;
 pub mod codebuddy;
@@ -21,11 +22,48 @@ pub use shared::{
 
 /// Registered agent engine identifiers.
 ///
-/// To add a new engine:
+/// `acp/*` ids are NOT listed here — they come from the ACP agent registry
+/// (`engine/acp.rs`), which is data-driven (config.json `acp_agents`), and are
+/// validated dynamically by `normalize_engine_id`.
+///
+/// To add a new native engine:
 /// 1. Add its id here and in `engine_display_name`.
 /// 2. Create `engine/<name>.rs` with `check_available`, `spawn_*`, `parse_line`.
 /// 3. Wire dispatch in `check_engine`, `spawn_single`, `spawn_continue`, `parse_line`.
 pub const ENGINE_IDS: &[&str] = &["claude", "cursor", "codebuddy", "builtin", "codex"];
+
+/// The native engine ids that now execute through the ACP path, mapped to
+/// their registry launch-config key ("全用 ACP" unification). `builtin` is
+/// in-process and stays native; ids absent here keep their legacy dispatch.
+/// Callers treat `Some(key)` as: rewrite the exec engine id to
+/// `acp/<key>` before dispatching, while conversation bindings keep the
+/// original native id for display/history compatibility.
+pub fn native_engine_acp_key(id: &str) -> Option<&'static str> {
+    match id {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "codebuddy" => Some("codebuddy"),
+        "cursor" => Some("cursor"),
+        _ => None,
+    }
+}
+
+/// Resolve an engine id to its EXECUTION id: native aliases whose registry
+/// launch config exists are rewritten to `acp/<key>`; everything else
+/// passes through unchanged. Returns the resolved static id or an error.
+pub fn resolve_exec_engine_id(id: &str) -> Result<&'static str> {
+    let normalized = normalize_engine_id(id)?;
+    if let Some(key) = native_engine_acp_key(normalized) {
+        if acp::agent_by_key(key).is_some() {
+            // SAFETY: same interning contract as normalize_engine_id's
+            // registry branch — the string lives for the process lifetime.
+            return Ok(Box::leak(acp::acp_engine_id(key).into_boxed_str()));
+        }
+        // No registry entry (e.g. user deleted it): fall through to the
+        // legacy native engine rather than failing the turn.
+    }
+    Ok(normalized)
+}
 
 pub fn normalize_engine_id(id: &str) -> Result<&'static str> {
     match id {
@@ -34,18 +72,31 @@ pub fn normalize_engine_id(id: &str) -> Result<&'static str> {
         "codebuddy" => Ok("codebuddy"),
         "builtin" => Ok("builtin"),
         "codex" => Ok("codex"),
+        other if acp::is_acp_engine_id(other) => {
+            // Validate the registry key so typos fail fast at the IPC boundary.
+            let key = acp::acp_key_of(other).context("invalid ACP engine id")?;
+            if acp::agent_by_key(key).is_some() {
+                // SAFETY: ids leaking from &'static ENGINE_IDS or interned by
+                // the registry are static; registry entries live for the
+                // process lifetime (leaked on first use per key).
+                Ok(Box::leak(other.to_string().into_boxed_str()))
+            } else {
+                anyhow::bail!("unknown ACP agent: {other}")
+            }
+        }
         other => anyhow::bail!("unknown engine: {other}"),
     }
 }
 
-pub fn engine_display_name(id: &str) -> &'static str {
+pub fn engine_display_name(id: &str) -> String {
     match id {
-        "claude" => "Claude Code",
-        "cursor" => "Cursor Agent",
-        "codebuddy" => "CodeBuddy",
-        "builtin" => builtin::engine_display_name(),
-        "codex" => "OpenAI Codex",
-        _ => "Unknown",
+        "claude" => "Claude Code".to_string(),
+        "cursor" => "Cursor Agent".to_string(),
+        "codebuddy" => "CodeBuddy".to_string(),
+        "builtin" => builtin::engine_display_name().to_string(),
+        "codex" => "OpenAI Codex".to_string(),
+        other if acp::is_acp_engine_id(other) => acp::display_name_for(other),
+        _ => "Unknown".to_string(),
     }
 }
 
@@ -278,16 +329,41 @@ pub fn parse_line(engine_id: &str, line: &str) -> Vec<NormalizedEvent> {
 }
 
 pub async fn check_engine(id: &str) -> EngineStatus {
-    let display_name = engine_display_name(id);
+    // Native alias ids report the ACP launch config they now execute
+    // through, so the status grid reflects what a turn will actually run.
+    if let Some(key) = native_engine_acp_key(id) {
+        if let Some(config) = acp::agent_by_key(key) {
+            let mut status = acp::check_available(&config).await;
+            status.id = id.to_string();
+            status.display_name = engine_display_name(id);
+            return status;
+        }
+        // Registry entry missing (user-edited config): fall through to the
+        // native engine's own status.
+    }
     match id {
         "claude" => claude::check_available().await,
         "codebuddy" => codebuddy::check_available().await,
         "cursor" => cursor::check_available().await,
         "builtin" => builtin::check_available().await,
         "codex" => codex::check_available().await,
+        other if acp::is_acp_engine_id(other) => {
+            let key = acp::acp_key_of(other).unwrap_or("");
+            match acp::agent_by_key(key) {
+                Some(config) => acp::check_available(&config).await,
+                None => EngineStatus::basic(
+                    id,
+                    &engine_display_name(id),
+                    false,
+                    None,
+                    None,
+                    Some(format!("unknown ACP agent: {other}")),
+                ),
+            }
+        }
         _ => EngineStatus::basic(
             id,
-            display_name,
+            &engine_display_name(id),
             false,
             None,
             None,
@@ -297,9 +373,18 @@ pub async fn check_engine(id: &str) -> EngineStatus {
 }
 
 pub async fn check_all_engines() -> Vec<EngineStatus> {
+    // Native engines first, then every registry ACP agent. Registry keys that
+    // alias a native engine are skipped: the native row already reports the
+    // ACP-backed status those aliases execute through.
     let mut out = Vec::with_capacity(ENGINE_IDS.len());
     for id in ENGINE_IDS {
         out.push(check_engine(id).await);
+    }
+    for agent in acp::registry_agents() {
+        if native_engine_acp_key(&agent.key).is_some() {
+            continue;
+        }
+        out.push(check_engine(&acp::acp_engine_id(&agent.key)).await);
     }
     out
 }
@@ -651,6 +736,31 @@ pub async fn probe_engine(id: &str) -> EngineStatus {
         // Binary missing — nothing to probe; auth_state stays Unknown.
         return status;
     }
+    // ACP agents probe through a real initialize/session/prompt handshake.
+    // Native alias ids execute through ACP now, so they probe the same way;
+    // if their registry entry is missing, fall through to the native probe.
+    let acp_key = if acp::is_acp_engine_id(id) {
+        acp::acp_key_of(id)
+    } else {
+        native_engine_acp_key(id).filter(|k| acp::agent_by_key(k).is_some())
+    };
+    if let Some(key) = acp_key {
+        let outcome = match acp::agent_by_key(key) {
+            Some(config) => {
+                let cwd = std::env::var("HOME").ok();
+                acp::probe_agent(config, cwd.as_deref()).await
+            }
+            None => ProbeOutcome {
+                state: AuthState::Error,
+                error: Some(format!("unknown ACP agent: {id}")),
+                raw_output: None,
+            },
+        };
+        status.auth_state = outcome.state;
+        status.probe_error = outcome.error;
+        status.probe_raw_output = outcome.raw_output;
+        return status;
+    }
     let child = match id {
         "claude" => claude::spawn_probe().await,
         "codebuddy" => codebuddy::spawn_probe().await,
@@ -695,6 +805,17 @@ pub async fn login(id: &str) -> Result<()> {
         "codebuddy" => codebuddy::spawn_login().await,
         "cursor" => cursor::spawn_login().await,
         "codex" => codex::spawn_login().await,
+        // ACP agents log in interactively (the probe surfaces `auth_required`
+        // and the agent's own TUI login runs in a user terminal). Pixie has no
+        // ACP terminal-auth client capability, so instruct rather than spawn.
+        other if acp::is_acp_engine_id(other) => anyhow::bail!(
+            "{} authenticates in its own CLI — run `{}` interactively in a terminal, then re-probe.",
+            engine_display_name(other),
+            acp::acp_key_of(other)
+                .and_then(acp::agent_by_key)
+                .map(|a| a.command)
+                .unwrap_or_default(),
+        ),
         other => anyhow::bail!("unknown engine: {other}"),
     }
 }
@@ -714,6 +835,9 @@ pub fn install_command(id: &str) -> Result<&'static str> {
         "codex" => "npm install -g @openai/codex",
         // Builtin engine is built-in, no install needed
         "builtin" => "(built-in, no installation required)",
+        // ACP agents come from the user's registry; their install command is
+        // whatever installed the `command` binary (npm/npx/brew) — not ours.
+        other if acp::is_acp_engine_id(other) => "(installed separately — see the agent's docs)",
         other => anyhow::bail!("unknown engine: {other}"),
     })
 }
@@ -778,6 +902,21 @@ pub async fn install(id: &str) -> Result<InstallOutcome> {
 /// Fetch available models for a given engine.
 /// Returns a list of (model_id, display_label) pairs.
 pub async fn list_models(engine_id: &str) -> Vec<(String, String)> {
+    // ACP agents (and the native ids aliased onto them) expose the REAL model
+    // list through `configOptions` — same choices the CLI itself offers. The
+    // native static lists below are only reachable when an alias's registry
+    // entry was deleted (resolve_exec_engine_id falls back to legacy native).
+    if acp::is_acp_engine_id(engine_id) {
+        if let Some(config) = acp::agent_by_engine_id(engine_id) {
+            return acp::list_models_for_agent(config, None).await;
+        }
+        return vec![];
+    }
+    if let Some(key) = native_engine_acp_key(engine_id) {
+        if let Some(config) = acp::agent_by_key(key) {
+            return acp::list_models_for_agent(config, None).await;
+        }
+    }
     match engine_id {
         "claude" => claude::list_models().await,
         "codebuddy" => codebuddy::list_models().await,
@@ -800,8 +939,11 @@ pub async fn spawn_single(
         "codebuddy" => codebuddy::spawn_single(session_id, message, cwd, model).await,
         "cursor" => cursor::spawn_single(session_id, message, cwd, model).await,
         "codex" => codex::spawn_single(session_id, message, cwd, model).await,
-        // Builtin engine doesn't spawn child processes
-        "builtin" => anyhow::bail!("builtin engine does not use process spawning"),
+        // Builtin engine doesn't spawn child processes. ACP engines are driven
+        // through AcpSession (persistent-style), not the per-message spawn path.
+        other if other == "builtin" || acp::is_acp_engine_id(other) => {
+            anyhow::bail!("engine {engine_id} does not use the per-message spawn path")
+        }
         other => anyhow::bail!("unknown engine: {other}"),
     }
 }
@@ -825,6 +967,18 @@ pub async fn spawn_headless(
     match engine_id {
         "claude" => claude::spawn_headless(session_id, message, cwd, model, readonly).await,
         "codex" => codex::spawn_headless(session_id, message, cwd, model, readonly).await,
+        // ACP engines don't have a headless per-message mode; scheduled tasks
+        // on an ACP engine fall through to the persistent interactive path in
+        // send_message, so bail here to route through the caller's fallback.
+        other if acp::is_acp_engine_id(other) => {
+            if readonly {
+                log::warn!(
+                    "[engine] {other} does not support read-only headless runs; \
+                     spawning with default permissions"
+                );
+            }
+            anyhow::bail!("ACP engines use the persistent session path, not spawn_headless")
+        }
         // CodeBuddy/Cursor fall back to their regular spawn_single for now.
         // Builtin engine doesn't spawn child processes (handled separately)
         other => {
@@ -851,8 +1005,10 @@ pub async fn spawn_continue(
         "codebuddy" => codebuddy::spawn_continue(session_id, message, cwd, model).await,
         "cursor" => cursor::spawn_continue(session_id, message, cwd, model).await,
         "codex" => codex::spawn_continue(session_id, message, cwd, model).await,
-        // Builtin engine doesn't spawn child processes
-        "builtin" => anyhow::bail!("builtin engine does not use process spawning"),
+        // Same as spawn_single: builtin and ACP engines don't use this path.
+        other if other == "builtin" || acp::is_acp_engine_id(other) => {
+            anyhow::bail!("engine {engine_id} does not use the per-message spawn path")
+        }
         other => anyhow::bail!("unknown engine: {other}"),
     }
 }

@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect, memo } from "react";
 import { useTranslation } from "../hooks/useTranslation";
 import { relativeTime as formatRelativeTime, engineLabel } from "../lib/i18nFormat";
 import type { ConversationEntry } from "../hooks/useChat";
-import type { WorkspaceState, AgentEngineId, LoopTask } from "../types";
+import type { Conversation, WorkspaceState, AgentEngineId, LoopTask } from "../types";
 import { useDragRegion } from "../hooks/useDragRegion";
 import EngineBadge from "./EngineBadge";
 import WorkspaceFilterDropdown from "./WorkspaceFilterDropdown";
@@ -53,7 +53,8 @@ function sortEntries(entries: ConversationEntry[], generatingIds: Set<string>): 
 }
 
 const ConversationRow = memo(function ConversationRow({
-  entry,
+  conv,
+  workspaceId,
   workspaceLabel,
   isActive,
   isGenerating,
@@ -61,16 +62,19 @@ const ConversationRow = memo(function ConversationRow({
   onDelete,
   onRename,
 }: {
-  entry: ConversationEntry;
+  /** Props are split (conv + workspaceId, not the entry wrapper) so that
+   *  stream flushes — which rebuild entry objects but preserve conversation
+   *  refs for non-streaming chats — don't invalidate this memo. */
+  conv: Conversation;
+  workspaceId: string;
   workspaceLabel?: string;
   isActive: boolean;
   isGenerating: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
-  onRename: (newTitle: string) => void;
+  onSelect: (id: string, workspaceId: string) => void;
+  onDelete: (id: string, workspaceId: string) => void;
+  onRename: (id: string, newTitle: string) => void;
 }) {
   const { t, currentLanguage } = useTranslation();
-  const { conversation: conv } = entry;
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -85,14 +89,14 @@ const ConversationRow = memo(function ConversationRow({
   const commitEdit = () => {
     const trimmed = editValue.trim();
     if (trimmed && trimmed !== conv.title) {
-      onRename(trimmed);
+      onRename(conv.id, trimmed);
     }
     setEditing(false);
   };
 
   return (
     <div
-      onClick={() => { setConfirmDelete(false); if (!editing) onSelect(); }}
+      onClick={() => { setConfirmDelete(false); if (!editing) onSelect(conv.id, workspaceId); }}
       className={`
         group flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer mb-0.5
         transition-colors
@@ -160,7 +164,7 @@ const ConversationRow = memo(function ConversationRow({
         onClick={(e) => {
           e.stopPropagation();
           if (confirmDelete) {
-            onDelete();
+            onDelete(conv.id, workspaceId);
           } else {
             setConfirmDelete(true);
             setTimeout(() => setConfirmDelete(false), 3000);
@@ -339,7 +343,8 @@ function EntryList({
       {entries.map((entry) => (
         <ConversationRow
           key={entry.conversation.id}
-          entry={entry}
+          conv={entry.conversation}
+          workspaceId={entry.workspaceId}
           workspaceLabel={
             defaultWorkspacePath && entry.workspaceId === defaultWorkspacePath
               ? undefined
@@ -347,9 +352,9 @@ function EntryList({
           }
           isActive={entry.conversation.id === activeId}
           isGenerating={generatingIds.has(entry.conversation.id)}
-          onSelect={() => onSelect(entry.conversation.id, entry.workspaceId)}
-          onDelete={() => onDelete(entry.conversation.id, entry.workspaceId)}
-          onRename={(newTitle) => onRename(entry.conversation.id, newTitle)}
+          onSelect={onSelect}
+          onDelete={onDelete}
+          onRename={onRename}
         />
       ))}
     </>

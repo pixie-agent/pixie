@@ -100,59 +100,9 @@
     "initializing": "Initializing..."
   },
   "engineSetup": {
-    "title": "Configure Agent Engine",
-    "description": "Pixie doesn't include its own models. Install and log in to one engine to get started. Ready check = successfully ping the model.",
-    "hint": "Note: Detection sends a ping message to the engine, which may incur minimal call costs.",
-    "probeModel": {
-      "label": "Model",
-      "placeholder": "Default model (optional)",
-      "hint": "Used by the readiness probe and conversations; empty = CLI default."
-    },
-    "close": "Close",
-    "enterApp": "Enter App",
-    "anyReady": "Has ready engine",
-    "noneReady": "No ready engines yet",
-    "status": {
-      "builtin": "Built-in",
-      "ready": "Ready",
-      "probing": "Checking...",
-      "notInstalled": "Not installed",
-      "notReady": "Not ready"
-    },
-    "actions": {
-      "oneClickInstall": "One-click Install",
-      "installing": "Installing...",
-      "oneClickLogin": "One-click Login",
-      "reprobe": "Re-detect",
-      "manualInstall": "Manual install (copy command to terminal)",
-      "copyLoginCommand": "Copy login command",
-      "copyProxyCommand": "Copy proxy command"
-    },
     "messages": {
-      "probing": "Checking readiness...",
-      "builtinConfigHint": "Please configure ANTHROPIC_API_KEY in Settings → Engine Config → Builtin.",
-      "builtinDesc": "Built-in engine directly calls Anthropic Messages API, no CLI installation needed, just configure API Key.",
-      "notReadyHint": "Not ready. Click 'One-click Login' to login in browser, then click 'Re-detect' when done.",
-      "regionBlockedHint": "Login is fine — the engine's API rejected the connection for your region (403). Route the CLI through a proxy: set HTTPS_PROXY in your shell (or launch Pixie from a terminal that has it), then click 'Re-detect'.",
-      "readyMessage": "Ready and available.",
-      "installFailed": "Installation failed, please use the command below to install manually",
-      "engineResponse": "Engine response:",
       "probeNoResponse": "Probe did not respond. Click Re-detect to retry.",
       "failedCheckEngines": "Failed to check engines"
-    },
-    "loginHints": {
-      "claude": "Complete Anthropic login in the browser, then click Re-detect.",
-      "cursor": "Opens the browser to complete Cursor login.",
-      "codebuddy": "Choose a login method and complete authentication in the browser.",
-      "builtin": "Configure ANTHROPIC_API_KEY in Settings to use the built-in engine.",
-      "codex": "Opens the browser to complete OpenAI login."
-    },
-    "installNotes": {
-      "builtin": "(Built-in engine, no installation needed)"
-    },
-    "commands": {
-      "copy": "Copy",
-      "copyToClipboard": "Copy to clipboard"
     }
   },
   "header": {
@@ -270,7 +220,6 @@
   },
   "settings": {
     "title": "Settings",
-    "agentEngines": "Agent Engines",
     "preferredEngine": "Preferred Engine",
     "preferredEngineHint": "New sessions use this engine. Existing sessions keep their bound engine.",
     "workingDirectory": "Working Directory",
@@ -292,8 +241,28 @@
     "paperMint": "Paper Mint",
     "interfaceScale": "Interface Scale",
     "interfaceScaleHint": "Use Ctrl/Cmd + plus, minus, or 0 to adjust quickly.",
-    "modelConfig": "Model Configuration",
-    "modelConfigHint": "Environment variables per engine — add, edit and remove freely. Leave empty to use system defaults.",
+    "modelConfig": "Builtin Engine Environment",
+    "modelConfigHint": "Environment variables for the built-in engine (the one non-ACP engine) — add, edit and remove freely. Every CLI agent's environment is managed in ACP Agents below.",
+    "acpAgents": "ACP Agents",
+    "acpAgentsHint": "Agents speaking the Agent Client Protocol — one launch config covers every compatible CLI (Gemini CLI, Pi, OpenCode, and the whole ACP registry). Key + command are required.",
+    "acpAddAgent": "Add agent",
+    "acpSave": "Save agents",
+    "acpSaving": "Saving…",
+    "acpLabelPlaceholder": "Display name",
+    "acpCommandPlaceholder": "command (e.g. gemini)",
+    "acpArgsPlaceholder": "arguments (e.g. --experimental-acp)",
+    "acpKeyTitle": "Registry key — becomes the engine id acp/<key>",
+    "acpRemoveAgent": "Remove agent",
+    "acpEngineId": "Engine id: {{id}}",
+    "acpCatalogLoading": "Loading the official ACP agent catalog…",
+    "acpCatalogUnavailable": "Couldn't reach the ACP catalog — you can still add agents manually below.",
+    "acpCatalogSearch": "Search the ACP agent catalog…",
+    "acpCatalogNoMatch": "No agents match your search.",
+    "acpBinaryOnly": "binary distribution",
+    "acpEnabled": "Enabled",
+    "acpEnable": "Enable",
+    "acpEnabling": "Enabling…",
+    "acpManual": "Manual launch config (for binary agents or custom setups)",
     "appliesOnly": "Applies only to {{name}} sessions.",
     "overrides_one": "{{count}} variable",
     "overrides_other": "{{count}} variables",
@@ -345,9 +314,7 @@
       "progress": "Backfilling… {{done}}/{{total}}",
       "complete": "Done! {{done}}/{{total}} conversations added to knowledge base.",
       "failed": "Backfill failed: {{error}}"
-    },
-    "viewRawOutput": "View raw output",
-    "rawProbeTitle": "{{engine}} probe raw output"
+    }
   },
   "tasks": {
     "title": "Scheduled Tasks",

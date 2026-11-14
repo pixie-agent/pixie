@@ -7,7 +7,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import SkillsDropdown from "./SkillsDropdown";
 import WorkspaceDropdown from "./WorkspaceDropdown";
 import type { MessageUsage, SkillEntry, AgentEngineId, EngineModelConfigs, ModelEntry, WorkspaceState } from "../types";
-import { AGENT_ENGINES, ENGINE_MODEL_ENV_KEY } from "../types";
+import { useAcpAgents } from "../hooks/useAcpAgents";
 import { engineLabel, formatTokenCount } from "../lib/i18nFormat";
 import { contextWindowFor } from "../lib/contextWindow";
 import { getExtension, IMAGE_EXTENSIONS } from "../preview";
@@ -162,6 +162,7 @@ export default function InputBar({
   onNewSession,
 }: InputBarProps) {
   const { t, currentLanguage } = useTranslation();
+  const { engines: allEngines, acpAgents } = useAcpAgents();
   const numberLocale = appLocale(currentLanguage);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
@@ -182,9 +183,10 @@ export default function InputBar({
   const contextWrapperRef = useRef<HTMLDivElement>(null);
 
   const configuredDefaultModelId = useCallback((): string | undefined => {
-    if (!engine) return undefined;
-    const cfg = engineModelConfigs[engine] as Record<string, string | undefined>;
-    const v = cfg?.[ENGINE_MODEL_ENV_KEY[engine]];
+    // Only the builtin engine still reads a default model from the env map —
+    // CLI engines pick models per-conversation via the configOptions dropdown.
+    if (engine !== "builtin") return undefined;
+    const v = engineModelConfigs?.ANTHROPIC_MODEL;
     const trimmed = typeof v === "string" ? v.trim() : "";
     return trimmed || undefined;
   }, [engine, engineModelConfigs]);
@@ -783,7 +785,7 @@ export default function InputBar({
                   : "hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
               }`}
             >
-              {AGENT_ENGINES.filter(
+              {allEngines.filter(
                 (e) => readyEngineIds.includes(e.id) || e.id === engine,
               ).map((e) => (
                 <option key={e.id} value={e.id}>
@@ -894,12 +896,21 @@ export default function InputBar({
           {(() => {
             const ctxTokens = usage?.contextTokens;
             if (!ctxTokens) return null;
-            const win = contextWindowFor(engine, model ?? configuredDefaultModelId());
+            // ACP agents report their real window via usage_update (parsed
+            // into usage.contextWindow); native engines fall back to the
+            // static table.
+            const win = usage?.contextWindow ?? contextWindowFor(engine, model ?? configuredDefaultModelId());
             if (!win) return null;
             const pct = Math.round((ctxTokens / win) * 100);
             const tone =
               pct >= 80 ? "text-red-400" : pct >= 65 ? "text-amber-400" : "text-[var(--text-secondary)] opacity-60";
-            const compactSupported = engine === "claude" || engine === "codebuddy";
+            // ACP has no client-initiated compaction request in the spec
+            // (agents report compaction_update on their own) — hide the
+            // button for acp/* ids AND for native ids aliased through the
+            // ACP registry (their live sessions are ACP sessions too).
+            const acpAliased = engine !== undefined && acpAgents.some((a) => a.key === engine);
+            const compactSupported =
+              (engine === "claude" || engine === "codebuddy") && !acpAliased;
             const compactBlocked = !onCompactContext || !compactSupported || !sessionAlive;
             return (
               <div ref={contextWrapperRef} className="relative">

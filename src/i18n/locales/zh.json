@@ -100,59 +100,9 @@
     "initializing": "初始化中..."
   },
   "engineSetup": {
-    "title": "配置 Agent 引擎",
-    "description": "Pixie 不自带模型，安装并登录一个引擎即可。检测就绪 = 能成功 ping 通该模型。",
-    "hint": "提示：检测会向引擎发送一条 ping 消息，可能产生极少量调用费用。",
-    "probeModel": {
-      "label": "模型",
-      "placeholder": "默认模型（可留空）",
-      "hint": "检测和对话会用此模型；留空则用 CLI 默认模型。"
-    },
-    "close": "关闭",
-    "enterApp": "进入应用",
-    "anyReady": "已有引擎就绪",
-    "noneReady": "还没有就绪的引擎",
-    "status": {
-      "builtin": "内置",
-      "ready": "就绪",
-      "probing": "检测中...",
-      "notInstalled": "未安装",
-      "notReady": "未就绪"
-    },
-    "actions": {
-      "oneClickInstall": "一键安装",
-      "installing": "安装中...",
-      "oneClickLogin": "一键登录",
-      "reprobe": "重新检测",
-      "manualInstall": "手动安装（复制命令到终端运行）",
-      "copyLoginCommand": "复制登录命令",
-      "copyProxyCommand": "复制代理命令"
-    },
     "messages": {
-      "probing": "正在检测就绪状态...",
-      "builtinConfigHint": "请在设置页面 → 引擎配置 → Builtin 中配置 ANTHROPIC_API_KEY。",
-      "builtinDesc": "内置引擎直接调用 Anthropic Messages API，无需安装 CLI，只需配置 API Key。",
-      "notReadyHint": "未就绪。点「一键登录」在浏览器登录，完成后点「重新检测」。",
-      "regionBlockedHint": "登录没有问题——是引擎 API 因地区限制 (403) 拒绝了连接。在终端 export HTTPS_PROXY=...（端口换成你代理的）后从该终端启动 Pixie，或让代理以 TUN/增强模式接管，再点「重新检测」。",
-      "readyMessage": "已就绪，可以使用。",
-      "installFailed": "安装失败，请用下方命令手动安装",
-      "engineResponse": "引擎返回：",
       "probeNoResponse": "检测未返回，请点重新检测重试",
       "failedCheckEngines": "引擎检测失败"
-    },
-    "loginHints": {
-      "claude": "在浏览器完成 Anthropic 登录后回来点「重新检测」。",
-      "cursor": "会打开浏览器完成 Cursor 登录。",
-      "codebuddy": "选择登录方式，在浏览器完成认证。",
-      "builtin": "在设置页面配置 ANTHROPIC_API_KEY 即可使用。",
-      "codex": "会打开浏览器完成 OpenAI 登录。"
-    },
-    "installNotes": {
-      "builtin": "（内置引擎，无需安装）"
-    },
-    "commands": {
-      "copy": "复制",
-      "copyToClipboard": "复制到剪贴板"
     }
   },
   "header": {
@@ -270,7 +220,6 @@
   },
   "settings": {
     "title": "设置",
-    "agentEngines": "Agent 引擎",
     "preferredEngine": "首选引擎",
     "preferredEngineHint": "新对话使用此引擎，现有对话保持其绑定的引擎。",
     "workingDirectory": "工作目录",
@@ -292,8 +241,28 @@
     "paperMint": "薄荷纸",
     "interfaceScale": "界面缩放",
     "interfaceScaleHint": "可用 Ctrl/Cmd + 加号、减号或 0 快速调整。",
-    "modelConfig": "模型配置",
-    "modelConfigHint": "每个引擎的环境变量，可自由添加、编辑和删除。留空以使用系统默认值。",
+    "modelConfig": "内置引擎环境变量",
+    "modelConfigHint": "内置引擎（唯一非 ACP 引擎）的环境变量，可自由添加、编辑和删除。各 CLI 代理的环境变量请在下方「ACP 代理」中管理。",
+    "acpAgents": "ACP 代理",
+    "acpAgentsHint": "支持 Agent Client Protocol 的代理——一条启动配置即可接入所有兼容 CLI（Gemini CLI、Pi、OpenCode 及整个 ACP 注册表）。Key 和启动命令为必填。",
+    "acpAddAgent": "添加代理",
+    "acpSave": "保存代理",
+    "acpSaving": "保存中…",
+    "acpLabelPlaceholder": "显示名称",
+    "acpCommandPlaceholder": "启动命令（如 gemini）",
+    "acpArgsPlaceholder": "启动参数（如 --experimental-acp）",
+    "acpKeyTitle": "注册表键——引擎 id 将是 acp/<key>",
+    "acpRemoveAgent": "删除代理",
+    "acpEngineId": "引擎 id：{{id}}",
+    "acpCatalogLoading": "正在加载官方 ACP 代理目录…",
+    "acpCatalogUnavailable": "无法连接 ACP 目录——你仍可在下方手动添加代理。",
+    "acpCatalogSearch": "搜索 ACP 代理目录…",
+    "acpCatalogNoMatch": "没有匹配的代理。",
+    "acpBinaryOnly": "二进制分发",
+    "acpEnabled": "已启用",
+    "acpEnable": "启用",
+    "acpEnabling": "启用中…",
+    "acpManual": "手动启动配置（适用于二进制代理或自定义配置）",
     "appliesOnly": "仅适用于 {{name}} 会话。",
     "overrides_one": "{{count}} 个变量",
     "overrides_other": "{{count}} 个变量",
@@ -345,9 +314,7 @@
       "progress": "回填中… {{done}}/{{total}}",
       "complete": "完成！已将 {{done}}/{{total}} 个对话添加到知识库。",
       "failed": "回填失败：{{error}}"
-    },
-    "viewRawOutput": "查看原始返回",
-    "rawProbeTitle": "{{engine}} 检测原始返回"
+    }
   },
   "tasks": {
     "title": "计划任务",

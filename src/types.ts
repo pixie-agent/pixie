@@ -16,6 +16,10 @@ export interface MessageUsage {
    *  latest API call). Snapshot, never accumulated; undefined until the first
    *  turn usage arrives or right after a compaction. */
   contextTokens?: number;
+  /** Real context window size in tokens, reported by the agent (ACP
+   *  `usage_update.size` carried in the `__ctx__used/size` model hint).
+   *  Occupancy indicators use this over static engine tables when present. */
+  contextWindow?: number;
   costUsd?: number;
   durationMs?: number;
   numTurns?: number;
@@ -90,16 +94,17 @@ export interface Conversation {
   compactedAt?: number;
 }
 
-export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex";
+export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex" | `acp/${string}`;
 
-/** Env key that each engine uses for its model override in global config. */
-export const ENGINE_MODEL_ENV_KEY: Record<AgentEngineId, string> = {
-  claude: "ANTHROPIC_MODEL",
-  cursor: "CURSOR_MODEL",
-  codebuddy: "CODEBUDDY_MODEL",
-  builtin: "ANTHROPIC_MODEL",
-  codex: "CODEX_MODEL",
-};
+/** True for ACP (Agent Client Protocol) registry agents ("acp/<key>"). They are
+ *  data-driven launch configs, not compiled engines, so every per-engine switch
+ *  in the UI falls back to the ACP branch instead of enumerating ids. */
+export function isAcpEngineId(id: string): id is Extract<AgentEngineId, `acp/${string}`> {
+  return id.startsWith("acp/");
+}
+
+/** Native engines only (excludes acp/*). */
+export const NATIVE_ENGINE_IDS = ["claude", "cursor", "codebuddy", "builtin", "codex"] as const;
 
 /** A model entry returned by the backend's list_models command. */
 export interface ModelEntry {
@@ -114,6 +119,48 @@ export const AGENT_ENGINES: { id: AgentEngineId; label: string }[] = [
   { id: "builtin", label: "Builtin" },
   { id: "codex", label: "OpenAI Codex" },
 ];
+
+/** An ACP registry entry — mirrors the Rust `AcpAgentConfig` (snake_case wire
+ *  format via serde). Users manage these in Settings → Engines. */
+export interface AcpAgentConfig {
+  key: string;
+  label: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  probe_message: string;
+}
+
+/** Engine id for an ACP registry entry. */
+export const acpEngineId = (key: string): `acp/${string}` => `acp/${key}`;
+
+/** One entry from the official ACP registry (cdn.agentclientprotocol.com) —
+ *  mirrors the Rust `AcpCatalogEntry`. `launchable` = Pixie can run it
+ *  directly (npx/uvx); binary distributions require out-of-band install. */
+export interface AcpCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  icon: string;
+  command: string;
+  args: string[];
+  launchable: boolean;
+}
+
+/** Build the full engine list: native engines + ACP registry entries.
+ *  Registry keys that alias a native engine are skipped — since the
+ *  unified-ACP switch the native id itself executes through ACP, so listing
+ *  both would render the same agent twice in pickers. */
+export function allEngines(acpAgents: AcpAgentConfig[]): { id: AgentEngineId; label: string }[] {
+  const nativeIds = new Set(AGENT_ENGINES.map((e) => e.id));
+  return [
+    ...AGENT_ENGINES,
+    ...acpAgents
+      .filter((a) => !nativeIds.has(a.key as AgentEngineId))
+      .map((a) => ({ id: acpEngineId(a.key), label: a.label })),
+  ];
+}
 
 /** Readiness/auth state of an engine, set by the backend probe. Mirrors the
  *  Rust `AuthState` enum (serde `snake_case`). `unknown` until a probe runs. */
@@ -241,28 +288,11 @@ export interface WorkspaceState {
   name: string;
 }
 
-export interface ClaudeModelConfig {
-  ANTHROPIC_API_KEY?: string;
-  ANTHROPIC_BASE_URL?: string;
-  ANTHROPIC_MODEL?: string;
-  ANTHROPIC_DEFAULT_OPUS_MODEL?: string;
-  ANTHROPIC_DEFAULT_SONNET_MODEL?: string;
-  ANTHROPIC_DEFAULT_HAIKU_MODEL?: string;
-  CLAUDE_CODE_SUBAGENT_MODEL?: string;
-  CLAUDE_CODE_EFFORT_LEVEL?: string;
-}
-
-export interface CursorModelConfig {
-  CURSOR_API_KEY?: string;
-  /** Passed to cursor-agent as --model when set */
-  CURSOR_MODEL?: string;
-}
-
-export interface CodebuddyModelConfig {
-  /** Passed to codebuddy as --model when set */
-  CODEBUDDY_MODEL?: string;
-}
-
+/** Env overrides for the builtin engine — the only engine that never spawns a
+ *  child process, so it is the one entry left in the old per-engine config
+ *  map. Every CLI engine (claude/codex/codebuddy/cursor) launches through the
+ *  ACP registry, whose entries carry their own launch `env` (Settings → ACP
+ *  agents → manual launch config). */
 export interface BuiltinModelConfig {
   /** Shared with Claude engine — Anthropic API key */
   ANTHROPIC_API_KEY?: string;
@@ -272,32 +302,7 @@ export interface BuiltinModelConfig {
   ANTHROPIC_MODEL?: string;
 }
 
-export interface CodexModelConfig {
-  /** OpenAI API key */
-  OPENAI_API_KEY?: string;
-  /** Model override for codex engine */
-  CODEX_MODEL?: string;
-}
-
-/** Per-engine model/env overrides. */
-export type EngineModelConfigs = {
-  claude: ClaudeModelConfig;
-  cursor: CursorModelConfig;
-  codebuddy: CodebuddyModelConfig;
-  builtin: BuiltinModelConfig;
-  codex: CodexModelConfig;
-};
-
-/** @deprecated Use EngineModelConfigs */
-export type ModelConfig = ClaudeModelConfig;
-
-export const DEFAULT_ENGINE_MODEL_CONFIGS: EngineModelConfigs = {
-  claude: {},
-  cursor: {},
-  codebuddy: {},
-  builtin: {},
-  codex: {},
-};
+export type EngineModelConfigs = BuiltinModelConfig;
 
 export interface FileEntry {
   name: string;

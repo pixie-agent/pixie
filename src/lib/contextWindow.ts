@@ -10,6 +10,8 @@ export function contextWindowFor(
   engine: AgentEngineId | undefined,
   model?: string,
 ): number | null {
+  // ACP agents report their real window via usage_update — no static guess.
+  if (engine?.startsWith("acp/")) return null;
   if (engine === "cursor" || engine === "codex") return null;
   if (engine === "claude" || engine === "codebuddy" || engine === "builtin") {
     if (model && model.includes("[1m]")) return 1_000_000;

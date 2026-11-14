@@ -68,6 +68,41 @@ export default function Terminal({ id, cwd, onExit }: TerminalProps) {
     term.loadAddon(fitAddon);
     term.open(container);
 
+    // WKWebView can drop the trailing `mouseup` (released outside the
+    // viewport, native window drag, focus steal): xterm attaches its
+    // document-level `mousemove` drag listener on mousedown and only removes
+    // it on `mouseup`, and its move handler never checks `e.buttons` — so a
+    // lost release leaves the selection following the cursor forever. Track
+    // press state and, on the first buttonless move after a press on this
+    // terminal, synthesize the missing `mouseup` so the drag ends (and the
+    // selection freezes) where the user actually released. Capture-phase on
+    // document: runs before xterm's bubble-phase listeners, and the
+    // synthetic event never reaches the PTY's element-level mouse-report
+    // handlers (dispatched on document, not the screen element).
+    let pressActive = false;
+    const markPressDown = () => {
+      pressActive = true;
+    };
+    const markPressUp = () => {
+      pressActive = false;
+    };
+    const guardMove = (e: MouseEvent) => {
+      if (pressActive && e.buttons === 0) {
+        pressActive = false;
+        document.dispatchEvent(
+          new MouseEvent("mouseup", {
+            bubbles: true,
+            clientX: e.clientX,
+            clientY: e.clientY,
+            button: 0,
+          }),
+        );
+      }
+    };
+    container.addEventListener("mousedown", markPressDown, true);
+    document.addEventListener("mouseup", markPressUp, true);
+    document.addEventListener("mousemove", guardMove, true);
+
     fitRef.current = fitAddon;
 
     // Fit on mount and resize
@@ -116,6 +151,9 @@ export default function Terminal({ id, cwd, onExit }: TerminalProps) {
     });
 
     return () => {
+      container.removeEventListener("mousedown", markPressDown, true);
+      document.removeEventListener("mouseup", markPressUp, true);
+      document.removeEventListener("mousemove", guardMove, true);
       resizeObserver.disconnect();
       // Only kill if the process is still alive — if it exited on its own the
       // backend reader thread has ended and the session may already be gone.

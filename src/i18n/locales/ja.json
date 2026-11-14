@@ -100,59 +100,9 @@
     "initializing": "初期化中..."
   },
   "engineSetup": {
-    "title": "Agent エンジンの設定",
-    "description": "Pixie はモデルを含んでいません。エンジンをインストールしてログインしてください。準備完了 = モデルへの ping が成功。",
-    "hint": "注意：検出時にエンジンに ping メッセージを送信するため、ごくわずかな料金が発生する可能性があります。",
-    "probeModel": {
-      "label": "モデル",
-      "placeholder": "デフォルトモデル（任意）",
-      "hint": "検出と会話で使用。空欄なら CLI のデフォルト。"
-    },
-    "close": "閉じる",
-    "enterApp": "アプリに入る",
-    "anyReady": "準備完了のエンジンがあります",
-    "noneReady": "まだ準備完了のエンジンがありません",
-    "status": {
-      "builtin": "組み込み",
-      "ready": "準備完了",
-      "probing": "確認中...",
-      "notInstalled": "未インストール",
-      "notReady": "未準備"
-    },
-    "actions": {
-      "oneClickInstall": "ワンクリックインストール",
-      "installing": "インストール中...",
-      "oneClickLogin": "ワンクリックログイン",
-      "reprobe": "再検出",
-      "manualInstall": "手動インストール（コマンドをターミナルにコピーして実行）",
-      "copyLoginCommand": "ログインコマンドをコピー",
-      "copyProxyCommand": "プロキシコマンドをコピー"
-    },
     "messages": {
-      "probing": "準備状態を確認中...",
-      "builtinConfigHint": "設定 → エンジン設定 → Builtin で ANTHROPIC_API_KEY を設定してください。",
-      "builtinDesc": "組み込みエンジンは Anthropic Messages API を直接呼び出します。CLI のインストールは不要で、API キーの設定のみが必要です。",
-      "notReadyHint": "未準備です。「ワンクリックログイン」でブラウザでログインし、完了したら「再検出」をクリックしてください。",
-      "regionBlockedHint": "ログインは問題ありません — エンジンの API が地域制限 (403) で接続を拒否しました。シェルで HTTPS_PROXY を設定するか、設定済みのターミナルから Pixie を起動してから「再検出」してください。",
-      "readyMessage": "準備完了、使用可能です。",
-      "installFailed": "インストールに失敗しました。以下のコマンドで手動インストールしてください",
-      "engineResponse": "エンジンの応答：",
       "probeNoResponse": "検出が応答しませんでした。「再検出」をクリックして再試行してください。",
       "failedCheckEngines": "エンジンの確認に失敗しました"
-    },
-    "loginHints": {
-      "claude": "ブラウザで Anthropic ログインを完了し、「再検出」をクリックしてください。",
-      "cursor": "ブラウザで Cursor ログインを完了します。",
-      "codebuddy": "ログイン方法を選択し、ブラウザで認証を完了してください。",
-      "builtin": "設定で ANTHROPIC_API_KEY を設定すれば使用できます。",
-      "codex": "ブラウザで OpenAI ログインを完了します。"
-    },
-    "installNotes": {
-      "builtin": "（組み込みエンジン、インストール不要）"
-    },
-    "commands": {
-      "copy": "コピー",
-      "copyToClipboard": "クリップボードにコピー"
     }
   },
   "header": {
@@ -270,7 +220,6 @@
   },
   "settings": {
     "title": "設定",
-    "agentEngines": "Agent エンジン",
     "preferredEngine": "優先エンジン",
     "preferredEngineHint": "新しいセッションはこのエンジンを使用します。既存のセッションはバインドされたエンジンを保持します。",
     "workingDirectory": "作業ディレクトリ",
@@ -292,8 +241,28 @@
     "paperMint": "ペーパーミント",
     "interfaceScale": "インターフェイス倍率",
     "interfaceScaleHint": "Ctrl/Cmd + プラス、マイナス、0 で素早く調整できます。",
-    "modelConfig": "モデル設定",
-    "modelConfigHint": "エンジンごとの環境変数。自由に追加・編集・削除できます。空のままにするとシステムデフォルトを使用します。",
+    "modelConfig": "組み込みエンジンの環境変数",
+    "modelConfigHint": "組み込みエンジン（唯一の非 ACP エンジン）の環境変数。自由に追加・編集・削除できます。各 CLI エージェントの環境変数は下の「ACP エージェント」で管理します。",
+    "acpAgents": "ACP エージェント",
+    "acpAgentsHint": "Agent Client Protocol 対応エージェント — 1 つの起動設定で互換 CLI（Gemini CLI、Pi、OpenCode、ACP レジストリ全体）を接続できます。キーとコマンドは必須です。",
+    "acpAddAgent": "エージェントを追加",
+    "acpSave": "エージェントを保存",
+    "acpSaving": "保存中…",
+    "acpLabelPlaceholder": "表示名",
+    "acpCommandPlaceholder": "コマンド（例: gemini）",
+    "acpArgsPlaceholder": "引数（例: --experimental-acp）",
+    "acpKeyTitle": "レジストリキー — エンジン ID は acp/<key> になります",
+    "acpRemoveAgent": "エージェントを削除",
+    "acpEngineId": "エンジン ID: {{id}}",
+    "acpCatalogLoading": "公式 ACP エージェントカタログを読み込み中…",
+    "acpCatalogUnavailable": "ACP カタログに接続できません — 下記から手動でエージェントを追加できます。",
+    "acpCatalogSearch": "ACP エージェントカタログを検索…",
+    "acpCatalogNoMatch": "一致するエージェントがありません。",
+    "acpBinaryOnly": "バイナリ配布",
+    "acpEnabled": "有効",
+    "acpEnable": "有効にする",
+    "acpEnabling": "有効化中…",
+    "acpManual": "手動起動設定（バイナリエージェントやカスタム構成用）",
     "appliesOnly": "{{name}} セッションにのみ適用されます。",
     "overrides_one": "{{count}} 件の変数",
     "overrides_other": "{{count}} 件の変数",
@@ -345,9 +314,7 @@
       "progress": "バックフィル中… {{done}}/{{total}}",
       "complete": "完了！{{done}}/{{total}} 件の会話をナレッジベースに追加しました。",
       "failed": "バックフィル失敗：{{error}}"
-    },
-    "viewRawOutput": "生の出力を表示",
-    "rawProbeTitle": "{{engine}} 検出の生の出力"
+    }
   },
   "tasks": {
     "title": "スケジュールタスク",
