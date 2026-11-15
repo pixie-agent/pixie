@@ -123,8 +123,74 @@ const markConfigDirty = makeWriter(
   300,
 );
 
+// ---------------------------------------------------------------------------
+// Incremental history persistence
+// ---------------------------------------------------------------------------
+// `history.jsonl` is an append-only log (upserts + tombstones). Rewriting the
+// whole file on every change is O(total history) and history grows without
+// bound over time — once there are hundreds of multi-MB conversations, every
+// turn becomes an 80MB+ JSON re-serialization + disk rewrite (main-thread UI
+// stalls + high CPU). Instead we diff the live state against the last-saved
+// snapshot and send only the conversations that CHANGED; the backend replays
+// and compacts the log on load.
+//
+// Reference equality is the dirty check: `useChat` updates conversations
+// immutably, so an unchanged conversation keeps its object identity across
+// saves and is skipped without re-serializing it.
+let lastSavedHistory: Map<string, { conversation: Conversation; workspaceId: string }> | null =
+  null;
+
+interface HistoryPatchDiff {
+  upserts: HistoryWire[];
+  removeIds: string[];
+  nextBaseline: Map<string, { conversation: Conversation; workspaceId: string }>;
+}
+
+function computeHistoryPatch(entries: HistoryEntry[]): HistoryPatchDiff {
+  const nextBaseline = new Map<
+    string,
+    { conversation: Conversation; workspaceId: string }
+  >();
+  const upserts: HistoryWire[] = [];
+  for (const e of entries) {
+    nextBaseline.set(e.conversation.id, {
+      conversation: e.conversation,
+      workspaceId: e.workspaceId,
+    });
+    if (!lastSavedHistory) continue; // first flush only establishes the baseline
+    const prev = lastSavedHistory.get(e.conversation.id);
+    if (
+      !prev ||
+      prev.conversation !== e.conversation ||
+      prev.workspaceId !== e.workspaceId
+    ) {
+      upserts.push({ workspace_id: e.workspaceId, conversation: e.conversation });
+    }
+  }
+  const removeIds: string[] = [];
+  if (lastSavedHistory) {
+    for (const id of lastSavedHistory.keys()) {
+      if (!nextBaseline.has(id)) removeIds.push(id);
+    }
+  }
+  return { upserts, removeIds, nextBaseline };
+}
+
 const markHistoryDirty = makeWriter(
-  () => invoke("save_history", { entries: historyToWire(history) }),
+  async () => {
+    const { upserts, removeIds, nextBaseline } = computeHistoryPatch(history);
+    if (upserts.length === 0 && removeIds.length === 0) {
+      // Nothing changed (or this is the first flush, which only records the
+      // baseline so later saves are truly incremental).
+      lastSavedHistory = nextBaseline;
+      return;
+    }
+    await invoke("save_history_patch", {
+      upserts,
+      removeIds,
+    });
+    lastSavedHistory = nextBaseline;
+  },
   50,
 );
 
@@ -390,6 +456,16 @@ export async function bootstrap(): Promise<void> {
       localStorage.removeItem("pixie-migrated");
     }
   }
+
+  // Seed the incremental-history baseline from what's on disk so the first
+  // save doesn't rewrite the whole file — and so changes made immediately
+  // after launch are still detected as dirty.
+  lastSavedHistory = new Map(
+    history.map((e) => [
+      e.conversation.id,
+      { conversation: e.conversation, workspaceId: e.workspaceId },
+    ]),
+  );
 
   bootstrapped = true;
 }

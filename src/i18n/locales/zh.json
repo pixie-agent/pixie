@@ -193,7 +193,10 @@
     "queueClear": "清空队列",
     "queuePlaceholder": "生成中 — 回车加入队列",
     "interruptSend": "立即发送（停止当前）",
-    "compacted": "上下文已压缩"
+    "compacted": "上下文已压缩",
+    "compacting": "正在压缩上下文…",
+    "compactionFailed": "压缩失败",
+    "compactionSummary": "保留了哪些内容"
   },
   "inputBar": {
     "removeAttachment": "移除",
@@ -204,6 +207,7 @@
     "kbActive": "知识库已启用 — 点击关闭",
     "kbInclude": "包含知识库上下文",
     "selectModel": "选择模型",
+    "searchModels": "搜索模型...",
     "selectEngine": "切换引擎",
     "customModelPlaceholder": "自定义模型...",
     "autoSuffix": "（自动）",
@@ -598,6 +602,26 @@
     "toolsFailed": "· {{count}} 失败",
     "diffStat": "+{{added}} · -{{removed}}",
     "moreLinesNotShown": "…（还有 {{count}} 行未显示）",
+    "moreFields": "…还有 {{count}} 项",
+    "plan": "计划",
+    "planProgress": "{{done}}/{{total}} 已完成",
+    "planStatus": {
+      "pending": "待处理",
+      "in_progress": "进行中",
+      "completed": "已完成"
+    },
+    "liveOutput": "实时输出",
+    "subagent": "子代理",
+    "subagentRunning": "执行中…",
+    "subagentRequiresAction": "等待审批",
+    "subagentIdle": "已完成",
+    "subagentUnknown": "运行中",
+    "subagentFailed": "失败：{{detail}}",
+    "notice": {
+      "info": "提示",
+      "warning": "警告",
+      "error": "错误"
+    },
     "fields": {
       "command": "命令",
       "file": "文件",
@@ -661,7 +685,8 @@
       "listTasks": "列出任务",
       "readTaskOutput": "读取任务输出",
       "stopTask": "停止任务",
-      "askQuestion": "提问"
+      "askQuestion": "提问",
+      "unknownTool": "工具调用"
     }
   },
   "errorBoundary": {

@@ -190,6 +190,11 @@ pub enum ToolEventKind {
         name: Option<String>,
         input: Option<String>,
     },
+    /// Mid-execution partial output (ACP `tool_call_update` with
+    /// `in_progress` status, or a client-managed terminal's live buffer).
+    /// `content` is a REPLACEMENT snapshot, not an append — the agent
+    /// replaces its whole content collection on each update.
+    Update { content: String },
     Result {
         content: Option<String>,
         is_error: bool,
@@ -242,6 +247,47 @@ pub enum NormalizedEvent {
         trigger: String,
         pre_tokens: u64,
     },
+    /// ACP ID-addressed compaction lifecycle (`compaction_update`): status
+    /// transitions and the post-compaction summary the model retained.
+    /// `status`: "in_progress" | "completed" | "failed" | "cancelled".
+    CompactionStatus {
+        status: String,
+        summary: Option<String>,
+        error: Option<String>,
+    },
+    /// ACP `plan` — the agent's execution plan as a complete entry list
+    /// (each update replaces the whole plan per the spec).
+    PlanUpdate {
+        entries: Vec<PlanEntryEvent>,
+    },
+    /// ACP `notice` — a live, fire-and-forget user-facing message from the
+    /// agent (severity hint: "info" | "warning" | "error").
+    Notice {
+        severity: String,
+        title: String,
+        description: Option<String>,
+    },
+    /// ACP subagents-RFD association patch (`subagent_update` on the parent
+    /// session): title/description/state for a child session the parent owns.
+    /// Fields follow patch semantics — `None` means "unchanged" at the
+    /// protocol level; the frontend merges per field.
+    SubagentUpdate {
+        session_id: String,
+        title: Option<String>,
+        description: Option<String>,
+        /// "running" | "requires_action" | "idle" | "unknown"
+        state: Option<String>,
+        /// stop_reason or error text carried by the state snapshot.
+        state_detail: Option<String>,
+    },
+    /// An event belonging to a CHILD session (subagent), routed here because
+    /// its `session/update` carried a different sessionId than the one Pixie
+    /// prompted. `event` is the ordinary normalized mapping of the child's
+    /// update — only text/thinking/tool kinds are consumed by the UI.
+    SubagentChildEvent {
+        session_id: String,
+        event: Box<NormalizedEvent>,
+    },
     Final {
         text: String,
     },
@@ -254,6 +300,15 @@ pub enum NormalizedEvent {
         tool_name: String,
         input: serde_json::Value,
     },
+}
+
+/// One entry of an ACP plan update. `status`: "pending" | "in_progress" |
+/// "completed" (agents may send custom values).
+#[derive(Debug, Clone)]
+pub struct PlanEntryEvent {
+    pub content: String,
+    pub status: String,
+    pub priority: Option<String>,
 }
 
 impl NormalizedEvent {

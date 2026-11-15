@@ -193,7 +193,10 @@
     "queueClear": "Clear all",
     "queuePlaceholder": "Generating — Enter to queue",
     "interruptSend": "Send now (stop current)",
-    "compacted": "Context compacted"
+    "compacted": "Context compacted",
+    "compacting": "Compacting context…",
+    "compactionFailed": "Compaction failed",
+    "compactionSummary": "What was retained"
   },
   "inputBar": {
     "removeAttachment": "Remove",
@@ -204,6 +207,7 @@
     "kbActive": "Knowledge base active — click to disable",
     "kbInclude": "Include knowledge base context",
     "selectModel": "Select model",
+    "searchModels": "Search models...",
     "selectEngine": "Switch engine",
     "customModelPlaceholder": "Custom model...",
     "autoSuffix": "(auto)",
@@ -598,6 +602,26 @@
     "toolsFailed": "· {{count}} failed",
     "diffStat": "{{added}} added · {{removed}} removed",
     "moreLinesNotShown": "… ({{count}} more lines not shown)",
+    "moreFields": "…{{count}} more",
+    "plan": "Plan",
+    "planProgress": "{{done}}/{{total}} done",
+    "planStatus": {
+      "pending": "pending",
+      "in_progress": "in progress",
+      "completed": "done"
+    },
+    "liveOutput": "live output",
+    "subagent": "Subagent",
+    "subagentRunning": "working…",
+    "subagentRequiresAction": "waiting for approval",
+    "subagentIdle": "done",
+    "subagentUnknown": "running",
+    "subagentFailed": "failed: {{detail}}",
+    "notice": {
+      "info": "Notice",
+      "warning": "Warning",
+      "error": "Error"
+    },
     "fields": {
       "command": "command",
       "file": "file",
@@ -661,7 +685,8 @@
       "listTasks": "List tasks",
       "readTaskOutput": "Read task output",
       "stopTask": "Stop task",
-      "askQuestion": "Ask question"
+      "askQuestion": "Ask question",
+      "unknownTool": "Tool call"
     }
   },
   "errorBoundary": {

@@ -168,6 +168,7 @@ export default function InputBar({
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [customModelInput, setCustomModelInput] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
   const [contextOpen, setContextOpen] = useState(false);
   const [sessionAlive, setSessionAlive] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
@@ -180,6 +181,7 @@ export default function InputBar({
   const workspaceWrapperRef = useRef<HTMLDivElement>(null);
   const modelWrapperRef = useRef<HTMLDivElement>(null);
   const modelDropdownListRef = useRef<HTMLDivElement>(null);
+  const modelSearchInputRef = useRef<HTMLInputElement>(null);
   const contextWrapperRef = useRef<HTMLDivElement>(null);
 
   const configuredDefaultModelId = useCallback((): string | undefined => {
@@ -196,6 +198,12 @@ export default function InputBar({
   // setState-in-effect; React discards the in-progress render and re-renders.
   if (disabled && dropdownOpen) {
     setDropdownOpen(false);
+  }
+
+  // Same render-adjust pattern: clear the model search whenever the dropdown
+  // closes (via selection, Escape, or outside click) so it reopens fresh.
+  if (!modelDropdownOpen && modelSearch) {
+    setModelSearch("");
   }
 
   // Auto-resize textarea
@@ -468,11 +476,13 @@ export default function InputBar({
   }, [contextOpen, conversationId]);
 
   // Ensure the model dropdown always opens scrolled to the top (avoid focusing
-  // the custom input at the bottom auto-scrolling the list).
+  // the custom input at the bottom auto-scrolling the list), with the search
+  // field taking focus immediately.
   useEffect(() => {
     if (!modelDropdownOpen) return;
     requestAnimationFrame(() => {
       modelDropdownListRef.current?.scrollTo({ top: 0 });
+      modelSearchInputRef.current?.focus();
     });
   }, [modelDropdownOpen]);
 
@@ -537,6 +547,16 @@ export default function InputBar({
   const charCount = value.length;
   const nearLimit = charCount > MAX_CHARS * 0.9;
   const canSend = (value.trim().length > 0 || attachments.length > 0) && !disabled;
+
+  // Filter the model list as the user types in the dropdown's search field
+  // (matches both the display label and the raw id).
+  const filteredModels = (() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return availableModels;
+    return availableModels.filter(
+      (m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+    );
+  })();
 
   const defaultModelLabel = (() => {
     if (!engine) return t('common.auto');
@@ -837,8 +857,29 @@ export default function InputBar({
               {modelDropdownOpen && (
                 <div
                   ref={modelDropdownListRef}
-                  className="absolute bottom-full left-0 mb-1 w-52 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 py-1 max-h-64 overflow-y-auto"
+                  className="absolute bottom-full left-0 mb-1 w-52 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 pb-1 max-h-64 overflow-y-auto"
                 >
+                  <div className="sticky top-0 z-10 bg-[var(--bg-secondary)] border-b border-[var(--border-color)] p-1.5">
+                    <input
+                      ref={modelSearchInputRef}
+                      type="text"
+                      value={modelSearch}
+                      onChange={(e) => setModelSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && filteredModels.length > 0) {
+                          e.preventDefault();
+                          handleSelectModel(filteredModels[0].id);
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          setModelDropdownOpen(false);
+                          setModelSearch("");
+                        }
+                      }}
+                      placeholder={t('inputBar.searchModels')}
+                      aria-label={t('inputBar.searchModels')}
+                      className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-1 text-[var(--text-primary)] placeholder:text-[var(--text-secondary)]/50 outline-none focus:border-[var(--accent)]"
+                    />
+                  </div>
                   <button
                     type="button"
                     onClick={() => handleSelectModel(undefined)}
@@ -848,7 +889,7 @@ export default function InputBar({
                   >
                     {defaultModelLabel} {t('inputBar.autoSuffix')}
                   </button>
-                  {availableModels.map((m) => (
+                  {filteredModels.map((m) => (
                     <button
                       key={m.id}
                       type="button"
@@ -861,6 +902,11 @@ export default function InputBar({
                       {m.id !== m.label && <span className="ml-1.5 text-[var(--text-secondary)] opacity-60">{m.id}</span>}
                     </button>
                   ))}
+                  {filteredModels.length === 0 && modelSearch.trim() && (
+                    <div className="px-3 py-1.5 text-xs text-[var(--text-secondary)]">
+                      {t('newAgent.noModelsFound')}
+                    </div>
+                  )}
                   <div className="border-t border-[var(--border-color)] mt-1 pt-1 px-2">
                     <div className="flex items-center gap-1">
                       <input

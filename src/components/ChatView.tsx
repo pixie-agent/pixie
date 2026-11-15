@@ -19,6 +19,46 @@ const INITIAL_MESSAGE_RENDER_COUNT = 48;
 const MESSAGE_RENDER_CHUNK = 80;
 const MESSAGE_RENDER_CHUNK_DELAY_MS = 16;
 
+/** The compact-boundary divider: "compacting…" while an ACP compaction is
+ * in progress; once compacted, expandable to show what the model retained. */
+function CompactDivider({ conversation }: { conversation: Conversation }) {
+  const { t } = useTranslation();
+  const [showSummary, setShowSummary] = useState(false);
+  if (conversation.compacting) {
+    return (
+      <div className="flex items-center gap-2 my-3 text-[10px] text-[var(--accent)]">
+        <div className="h-px flex-1 bg-[var(--border-color)]" />
+        <span className="tool-spinner" />
+        <span>{t("chat.compacting")}</span>
+        <div className="h-px flex-1 bg-[var(--border-color)]" />
+      </div>
+    );
+  }
+  return (
+    <div className="my-3">
+      <div className="flex items-center gap-2 text-[10px] text-[var(--text-secondary)] opacity-70">
+        <div className="h-px flex-1 bg-[var(--border-color)]" />
+        <span>{t("chat.compacted")}</span>
+        {conversation.compactSummary && (
+          <button
+            type="button"
+            onClick={() => setShowSummary((v) => !v)}
+            className="text-[var(--accent)] hover:underline"
+          >
+            {t("chat.compactionSummary")} {showSummary ? "▾" : "▸"}
+          </button>
+        )}
+        <div className="h-px flex-1 bg-[var(--border-color)]" />
+      </div>
+      {showSummary && conversation.compactSummary && (
+        <div className="mx-1 mt-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-3 py-2 text-xs text-[var(--text-primary)] whitespace-pre-wrap [overflow-wrap:anywhere]">
+          {conversation.compactSummary}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComponentLoading({ onCancel }: { onCancel?: () => void }) {
   const { t } = useTranslation();
   return (
@@ -104,6 +144,11 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
   const [switching, setSwitching] = useState(false);
   const [renderLimit, setRenderLimit] = useState(INITIAL_MESSAGE_RENDER_COUNT);
   const conversationId = conversation?.id ?? null;
+  // During streaming, render the live `conversation` prop directly — a second
+  // `displayConversation` mirror + setTimeout sync painted a stale frame on
+  // every flush (visible flicker) and doubled renders. The mirror state only
+  // matters during the switching transition (loading + mount).
+  const effectiveConversation = switching ? displayConversation : conversation;
 
   useEffect(() => {
     latestConversationRef.current = conversation;
@@ -141,14 +186,8 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
   }, [conversationId, displayConversation?.id]);
 
   useEffect(() => {
-    if (!conversation || switching || displayConversation?.id !== conversation.id) return;
-    const timer = window.setTimeout(() => setDisplayConversation(conversation), 0);
-    return () => window.clearTimeout(timer);
-  }, [conversation, displayConversation?.id, switching]);
-
-  useEffect(() => {
-    if (!displayConversation) return;
-    const total = displayConversation.messages.length;
+    if (!effectiveConversation) return;
+    const total = effectiveConversation.messages.length;
     if (renderLimit >= total) return;
     const token = loadTokenRef.current;
     const timer = window.setTimeout(() => {
@@ -156,7 +195,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
       setRenderLimit((n) => Math.min(total, n + MESSAGE_RENDER_CHUNK));
     }, MESSAGE_RENDER_CHUNK_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [displayConversation, renderLimit]);
+  }, [effectiveConversation, renderLimit]);
 
   const cancelConversationLoad = useCallback(() => {
     loadTokenRef.current += 1;
@@ -174,7 +213,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
   // Scroll to the bottom ONLY when a new message is added (i.e. the user just sent
   // a new turn). The assistant's streaming reply NEVER auto-scrolls, so you can
   // scroll freely and read at your own pace while it generates.
-  const messageCount = displayConversation?.messages.length ?? 0;
+  const messageCount = effectiveConversation?.messages.length ?? 0;
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -192,10 +231,10 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
     setShowJump(false);
   }, []);
 
-  const hiddenCount = Math.max(0, (displayConversation?.messages.length ?? 0) - renderLimit);
+  const hiddenCount = Math.max(0, (effectiveConversation?.messages.length ?? 0) - renderLimit);
   const visibleMessages = useMemo(
-    () => (displayConversation ? displayConversation.messages.slice(hiddenCount) : []),
-    [displayConversation, hiddenCount],
+    () => (effectiveConversation ? effectiveConversation.messages.slice(hiddenCount) : []),
+    [effectiveConversation, hiddenCount],
   );
 
   // No conversation selected
@@ -207,7 +246,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
     );
   }
 
-  if (!displayConversation) {
+  if (!effectiveConversation) {
     return (
       <div className="flex-1 overflow-hidden">
         <WelcomeScreen />
@@ -216,7 +255,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
   }
 
   // Empty conversation
-  if (displayConversation.messages.length === 0) {
+  if (effectiveConversation.messages.length === 0) {
     return (
       <div className="flex-1 overflow-hidden">
         <WelcomeScreen />
@@ -224,7 +263,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
     );
   }
 
-  const lastMessage = displayConversation.messages[displayConversation.messages.length - 1];
+  const lastMessage = effectiveConversation.messages[effectiveConversation.messages.length - 1];
 
   return (
     <div className="flex-1 overflow-hidden relative">
@@ -243,7 +282,7 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
 
           {visibleMessages.map((msg, i) => {
             // One-line divider where the CLI compacted the conversation.
-            const compactedAt = displayConversation.compactedAt ?? 0;
+            const compactedAt = effectiveConversation.compactedAt ?? 0;
             const showCompactDivider =
               compactedAt > 0 &&
               msg.timestamp >= compactedAt &&
@@ -251,13 +290,9 @@ export default function ChatView({ conversation, isGenerating, onOpenPreview, on
             return (
               <div key={msg.id}>
                 {showCompactDivider && (
-                  <div className="flex items-center gap-2 my-3 text-[10px] text-[var(--text-secondary)] opacity-70">
-                    <div className="h-px flex-1 bg-[var(--border-color)]" />
-                    <span>{t("chat.compacted")}</span>
-                    <div className="h-px flex-1 bg-[var(--border-color)]" />
-                  </div>
+                  <CompactDivider conversation={effectiveConversation} />
                 )}
-                <MessageBubble message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} onRetry={onRetry} conversationId={displayConversation.id} />
+                <MessageBubble message={msg} onOpenPreview={onOpenPreview} onRespondPermission={onRespondPermission} onRetry={onRetry} conversationId={effectiveConversation.id} />
               </div>
             );
           })}

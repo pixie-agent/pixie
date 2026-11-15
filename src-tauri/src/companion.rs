@@ -1016,8 +1016,8 @@ fn create_window(app: &AppHandle, prefs: &CompanionPrefs) -> Result<(), tauri::E
     if app.get_webview_window("companion").is_some() {
         return Ok(()); // dev reload — keep the existing window
     }
-    const W: f64 = 120.0;
-    const H: f64 = 140.0;
+    const W: f64 = 112.0;
+    const H: f64 = 96.0;
     // Restore the saved logical position, clamped into the nearest monitor's
     // visible area — a stale record from another display (or a pre-scale-fix
     // save in physical px) must not strand the pet off-screen.

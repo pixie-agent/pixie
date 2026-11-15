@@ -5,6 +5,10 @@ export interface ToolStep {
   input?: unknown;
   rawInput?: string;
   result?: string;
+  /** Live partial output while the tool is still running (ACP
+   * `tool_call_update` in_progress, or a client-managed terminal's streamed
+   * buffer). REPLACEMENT snapshot, not an append. */
+  liveOutput?: string;
 }
 
 export interface MessageUsage {
@@ -49,6 +53,46 @@ export interface Message {
   thinking?: string;
   /** Pending permission requests from the agent (tool calls needing user approval). */
   pendingPermissions?: PendingPermission[];
+  /** The agent's execution plan (ACP `plan`), replaced wholesale on every
+   * update. Rendered as a live checklist under the message. */
+  plan?: PlanEntry[];
+  /** Live agent notices (ACP `notice`), newest last; each renders as a toast-
+   * style inline banner attached to this message. */
+  notices?: MessageNotice[];
+  /** Subagent cards (ACP subagents RFD), keyed by child session id. */
+  subagents?: Record<string, SubagentState>;
+}
+
+/** One entry of the agent's execution plan. */
+export interface PlanEntry {
+  content: string;
+  status: string;
+  priority?: string;
+}
+
+/** A live fire-and-forget agent notice. */
+export interface MessageNotice {
+  severity: string;
+  title: string;
+  description?: string;
+}
+
+/** A subagent (child session) tracked in the conversation. */
+export interface SubagentState {
+  /** Child session id (the map key). */
+  id: string;
+  title?: string;
+  description?: string;
+  /** "running" | "requires_action" | "idle" | "unknown" */
+  state?: string;
+  /** stop_reason or error text carried by the state snapshot. */
+  stateDetail?: string;
+  /** Streamed child transcript: assistant text deltas. */
+  text: string;
+  /** Streamed child thinking (kept separate from text). */
+  thinking?: string;
+  /** Child tool steps, same shape as the main transcript's. */
+  tools: ToolStep[];
 }
 
 /** A pending permission request from the agent. */
@@ -92,6 +136,11 @@ export interface Conversation {
   /** Timestamp of the last context compaction (manual /compact or engine
    *  auto-compact); ChatView renders a divider before the first message at/after it. */
   compactedAt?: number;
+  /** Retained-summary text of the last compaction (ACP `compaction_update`),
+   * shown as expandable detail at the divider. */
+  compactSummary?: string;
+  /** true while an ACP compaction is in progress ("compacting…" state). */
+  compacting?: boolean;
 }
 
 export type AgentEngineId = "claude" | "cursor" | "codebuddy" | "builtin" | "codex" | `acp/${string}`;
@@ -221,7 +270,7 @@ export interface ResponseRetry {
 export interface ResponseTool {
   conversation_id: string;
   tool_use_id: string;
-  kind: "start" | "result";
+  kind: "start" | "update" | "result";
   name?: string;
   input?: string;
   content?: string;
@@ -249,6 +298,48 @@ export interface ResponseCompact {
   conversation_id: string;
   trigger: "manual" | "auto" | string;
   pre_tokens: number;
+}
+
+/** ACP ID-addressed compaction lifecycle (`compaction_update`): status
+ * transitions and the retained summary on completion. */
+export interface ResponseCompactStatus {
+  conversation_id: string;
+  status: "in_progress" | "completed" | "failed" | "cancelled" | string;
+  summary?: string;
+  error?: string;
+}
+
+/** ACP plan update (complete entry list each time). */
+export interface ResponsePlan {
+  conversation_id: string;
+  entries: { content: string; status: string; priority?: string }[];
+}
+
+/** ACP notice. */
+export interface ResponseNotice {
+  conversation_id: string;
+  severity: string;
+  title: string;
+  description?: string;
+}
+
+/** ACP subagent association patch (`subagent_update` on the parent). */
+export interface ResponseSubagent {
+  conversation_id: string;
+  session_id: string;
+  title?: string;
+  description?: string;
+  state?: string;
+  state_detail?: string;
+}
+
+/** A live event belonging to a child (subagent) session. */
+export interface ResponseSubagentActivity {
+  conversation_id: string;
+  session_id: string;
+  kind: "text" | "thinking" | "tool";
+  content?: string;
+  tool?: ResponseTool;
 }
 
 export interface ResponseThinking {

@@ -387,12 +387,14 @@ pub struct ResponseRetry {
 pub struct ResponseTool {
     pub conversation_id: String,
     pub tool_use_id: String,
-    /// "start" when a tool is invoked, "result" when its output arrives.
+    /// "start" when a tool is invoked, "update" for mid-execution partial
+    /// output, "result" when its output arrives.
     pub kind: String,
     pub name: Option<String>,
     /// Raw tool `input` as a JSON string (present on "start").
     pub input: Option<String>,
-    /// Tool result text (present on "result").
+    /// Tool result text (present on "result"); on "update" a REPLACEMENT
+    /// snapshot of the partial output so far.
     pub content: Option<String>,
     pub is_error: bool,
 }
@@ -422,6 +424,76 @@ pub struct ResponseCompact {
     pub conversation_id: String,
     pub trigger: String,
     pub pre_tokens: u64,
+}
+
+/// ACP ID-addressed compaction lifecycle transitions (`compaction_update`):
+/// in_progress → completed/failed/cancelled, with the retained summary on
+/// completion. Lets the UI show "compacting…" and an expandable summary at
+/// the chat divider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseCompactStatus {
+    pub conversation_id: String,
+    /// "in_progress" | "completed" | "failed" | "cancelled"
+    pub status: String,
+    /// Post-compaction summary text the model retained (on "completed").
+    pub summary: Option<String>,
+    /// Error details (on "failed").
+    pub error: Option<String>,
+}
+
+/// ACP plan update — the agent's execution plan, a complete entry list the
+/// frontend replaces wholesale on every update (per the ACP spec).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsePlanEntry {
+    pub content: String,
+    /// "pending" | "in_progress" | "completed" (agents may send custom values).
+    pub status: String,
+    pub priority: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsePlan {
+    pub conversation_id: String,
+    pub entries: Vec<ResponsePlanEntry>,
+}
+
+/// ACP notice — a live, fire-and-forget user-facing message from the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseNotice {
+    pub conversation_id: String,
+    /// "info" | "warning" | "error"
+    pub severity: String,
+    pub title: String,
+    pub description: Option<String>,
+}
+
+/// ACP subagents-RFD association patch for one child session (`subagent_update`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseSubagent {
+    pub conversation_id: String,
+    /// The child (subagent) session id.
+    pub session_id: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    /// "running" | "requires_action" | "idle" | "unknown"
+    pub state: Option<String>,
+    /// stop_reason or error text carried by the state snapshot.
+    pub state_detail: Option<String>,
+}
+
+/// A live event belonging to a child (subagent) session: its own streamed
+/// text, thinking, or tool activity, rendered inside the subagent card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseSubagentActivity {
+    pub conversation_id: String,
+    /// The child (subagent) session id.
+    pub session_id: String,
+    /// "text" (assistant message delta) | "thinking" | "tool".
+    pub kind: String,
+    /// Present on "text" / "thinking": the streamed delta.
+    pub content: Option<String>,
+    /// Present on "tool": the child's tool start/update/result.
+    pub tool: Option<ResponseTool>,
 }
 
 /// Live thinking-budget token estimate.
@@ -789,6 +861,72 @@ fn truncate_for_ui(text: &str, max: usize) -> String {
     engine::truncate_text(text, max)
 }
 
+/// Poll client-managed ACP terminals and stream new output into the
+/// conversation as tool `Update` snapshots so long-running commands show live
+/// output in their tool card. Spawned for the duration of a turn; abort it
+/// when the turn ends (background terminals keep buffering — the agent reads
+/// them back via `terminal/output`, which any later turn answers).
+fn spawn_acp_terminal_pump(
+    app: AppHandle,
+    conversation_id: String,
+    terminals: engine::acp::AcpTerminalMap,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Bytes already emitted per terminal id. An Update's content is a
+        // REPLACEMENT snapshot, so the full visible tail is re-sent — but only
+        // when the buffer grew.
+        let mut emitted: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut last_thinking: u64 = 0;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let snapshot: Vec<(String, engine::acp::AcpTerminal)> = terminals
+                .lock()
+                .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            for (id, term) in snapshot {
+                let links = term.links.lock().map(|l| l.clone()).unwrap_or_default();
+                // No linked tool card yet — don't advance the watermark, so
+                // the full snapshot emits once a link appears.
+                if links.is_empty() {
+                    continue;
+                }
+                let len = term.output.lock().map(|b| b.len()).unwrap_or(0);
+                let prev = emitted.entry(id).or_insert(0);
+                if len == *prev {
+                    continue;
+                }
+                *prev = len;
+                let snap = engine::acp::terminal_snapshot(&term, MAX_TOOL_RESULT_CHARS);
+                if snap.is_empty() {
+                    continue;
+                }
+                for link in links {
+                    let evt = if let Some(child) = &link.child_session {
+                        NormalizedEvent::SubagentChildEvent {
+                            session_id: child.clone(),
+                            event: Box::new(NormalizedEvent::Tool(engine::ToolEvent {
+                                id: link.tool_call_id.clone(),
+                                kind: engine::ToolEventKind::Update {
+                                    content: snap.clone(),
+                                },
+                            })),
+                        }
+                    } else {
+                        NormalizedEvent::Tool(engine::ToolEvent {
+                            id: link.tool_call_id.clone(),
+                            kind: engine::ToolEventKind::Update {
+                                content: snap.clone(),
+                            },
+                        })
+                    };
+                    emit_agent_events(&app, &conversation_id, &[evt], &mut last_thinking);
+                }
+            }
+        }
+    })
+}
+
 fn usage_is_empty(u: &engine::UsageInfo) -> bool {
     u.input_tokens == 0
         && u.output_tokens == 0
@@ -850,6 +988,13 @@ fn emit_agent_events(
                 engine::ToolEventKind::Start { name, input } => {
                     ("start", name.clone(), input.clone(), None, false)
                 }
+                engine::ToolEventKind::Update { content } => (
+                    "update",
+                    None,
+                    None,
+                    Some(truncate_for_ui(content, MAX_TOOL_RESULT_CHARS)),
+                    false,
+                ),
                 engine::ToolEventKind::Result { content, is_error } => {
                     let truncated = content
                         .as_ref()
@@ -920,6 +1065,151 @@ fn emit_agent_events(
                     pre_tokens: *pre_tokens,
                 },
             );
+        }
+
+        if let NormalizedEvent::CompactionStatus {
+            status,
+            summary,
+            error,
+        } = evt
+        {
+            let _ = app.emit(
+                "agent-compact-status",
+                ResponseCompactStatus {
+                    conversation_id: conversation_id.to_string(),
+                    status: status.clone(),
+                    summary: summary.clone(),
+                    error: error.clone(),
+                },
+            );
+        }
+
+        if let NormalizedEvent::PlanUpdate { entries } = evt {
+            let _ = app.emit(
+                "agent-plan",
+                ResponsePlan {
+                    conversation_id: conversation_id.to_string(),
+                    entries: entries
+                        .iter()
+                        .map(|e| ResponsePlanEntry {
+                            content: e.content.clone(),
+                            status: e.status.clone(),
+                            priority: e.priority.clone(),
+                        })
+                        .collect(),
+                },
+            );
+        }
+
+        if let NormalizedEvent::Notice {
+            severity,
+            title,
+            description,
+        } = evt
+        {
+            let _ = app.emit(
+                "agent-notice",
+                ResponseNotice {
+                    conversation_id: conversation_id.to_string(),
+                    severity: severity.clone(),
+                    title: title.clone(),
+                    description: description.clone(),
+                },
+            );
+        }
+
+        if let NormalizedEvent::SubagentUpdate {
+            session_id,
+            title,
+            description,
+            state,
+            state_detail,
+        } = evt
+        {
+            let _ = app.emit(
+                "agent-subagent",
+                ResponseSubagent {
+                    conversation_id: conversation_id.to_string(),
+                    session_id: session_id.clone(),
+                    title: title.clone(),
+                    description: description.clone(),
+                    state: state.clone(),
+                    state_detail: state_detail.clone(),
+                },
+            );
+        }
+
+        // Child (subagent) session events: unwrap and emit as subagent
+        // activity. Only text/thinking/tool kinds are meaningful in the card.
+        if let NormalizedEvent::SubagentChildEvent { session_id, event } = evt {
+            match event.as_ref() {
+                NormalizedEvent::TextDelta { text, .. } => {
+                    let _ = app.emit(
+                        "agent-subagent-activity",
+                        ResponseSubagentActivity {
+                            conversation_id: conversation_id.to_string(),
+                            session_id: session_id.clone(),
+                            kind: "text".into(),
+                            content: Some(text.clone()),
+                            tool: None,
+                        },
+                    );
+                }
+                NormalizedEvent::ThinkingText { content } => {
+                    let _ = app.emit(
+                        "agent-subagent-activity",
+                        ResponseSubagentActivity {
+                            conversation_id: conversation_id.to_string(),
+                            session_id: session_id.clone(),
+                            kind: "thinking".into(),
+                            content: Some(content.clone()),
+                            tool: None,
+                        },
+                    );
+                }
+                NormalizedEvent::Tool(te) => {
+                    let (kind, name, input, content, is_error) = match &te.kind {
+                        engine::ToolEventKind::Start { name, input } => {
+                            ("start", name.clone(), input.clone(), None, false)
+                        }
+                        engine::ToolEventKind::Update { content } => (
+                            "update",
+                            None,
+                            None,
+                            Some(truncate_for_ui(content, MAX_TOOL_RESULT_CHARS)),
+                            false,
+                        ),
+                        engine::ToolEventKind::Result { content, is_error } => (
+                            "result",
+                            None,
+                            None,
+                            content
+                                .as_ref()
+                                .map(|c| truncate_for_ui(c, MAX_TOOL_RESULT_CHARS)),
+                            *is_error,
+                        ),
+                    };
+                    let _ = app.emit(
+                        "agent-subagent-activity",
+                        ResponseSubagentActivity {
+                            conversation_id: conversation_id.to_string(),
+                            session_id: session_id.clone(),
+                            kind: "tool".into(),
+                            content: None,
+                            tool: Some(ResponseTool {
+                                conversation_id: conversation_id.to_string(),
+                                tool_use_id: te.id.clone(),
+                                kind: kind.to_string(),
+                                name,
+                                input,
+                                content,
+                                is_error,
+                            }),
+                        },
+                    );
+                }
+                _ => {}
+            }
         }
 
         if let NormalizedEvent::Error { message } = evt {
@@ -1364,6 +1654,14 @@ async fn send_message(
             let activity = sessions.get(&conv_id).map(|s| s.activity()).unwrap();
             drop(sessions);
 
+            // Stream client-managed terminal output (live Bash) into the tool
+            // cards while the turn runs.
+            let terminal_pump = spawn_acp_terminal_pump(
+                app_handle.clone(),
+                conv_id.clone(),
+                engine::acp::AcpTerminalMap::clone(&turn_ctx.terminals),
+            );
+
             let engines_after = conversation_engines.clone();
             let conv_id_after = conv_id.clone();
             // Session-id events during streaming are remembered under the
@@ -1424,6 +1722,7 @@ async fn send_message(
                 .await;
                 outcome
             };
+            terminal_pump.abort();
 
             kill_registry.lock().await.remove(&conv_id_after);
 
@@ -7005,28 +7304,64 @@ async fn register_vault_in_obsidian(vault_path: &str, _vault_name: &str) -> Resu
     Ok(())
 }
 
-/// Load every conversation from `history.jsonl` (one entry per line). Malformed
-/// lines are skipped so a single bad line can't prevent startup.
+/// Load every conversation from `history.jsonl`. The file is an append-only
+/// log: each line is either a full `HistoryEntry` (upsert) or a tombstone
+/// `{"delete": "<conversation-id>"}`. Lines are replayed in order (last write
+/// wins), so history survives restarts even though saves only append the
+/// conversations that CHANGED. Malformed lines are skipped so a single bad
+/// line can't prevent startup.
 #[tauri::command]
 async fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
     let Some(content) = read_local_data_file_if_exists(&app, HISTORY_FILE, "history")? else {
         return Ok(vec![]);
     };
-    let mut entries = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut by_id: HashMap<String, HistoryEntry> = HashMap::new();
+    let mut total_lines: usize = 0;
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<HistoryEntry>(line) {
-            entries.push(entry);
+        total_lines += 1;
+        // Tombstone line: `{"delete": "<conversation-id>"}`.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(id) = v.get("delete").and_then(|x| x.as_str()) {
+                by_id.remove(id);
+                continue;
+            }
         }
+        if let Ok(entry) = serde_json::from_str::<HistoryEntry>(line) {
+            if let Some(id) = entry.conversation.get("id").and_then(|x| x.as_str()) {
+                if !by_id.contains_key(id) {
+                    order.push(id.to_string());
+                }
+                by_id.insert(id.to_string(), entry);
+            }
+        }
+    }
+    let entries: Vec<HistoryEntry> = order.iter().filter_map(|id| by_id.remove(id)).collect();
+    // Compact the log once more than 500 stale lines accumulate, so a
+    // long-lived history file doesn't compound across sessions. Loading
+    // already paid for the full read, so the rewrite here is amortized.
+    if total_lines > entries.len() + 500 {
+        let path = local_data_file_path(&app, HISTORY_FILE, "history")?;
+        let mut out = String::new();
+        for entry in &entries {
+            let line = serde_json::to_string(entry)
+                .map_err(|e| format!("Failed to serialize history entry: {e}"))?;
+            out.push_str(&line);
+            out.push('\n');
+        }
+        atomic_write(&path, &out)?;
     }
     Ok(entries)
 }
 
 /// Overwrite `history.jsonl` with one JSON line per entry (full snapshot).
-/// The frontend coalesces/debounces calls so this receives the latest state.
+/// Kept for the one-shot localStorage migration; the steady-state path is
+/// `save_history_patch` (append-only), which avoids rewriting the entire file
+/// on every turn.
 #[tauri::command]
 async fn save_history(entries: Vec<HistoryEntry>, app: AppHandle) -> Result<(), String> {
     let path = local_data_file_path(&app, HISTORY_FILE, "history")?;
@@ -7038,6 +7373,47 @@ async fn save_history(entries: Vec<HistoryEntry>, app: AppHandle) -> Result<(), 
         out.push('\n');
     }
     atomic_write(&path, &out)
+}
+
+/// Incremental history write: appends only the conversations that changed
+/// (plus tombstones for deleted ids) instead of rewriting the whole file.
+/// Compaction happens in `load_history` (replaying the log already paid for
+/// the read, so the occasional rewrite there is amortized).
+#[derive(Debug, Deserialize)]
+struct HistoryPatch {
+    #[serde(default)]
+    upserts: Vec<HistoryEntry>,
+    #[serde(default)]
+    remove_ids: Vec<String>,
+}
+
+#[tauri::command]
+async fn save_history_patch(patch: HistoryPatch, app: AppHandle) -> Result<(), String> {
+    let mut out = String::new();
+    for entry in &patch.upserts {
+        let line = serde_json::to_string(entry)
+            .map_err(|e| format!("Failed to serialize history entry: {e}"))?;
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for id in &patch.remove_ids {
+        let id = serde_json::to_string(id)
+            .map_err(|e| format!("Failed to serialize history tombstone: {e}"))?;
+        out.push_str(&format!("{{\"delete\":{id}}}\n"));
+    }
+    if out.is_empty() {
+        return Ok(());
+    }
+    let path = local_data_file_path(&app, HISTORY_FILE, "history")?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    file.write_all(out.as_bytes())
+        .map_err(|e| format!("Failed to append to {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("Failed to flush {}: {e}", path.display()))
 }
 
 #[tauri::command]
@@ -7615,6 +7991,13 @@ where
     // keeps the turn unattended).
     let ctx = setup.0;
     let ctx_for_events = ctx.clone();
+    // Live tool output (client-managed terminals) streams into the loop
+    // conversation's transcript too.
+    let terminal_pump = spawn_acp_terminal_pump(
+        app.clone(),
+        conversation_id.to_string(),
+        engine::acp::AcpTerminalMap::clone(&ctx.terminals),
+    );
     let outcome = engine::acp::read_acp_turn(
         &ctx,
         prompt_id,
@@ -7640,6 +8023,7 @@ where
         },
     )
     .await;
+    terminal_pump.abort();
 
     kill_registry.lock().await.remove(conversation_id);
 
@@ -10500,6 +10884,7 @@ pub fn run() {
             save_app_config,
             load_history,
             save_history,
+            save_history_patch,
             check_engines_available,
             check_engine_available,
             list_acp_agents,
@@ -10547,8 +10932,22 @@ pub fn run() {
             companion::reset_companion_chat,
             companion::companion_ask,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // The close button hides the main window to tray instead of
+            // quitting. Clicking the macOS dock icon then fires Reopen —
+            // bring the window back so the dock icon never feels dead.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (&app, &event);
+        });
 }
 
 #[cfg(test)]

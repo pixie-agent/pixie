@@ -15,10 +15,18 @@ import type {
   ResponseTool,
   ResponseUsage,
   ResponseCompact,
+  ResponseCompactStatus,
+  ResponsePlan,
+  ResponseNotice,
+  ResponseSubagent,
+  ResponseSubagentActivity,
   ResponseThinking,
   ResponseThinkingText,
   ResponsePermissionRequest,
   MessageUsage,
+  MessageNotice,
+  PlanEntry,
+  SubagentState,
   ToolStep,
   WorkspaceState,
   EngineModelConfigs,
@@ -37,10 +45,10 @@ function basename(p: string): string {
 }
 
 function normalizeConversation(conv: Conversation): Conversation {
-  return {
-    ...conv,
-    engine: conv.engine ?? "builtin",
-  };
+  // Preserve object identity when the engine is already present — the
+  // incremental history writer uses reference equality to detect dirty
+  // conversations, so a no-op normalize must not allocate a new object.
+  return conv.engine ? conv : { ...conv, engine: "builtin" };
 }
 
 export interface ConversationEntry {
@@ -183,6 +191,11 @@ interface StreamBatch {
   thinkingTokens?: number;
   thinkingText?: string;
   usage?: ResponseUsage;
+  plan?: PlanEntry[];
+  subagentPatches: ResponseSubagent[];
+  notices: MessageNotice[];
+  /** Child-session events keyed by child session id, in arrival order. */
+  subagentEvents: Map<string, ResponseSubagentActivity[]>;
 }
 
 function appendStreamingText(current: string, content: string, eventType: string): string {
@@ -220,9 +233,17 @@ function applyToolEvent(tools: ToolStep[], tool: ResponseTool): ToolStep[] {
   }
 
   const idx = next.findIndex((t) => t.id === tool.tool_use_id);
+  if (tool.kind === "update") {
+    // Mid-execution partial output — REPLACEMENT snapshot on the running step.
+    if (idx >= 0) {
+      next[idx] = { ...next[idx], liveOutput: tool.content };
+    }
+    return next;
+  }
+
   const status = tool.is_error ? "error" : "done";
   if (idx >= 0) {
-    next[idx] = { ...next[idx], status, result: tool.content };
+    next[idx] = { ...next[idx], status, result: tool.content, liveOutput: undefined };
   } else {
     next.push({
       id: tool.tool_use_id,
@@ -325,6 +346,52 @@ function applyStreamBatch(
       updated = { ...updated, usage: applyUsage(updated, batch.usage) };
     }
 
+    if (batch.plan) {
+      updated = { ...updated, plan: batch.plan };
+    }
+
+    if (batch.notices.length > 0) {
+      updated = { ...updated, notices: [...(updated.notices ?? []), ...batch.notices] };
+    }
+
+    if (batch.subagentPatches.length > 0 || batch.subagentEvents.size > 0) {
+      const subagents: Record<string, SubagentState> = { ...(updated.subagents ?? {}) };
+      for (const patch of batch.subagentPatches) {
+        const existing = subagents[patch.session_id];
+        subagents[patch.session_id] = {
+          id: patch.session_id,
+          title: patch.title ?? existing?.title,
+          description: patch.description ?? existing?.description,
+          state: patch.state ?? existing?.state,
+          stateDetail: patch.state_detail ?? existing?.stateDetail,
+          text: existing?.text ?? "",
+          thinking: existing?.thinking,
+          tools: existing?.tools ?? [],
+        };
+      }
+      for (const [childId, events] of batch.subagentEvents) {
+        const existing = subagents[childId];
+        const child: SubagentState = existing ?? {
+          id: childId,
+          text: "",
+          tools: [],
+        };
+        for (const ev of events) {
+          if (ev.kind === "text" && ev.content) {
+            child.text = (child.text ?? "") + ev.content;
+          } else if (ev.kind === "thinking" && ev.content) {
+            child.thinking = child.thinking
+              ? `${child.thinking}\n\n${ev.content}`
+              : ev.content;
+          } else if (ev.kind === "tool" && ev.tool) {
+            child.tools = applyToolEvent(child.tools, ev.tool);
+          }
+        }
+        subagents[childId] = child;
+      }
+      updated = { ...updated, subagents };
+    }
+
     msgs[msgs.length - 1] = updated;
     // Do NOT re-stamp updatedAt here. The sidebar orders by it, so stamping on
     // every ~50ms flush reshuffles rows while the agent streams. The
@@ -335,7 +402,13 @@ function applyStreamBatch(
 }
 
 function emptyStreamBatch(): StreamBatch {
-  return { textParts: [], tools: [] };
+  return {
+    textParts: [],
+    tools: [],
+    subagentPatches: [],
+    notices: [],
+    subagentEvents: new Map(),
+  };
 }
 
 /** Flatten all conversations for UI listing. Unbound (draft) conversations
@@ -463,6 +536,9 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   const unlistenRefs = useRef<Array<() => void>>([]);
   const activeIdRef = useRef<string | null>(activeId);
   const allConversationsRef = useRef(allConversations);
+  /** Latest activity-sorted workspace list, for callbacks that must stay
+   *  referentially stable while streaming (see resolveTargetWorkspace). */
+  const sortedWorkspacesRef = useRef<WorkspaceState[]>([]);
   /** Latest generating set for callbacks that must not close over stale state. */
   const generatingIdsRef = useRef<Set<string>>(generatingIds);
   /** Latest compacting set for listener guards / callbacks (staleness-proof). */
@@ -599,6 +675,10 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
     () => sortWorkspacesByActivity(workspaces, allConversations, generatingIds),
     [workspaces, allConversations, generatingIds],
   );
+
+  useEffect(() => {
+    sortedWorkspacesRef.current = sortedWorkspaces;
+  }, [sortedWorkspaces]);
 
   /** Capped view for the workspace picker dropdown — most recent first. */
   const recentWorkspaces = useMemo(
@@ -1224,8 +1304,67 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
         );
       });
 
-      if (!mounted) { u1(); u2(); u3(); u3b(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); return; }
-      unlistenRefs.current = [u1, u2, u3, u3b, u4, u5, u6, u7, u8, u9, u10, u11];
+      // ACP compaction lifecycle: in_progress shows a "compacting…" state,
+      // completion stores the retained summary for the divider detail.
+      const u12 = await listen<ResponseCompactStatus>("agent-compact-status", (event) => {
+        const { conversation_id, status, summary } = event.payload;
+        setAllConversations((prev) =>
+          patchConversation(prev, conversation_id, (conv) => {
+            if (status === "in_progress") {
+              return { ...conv, compacting: true };
+            }
+            const next: Conversation = {
+              ...conv,
+              compacting: false,
+              ...(status === "completed" && summary ? { compactSummary: summary } : {}),
+            };
+            if (status === "failed") next.compactSummary = undefined;
+            return next;
+          }, convIndexRef),
+        );
+      });
+
+      // ACP plan: the agent's execution plan, replaced wholesale each update.
+      const u13 = await listen<ResponsePlan>("agent-plan", (event) => {
+        const { conversation_id, entries } = event.payload;
+        if (entries.length === 0) return;
+        queueStreamUpdate(conversation_id, (batch) => {
+          batch.plan = entries;
+        });
+      });
+
+      // ACP notice: live fire-and-forget agent message.
+      const u14 = await listen<ResponseNotice>("agent-notice", (event) => {
+        const p = event.payload;
+        queueStreamUpdate(p.conversation_id, (batch) => {
+          batch.notices.push({
+            severity: p.severity,
+            title: p.title,
+            description: p.description,
+          });
+        });
+      });
+
+      // ACP subagent association patch (title/description/state per child).
+      const u15 = await listen<ResponseSubagent>("agent-subagent", (event) => {
+        const p = event.payload;
+        queueStreamUpdate(p.conversation_id, (batch) => {
+          batch.subagentPatches.push(p);
+        });
+      });
+
+      // ACP child-session event: streamed text/thinking/tool of a subagent.
+      const u16 = await listen<ResponseSubagentActivity>("agent-subagent-activity", (event) => {
+        const p = event.payload;
+        queueStreamUpdate(p.conversation_id, (batch) => {
+          const list = batch.subagentEvents.get(p.session_id) ?? [];
+          list.push(p);
+          batch.subagentEvents.set(p.session_id, list);
+        });
+      });
+
+      if (!mounted) { u1(); u2(); u3(); u3b(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); u13(); u14(); u15(); u16(); return; }
+      unlistenRefs.current = [u1, u2, u3, u3b, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16];
     }
 
     setup();
@@ -1239,8 +1378,8 @@ export function useChat(engineModelConfigs: EngineModelConfigs) {
   }, [queueStreamUpdate, flushStreamBatches, applyPendingOverrides, clearQueue]);
 
   const resolveTargetWorkspace = useCallback((preferredWorkspaceId?: string | null): string | null => {
-    return preferredWorkspaceId ?? newConversationWorkspaceId ?? defaultWorkspacePath ?? activeWorkspaceId ?? sortedWorkspaces[0]?.id ?? null;
-  }, [newConversationWorkspaceId, defaultWorkspacePath, activeWorkspaceId, sortedWorkspaces]);
+    return preferredWorkspaceId ?? newConversationWorkspaceId ?? defaultWorkspacePath ?? activeWorkspaceId ?? sortedWorkspacesRef.current[0]?.id ?? null;
+  }, [newConversationWorkspaceId, defaultWorkspacePath, activeWorkspaceId]);
 
   /** Ensure the workspace exists in the list (appending if new) and evict the
    *  least-active entries beyond MAX_STORED_WORKSPACES. `chosenPath` and the

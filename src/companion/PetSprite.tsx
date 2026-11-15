@@ -19,6 +19,7 @@ const SpriteSvg = ({
   strokeOpacity,
   flapDuration,
   glowFilter,
+  flap,
 }: {
   idPrefix: string;
   fillCore: string;
@@ -29,6 +30,9 @@ const SpriteSvg = ({
   strokeOpacity: number;
   flapDuration: string;
   glowFilter?: string;
+  /** When false (idle) the wings stay still — no infinite CSS animation, so
+   *  the sprite costs nothing while the pet is just sitting on the desktop. */
+  flap: boolean;
 }) => (
   <svg
     viewBox="0 0 512 512"
@@ -86,14 +90,22 @@ const SpriteSvg = ({
 
     {/* Wings flap around their body-side roots (L ≈ (200,258), R ≈ (312,258)). */}
     <g
-      className="origin-[312px_258px] animate-[pet-flap-r_var(--flap-duration)_ease-in-out_infinite]"
-      style={{ ["--flap-duration" as string]: flapDuration }}
+      className={
+        flap
+          ? "origin-[312px_258px] animate-[pet-flap-r_var(--flap-duration)_ease-in-out_infinite]"
+          : "origin-[312px_258px]"
+      }
+      style={flap ? { ["--flap-duration" as string]: flapDuration } : undefined}
     >
       <path d="M322 244C380 168 440 128 468 92C444 176 388 248 318 272Z" fill={fillWingR} />
     </g>
     <g
-      className="origin-[200px_258px] animate-[pet-flap-l_var(--flap-duration)_ease-in-out_infinite]"
-      style={{ ["--flap-duration" as string]: flapDuration }}
+      className={
+        flap
+          ? "origin-[200px_258px] animate-[pet-flap-l_var(--flap-duration)_ease-in-out_infinite]"
+          : "origin-[200px_258px]"
+      }
+      style={flap ? { ["--flap-duration" as string]: flapDuration } : undefined}
     >
       <path d="M190 244C132 168 72 128 44 92C68 176 124 248 194 272Z" fill={fillWingL} />
     </g>
@@ -166,9 +178,9 @@ export function PetSprite({
   const whiteOpacity = running ? 1 : 0;
 
   return (
-    <div className="w-full h-full flex items-start justify-center select-none">
+    <div className="w-full h-full flex items-center justify-center select-none">
       <button
-        className="relative w-28 h-28 cursor-pointer"
+        className="relative w-24 h-16 cursor-pointer"
         onPointerDown={(e) => {
           // Only the primary button starts drag arbitration; secondary is
           // context-menu territory (handled by onContextMenu).
@@ -213,7 +225,7 @@ export function PetSprite({
         {/* Decorative layers are pointer-transparent so mousedown always lands
             on the drag-region button itself (Tauri checks the attribute on the
             event target, not its ancestors). */}
-        <span className="pointer-events-none absolute inset-0 flex items-center justify-center animate-[pet-hover_3s_ease-in-out_infinite]">
+        <span className="pointer-events-none absolute -top-2 left-0 right-0 h-24 flex items-center justify-center animate-[pet-hover_3s_ease-in-out_infinite]">
           <span className="relative w-24 h-24">
             {/* Base (purple) sprite — always present, fades under the white one.
                 Glow lives on the SVG itself (per-shape filter), never on a
@@ -229,14 +241,19 @@ export function PetSprite({
                 strokeOpacity={0.4}
                 flapDuration={flapDuration}
                 glowFilter="url(#pet-glow-purple)"
+                flap={state !== "idle"}
               />
             </span>
 
             {/* RUNNING overlay: the all-white sprite. Its glow is an SVG
                 filter bound to the sprite's own shapes — light hugs the
-                silhouette instead of lighting a backdrop rectangle. */}
+                silhouette instead of lighting a backdrop rectangle. The
+                radiance animation only runs while WATCHING — filter animation
+                is repaint-heavy, so an idle pet must not keep repainting. */}
             <span
-              className="absolute inset-0 transition-opacity duration-[2500ms] ease-in-out animate-[pet-radiance_1.6s_ease-in-out_infinite]"
+              className={`absolute inset-0 transition-opacity duration-[2500ms] ease-in-out ${
+                running ? "animate-[pet-radiance_1.6s_ease-in-out_infinite]" : ""
+              }`}
               style={{ opacity: whiteOpacity }}
             >
               <SpriteSvg
@@ -249,6 +266,7 @@ export function PetSprite({
                 strokeOpacity={0.9}
                 flapDuration={flapDuration}
                 glowFilter="url(#pet-glow-white)"
+                flap={state !== "idle"}
               />
             </span>
           </span>

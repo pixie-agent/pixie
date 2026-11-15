@@ -607,7 +607,7 @@ body.companion-body {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 5px 10px;
+  padding: 6px 10px;
   background: none;
   border: none;
   color: var(--text-primary);
@@ -627,25 +627,53 @@ body.companion-body {
   flex-shrink: 0;
 }
 
+/* Header body: the "verb + target" line, with an optional muted subtitle line
+   (e.g. the Bash tool's human description) beneath it. Text WRAPS instead of
+   ellipsizing so the tool name and target are never cut off mid-read; the
+   right-side status stays pinned while the left side grows vertically. */
+.tool-header-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-header-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
 .tool-purpose {
-  flex-shrink: 0;
-  max-width: 60%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: var(--text-primary);
   font-weight: 500;
 }
 
 .tool-target {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.92em;
+}
+
+.tool-subtitle {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  opacity: 0.72;
+  font-size: 0.88em;
+  font-style: italic;
 }
 
 .tool-status {

@@ -31,12 +31,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
-use super::persistent::{
-    TurnOutcome, MAX_HEARTBEAT_TIMEOUTS, READ_HEARTBEAT_TIMEOUT, TURN_ABSOLUTE_TIMEOUT,
-};
+use super::persistent::{TurnOutcome, MAX_HEARTBEAT_TIMEOUTS, READ_HEARTBEAT_TIMEOUT};
 use super::shared::{self, detach_from_controlling_terminal, truncate_text, MAX_TOOL_RESULT_CHARS};
 use super::{
-    AuthState, EngineStatus, NormalizedEvent, ProbeOutcome, ToolEvent, ToolEventKind, UsageInfo,
+    AuthState, EngineStatus, NormalizedEvent, PlanEntryEvent, ProbeOutcome, ToolEvent,
+    ToolEventKind, UsageInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -330,6 +329,11 @@ pub struct AcpSession {
     /// Last evidence of activity (any stdout line or stdin write). Shared with
     /// the turn reader so the idle reaper sees streaming turns as active.
     pub last_active: Arc<StdMutex<Instant>>,
+    /// Working directory the agent process was launched with (fallback cwd
+    /// for `terminal/create`).
+    pub launch_cwd: Option<PathBuf>,
+    /// Client-managed terminals created by the agent this session.
+    pub terminals: AcpTerminalMap,
 
     child: Child,
     /// Stdin is behind a shared Mutex: `send_message` (caller holds &mut) and
@@ -400,6 +404,8 @@ impl AcpSession {
             agent_config: config,
             capabilities: AgentCapabilities::default(),
             last_active: Arc::new(StdMutex::new(Instant::now())),
+            launch_cwd: cwd.map(PathBuf::from),
+            terminals: Arc::new(StdMutex::new(HashMap::new())),
             child,
             stdin: Arc::new(Mutex::new(stdin)),
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
@@ -424,7 +430,18 @@ impl AcpSession {
                 "protocolVersion": 1,
                 "clientCapabilities": {
                     "fs": {"readTextFile": false, "writeTextFile": false},
-                    "terminal": false,
+                    // Client-managed terminals: the agent delegates running
+                    // commands (Bash) to Pixie and reads exit status back.
+                    // Live output streams into the tool card (`acp.rs`
+                    // terminal handlers + the per-turn pump in `lib.rs`).
+                    "terminal": true,
+                    // ID-addressed compaction lifecycle (status + retained
+                    // summary) and live `notice` session updates.
+                    "session": {"compaction": {}, "notices": {}},
+                    // RFD-1992 native subagents (claude-code-acp gates its
+                    // `subagent_update` + child-session event routing on
+                    // this object being present).
+                    "subagents": {},
                 },
                 "clientInfo": {"name": "Pixie", "version": env!("CARGO_PKG_VERSION")},
             })),
@@ -911,6 +928,414 @@ fn as_i64(v: &Value) -> Option<i64> {
 }
 
 // ---------------------------------------------------------------------------
+// Client-managed terminals (ACP `terminal/*` methods)
+//
+// With the `terminal` client capability advertised, agents (notably
+// claude-code-acp's Bash) delegate running commands to Pixie: the agent asks
+// the client to spawn the process (`terminal/create`), displays live output in
+// the tool card via the client, and reads the exit status back
+// (`terminal/wait_for_exit` / `terminal/output`). Pixie runs the process with
+// piped stdio (no interactive PTY in v1) and streams its output into the
+// linked tool card as partial `ToolEventKind::Update` snapshots.
+// ---------------------------------------------------------------------------
+
+/// One tool-card link to a terminal. `child_session` is set when the linked
+/// tool call belongs to a subagent session rather than the main transcript.
+#[derive(Debug, Clone)]
+pub struct AcpTerminalLink {
+    pub tool_call_id: String,
+    /// Child (subagent) session the tool call belongs to, if any.
+    pub child_session: Option<String>,
+}
+
+/// Terminal exit status: (exit code, signal name). Both None when the
+/// process terminated without a usable status.
+pub type TerminalExit = (Option<u64>, Option<String>);
+
+/// A process spawned on behalf of the agent via `terminal/create`. All state
+/// is Arc'd: the turn reader answers the agent's `terminal/*` requests, a
+/// per-turn pump task in `lib.rs` streams new output to the UI, and drain
+/// tasks collect stdout/stderr into the bounded buffer.
+#[derive(Clone)]
+pub struct AcpTerminal {
+    pub pid: Option<u32>,
+    /// Accumulated stdout+stderr, truncated from the front to honor the
+    /// agent's `outputByteLimit` (default 64 KiB).
+    pub output: Arc<StdMutex<String>>,
+    pub byte_limit: usize,
+    /// Set once the process exits: (exitCode, signal).
+    pub exit: Arc<StdMutex<Option<TerminalExit>>>,
+    /// Tool cards rendering this terminal (learned from `terminal` content
+    /// blocks on the agent's tool_call / tool_call_update).
+    pub links: Arc<StdMutex<Vec<AcpTerminalLink>>>,
+}
+
+/// Session-scoped terminal registry. Lives on `AcpSession`, cloned into every
+/// `AcpTurnCtx`, so a terminal created during one turn can be read or released
+/// during a later one (background commands outlive their turn).
+pub type AcpTerminalMap = Arc<StdMutex<HashMap<String, AcpTerminal>>>;
+
+/// Default retained output when the agent omits `outputByteLimit`.
+const DEFAULT_TERMINAL_BYTE_LIMIT: usize = 64 * 1024;
+
+/// Signal name for the common termination causes (exit-status reporting).
+#[cfg(unix)]
+fn signal_name(sig: i32) -> String {
+    match sig {
+        1 => "SIGHUP".into(),
+        2 => "SIGINT".into(),
+        3 => "SIGQUIT".into(),
+        6 => "SIGABRT".into(),
+        9 => "SIGKILL".into(),
+        13 => "SIGPIPE".into(),
+        15 => "SIGTERM".into(),
+        n => format!("signal {n}"),
+    }
+}
+
+/// Hard-kill a process by pid (used by `terminal/kill`; the reaper task owns
+/// the `Child`, so the handle itself is not reachable).
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .spawn();
+    }
+}
+
+/// Append `chunk` to the terminal buffer, truncating from the front once the
+/// agent's byte limit is exceeded (the spec's truncation contract).
+fn push_terminal_output(term: &AcpTerminal, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    if let Ok(mut buf) = term.output.lock() {
+        buf.push_str(chunk);
+        let limit = term.byte_limit;
+        if buf.len() > limit {
+            // Truncate at a char boundary so the buffer stays valid UTF-8.
+            let cut = buf.len() - limit;
+            let start = buf
+                .char_indices()
+                .map(|(i, _)| i)
+                .find(|&i| i >= cut)
+                .unwrap_or(buf.len());
+            buf.drain(..start);
+        }
+    }
+}
+
+/// Terminal output snapshot for UI emission / terminal/output responses.
+pub fn terminal_snapshot(term: &AcpTerminal, cap: usize) -> String {
+    term.output
+        .lock()
+        .map(|buf| truncate_text(&buf, cap))
+        .unwrap_or_default()
+}
+
+/// `terminal/create` — spawn the agent-requested process, register it, and
+/// start the drain/reaper tasks. Responds with the new terminalId.
+async fn handle_terminal_create(ctx: &AcpTurnCtx, req_id: i64, envelope: &IncomingEnvelope) {
+    let params = envelope.params.clone().unwrap_or(Value::Null);
+    let Some(command) = params.get("command").and_then(Value::as_str) else {
+        let _ = respond_error(ctx, req_id, "terminal/create requires a command").await;
+        return;
+    };
+    let args: Vec<String> = params
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let byte_limit = params
+        .get("outputByteLimit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_TERMINAL_BYTE_LIMIT)
+        .max(1024);
+
+    let mut cmd = tokio::process::Command::new(command);
+    cmd.args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
+        if !cwd.is_empty() {
+            cmd.current_dir(cwd);
+        }
+    } else if let Some(dir) = &ctx.launch_cwd {
+        cmd.current_dir(dir);
+    }
+    if let Some(env) = params.get("env").and_then(Value::as_array) {
+        for var in env {
+            let name = var.get("name").and_then(Value::as_str).unwrap_or_default();
+            let value = var.get("value").and_then(Value::as_str).unwrap_or_default();
+            if !name.is_empty() {
+                cmd.env(name, value);
+            }
+        }
+    }
+
+    let spawned = cmd
+        .spawn()
+        .with_context(|| format!("terminal/create failed to spawn `{command}`"));
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[acp] {}: terminal/create spawn error: {e}", ctx.engine_id);
+            let _ = respond_error(ctx, req_id, &format!("failed to spawn: {e}")).await;
+            return;
+        }
+    };
+    let pid = child.id();
+    log::info!(
+        "[acp] {}: terminal/create `{command}` pid={pid:?}",
+        ctx.engine_id
+    );
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let term = AcpTerminal {
+        pid,
+        output: Arc::new(StdMutex::new(String::new())),
+        byte_limit,
+        exit: Arc::new(StdMutex::new(None)),
+        links: Arc::new(StdMutex::new(Vec::new())),
+    };
+
+    // Drain tasks: append chunks to the bounded buffer as they arrive.
+    let streams: Vec<Box<dyn tokio::io::AsyncRead + Unpin + Send>> = [
+        stdout.map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+        stderr.map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for mut reader in streams {
+        let term = term.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 8192];
+            use tokio::io::AsyncReadExt;
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        push_terminal_output(&term, &chunk);
+                    }
+                }
+            }
+        });
+    }
+
+    // Reaper task: owns the Child, records the exit status when it lands.
+    {
+        let exit = Arc::clone(&term.exit);
+        tokio::spawn(async move {
+            let status = child.wait().await.ok();
+            let recorded: Option<(Option<u64>, Option<String>)> = status.and_then(|s| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    if let Some(sig) = s.signal() {
+                        return Some((None, Some(signal_name(sig))));
+                    }
+                    s.code().map(|c| (Some(c as u64), None))
+                }
+                #[cfg(not(unix))]
+                {
+                    s.code().map(|c| (Some(c as u64), None))
+                }
+            });
+            if let Ok(mut slot) = exit.lock() {
+                *slot = Some(recorded.unwrap_or((None, None)));
+            }
+        });
+    }
+
+    let terminal_id = uuid::Uuid::new_v4().to_string();
+    if let Ok(mut map) = ctx.terminals.lock() {
+        map.insert(terminal_id.clone(), term);
+    }
+    let _ = ctx
+        .respond(req_id, json!({"terminalId": terminal_id}))
+        .await;
+}
+
+/// `terminal/output` — respond with the accumulated output and exit status.
+async fn handle_terminal_output(ctx: &AcpTurnCtx, req_id: i64, envelope: &IncomingEnvelope) {
+    let params = envelope.params.as_ref();
+    let terminal_id = params
+        .and_then(|p| p.get("terminalId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(term) = lookup_terminal(ctx, terminal_id) else {
+        let _ = respond_error(ctx, req_id, "unknown terminalId").await;
+        return;
+    };
+    let output = terminal_snapshot(&term, term.byte_limit);
+    let exit = term
+        .exit
+        .lock()
+        .ok()
+        .and_then(|s| s.as_ref().cloned())
+        .map(|(code, sig)| json!({"exitCode": code, "signal": sig}));
+    let _ = ctx
+        .respond(
+            req_id,
+            json!({"output": output, "truncated": false, "exitStatus": exit}),
+        )
+        .await;
+}
+
+/// `terminal/wait_for_exit` — the response must not block the turn reader
+/// (permission requests and other notifications still flow), so a task waits
+/// for the reaper to land the status and answers asynchronously.
+fn handle_terminal_wait(ctx: &AcpTurnCtx, req_id: i64, envelope: &IncomingEnvelope) {
+    let params = envelope.params.as_ref();
+    let terminal_id = params
+        .and_then(|p| p.get("terminalId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(term) = lookup_terminal(ctx, terminal_id) else {
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let _ = ctx
+                .respond(
+                    req_id,
+                    json!({"exitCode": None::<u64>, "signal": None::<String>}),
+                )
+                .await;
+        });
+        return;
+    };
+    let exit = Arc::clone(&term.exit);
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        loop {
+            let landed = exit.lock().ok().and_then(|s| s.as_ref().cloned());
+            if let Some((code, sig)) = landed {
+                let _ = ctx
+                    .respond(req_id, json!({"exitCode": code, "signal": sig}))
+                    .await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+}
+
+/// `terminal/kill` — hard-kill the process (the reaper records the status).
+async fn handle_terminal_kill(ctx: &AcpTurnCtx, req_id: i64, envelope: &IncomingEnvelope) {
+    let params = envelope.params.as_ref();
+    let terminal_id = params
+        .and_then(|p| p.get("terminalId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(term) = lookup_terminal(ctx, terminal_id) else {
+        let _ = respond_error(ctx, req_id, "unknown terminalId").await;
+        return;
+    };
+    if let Some(pid) = term.pid {
+        kill_pid(pid);
+    }
+    let _ = ctx.respond(req_id, json!({})).await;
+}
+
+/// `terminal/release` — forget the terminal. A still-running process is
+/// killed: the spec frames release as freeing the terminal's resources.
+async fn handle_terminal_release(ctx: &AcpTurnCtx, req_id: i64, envelope: &IncomingEnvelope) {
+    let params = envelope.params.as_ref();
+    let terminal_id = params
+        .and_then(|p| p.get("terminalId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let removed = ctx
+        .terminals
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(terminal_id));
+    if let Some(term) = &removed {
+        if let (Some(pid), Ok(exit)) = (term.pid, term.exit.lock()) {
+            if exit.is_none() {
+                kill_pid(pid);
+            }
+        }
+    }
+    let _ = ctx.respond(req_id, json!({})).await;
+}
+
+fn lookup_terminal(ctx: &AcpTurnCtx, terminal_id: &str) -> Option<AcpTerminal> {
+    ctx.terminals.lock().ok()?.get(terminal_id).cloned()
+}
+
+/// Answer an agent request with a JSON-RPC error (does not end the turn —
+/// the agent decides how to proceed).
+async fn respond_error(ctx: &AcpTurnCtx, req_id: i64, message: &str) -> Result<()> {
+    let err =
+        json!({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": message}});
+    let line = serde_json::to_string(&err)?;
+    ctx.write_line_raw(&line).await
+}
+
+/// Scan a session/update `tool_call` / `tool_call_update` for `terminal`
+/// content blocks and remember which tool card renders each terminal. The
+/// pump task in `lib.rs` uses these links to stream live output into the UI.
+fn record_terminal_links(
+    ctx: &AcpTurnCtx,
+    envelope: &IncomingEnvelope,
+    child_session: Option<&str>,
+) {
+    let Some(blocks) = envelope
+        .params
+        .as_ref()
+        .and_then(|p| p.get("update"))
+        .and_then(|u| u.get("content"))
+        .and_then(Value::as_array)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(tool_call_id) = envelope
+        .params
+        .as_ref()
+        .and_then(|p| p.get("update"))
+        .and_then(|u| u.get("toolCallId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    for block in &blocks {
+        if block.get("type").and_then(Value::as_str) == Some("terminal") {
+            if let Some(tid) = block.get("terminalId").and_then(Value::as_str) {
+                if let Ok(mut map) = ctx.terminals.lock() {
+                    if let Some(term) = map.get_mut(tid) {
+                        if let Ok(mut links) = term.links.lock() {
+                            if !links.iter().any(|l| l.tool_call_id == tool_call_id) {
+                                links.push(AcpTerminalLink {
+                                    tool_call_id: tool_call_id.clone(),
+                                    child_session: child_session.map(str::to_string),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Turn reading — interleaved notifications, responses, and agent requests
 // ---------------------------------------------------------------------------
 
@@ -927,6 +1352,17 @@ pub struct AcpTurnCtx {
     /// Shared config-options cache (`session/update` `config_option_update`
     /// pushes replace its contents; the model picker reads the same Arc).
     pub config_options: Arc<StdMutex<Vec<SessionConfigOption>>>,
+    /// The agent-owned session id this turn prompts. `session/update`
+    /// notifications carrying a DIFFERENT sessionId are child (subagent)
+    /// sessions and get routed into the subagent card instead of the main
+    /// transcript.
+    pub session_id: Option<String>,
+    /// Client-managed terminal registry (`terminal/create` etc.). The per-turn
+    /// pump task in `lib.rs` streams linked terminals' output to the UI.
+    pub terminals: AcpTerminalMap,
+    /// Working directory the agent process was launched with — the fallback
+    /// cwd for `terminal/create` when the agent omits one.
+    pub launch_cwd: Option<PathBuf>,
 }
 
 impl AcpTurnCtx {
@@ -991,6 +1427,9 @@ impl AcpSession {
             stdin: Arc::clone(&self.stdin),
             pending: Arc::clone(&self.pending),
             config_options: Arc::clone(&self.config_options),
+            session_id: self.acp_session_id.clone(),
+            terminals: Arc::clone(&self.terminals),
+            launch_cwd: self.launch_cwd.clone(),
         }
     }
 }
@@ -1023,7 +1462,6 @@ where
     let mut guard = ctx.stdout.lock().await;
     let mut state = TurnState::new();
     let mut consecutive_heartbeat_timeouts = 0usize;
-    let turn_started = Instant::now();
     let engine_id = ctx.engine_id.clone();
 
     loop {
@@ -1034,15 +1472,11 @@ where
         }
 
         let mut line = String::new();
+        // No wall-clock ceiling on the turn itself — long tasks may legitimately
+        // run for hours; only the consecutive-silence detector (below) decides
+        // a process is wedged.
         let read_result =
             tokio::time::timeout(READ_HEARTBEAT_TIMEOUT, guard.read_line(&mut line)).await;
-        if turn_started.elapsed() >= TURN_ABSOLUTE_TIMEOUT {
-            log::error!("[acp] {engine_id}: turn exceeded the absolute ceiling; aborting");
-            return TurnOutcome::Crashed {
-                partial: std::mem::take(&mut state.final_text),
-                reason: format!("turn ran longer than {TURN_ABSOLUTE_TIMEOUT:?} without completing (likely hung)"),
-            };
-        }
         match read_result {
             Err(_) => {
                 consecutive_heartbeat_timeouts += 1;
@@ -1096,14 +1530,22 @@ where
                 "session/request_permission" => {
                     handle_permission_request(ctx, req_id, &envelope, &mut on_events);
                 }
-                "fs/read_text_file"
-                | "fs/write_text_file"
-                | "terminal/create"
-                | "terminal/output"
-                | "terminal/release"
-                | "terminal/wait_for_exit"
-                | "terminal/kill"
-                | "elicitation/create" => {
+                "terminal/create" => {
+                    handle_terminal_create(ctx, req_id, &envelope).await;
+                }
+                "terminal/output" => {
+                    handle_terminal_output(ctx, req_id, &envelope).await;
+                }
+                "terminal/wait_for_exit" => {
+                    handle_terminal_wait(ctx, req_id, &envelope);
+                }
+                "terminal/kill" => {
+                    handle_terminal_kill(ctx, req_id, &envelope).await;
+                }
+                "terminal/release" => {
+                    handle_terminal_release(ctx, req_id, &envelope).await;
+                }
+                "fs/read_text_file" | "fs/write_text_file" | "elicitation/create" => {
                     // We advertise none of these capabilities, so agents MUST
                     // not call them; answer with a JSON-RPC error so the turn
                     // can continue (a silent drop would deadlock the agent).
@@ -1155,33 +1597,75 @@ where
 
         // --- Notification ---
         if envelope.method.as_deref() == Some("session/update") {
+            // A `session/update` carrying a DIFFERENT sessionId than the one
+            // this turn prompted belongs to a CHILD (subagent) session — the
+            // RFD delivers child events on the parent's connection. Route
+            // them into the subagent card instead of the main transcript.
+            let update_sid = envelope
+                .params
+                .as_ref()
+                .and_then(|p| p.get("sessionId"))
+                .and_then(Value::as_str);
+            let is_child = match (update_sid, ctx.session_id.as_deref()) {
+                (Some(u), Some(own)) => u != own,
+                _ => false,
+            };
+            let child_sid = if is_child {
+                update_sid.map(str::to_string)
+            } else {
+                None
+            };
+
+            // Remember which tool card renders each client-managed terminal
+            // (its `terminal` content block) — the pump task in `lib.rs`
+            // streams the terminal's live output through these links.
+            record_terminal_links(ctx, &envelope, child_sid.as_deref());
+
             // A `config_option_update` push (e.g. the agent switched models)
             // refreshes the shared cache the model picker reads. No normalized
-            // event exists for it — the cache IS the consumption.
-            if let Some(update) = envelope.params.as_ref().and_then(|p| p.get("update")) {
-                if update.get("sessionUpdate").and_then(Value::as_str)
-                    == Some("config_option_update")
-                {
-                    if let Ok(new_options) = serde_json::from_value::<Vec<SessionConfigOption>>(
-                        update.get("configOptions").cloned().unwrap_or(Value::Null),
-                    ) {
-                        if let Ok(mut cached) = ctx.config_options.lock() {
-                            *cached = new_options;
+            // event exists for it — the cache IS the consumption. Only the
+            // OWN session's pushes apply (child config is the agent's business).
+            if !is_child {
+                if let Some(update) = envelope.params.as_ref().and_then(|p| p.get("update")) {
+                    if update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("config_option_update")
+                    {
+                        if let Ok(new_options) = serde_json::from_value::<Vec<SessionConfigOption>>(
+                            update.get("configOptions").cloned().unwrap_or(Value::Null),
+                        ) {
+                            if let Ok(mut cached) = ctx.config_options.lock() {
+                                *cached = new_options;
+                            }
                         }
+                        continue;
                     }
-                    continue;
                 }
             }
-            if let Some(events) = map_session_update(&envelope) {
-                // The prompt response carries only a stopReason — no final
-                // text payload — so the turn's final text is the accumulation
-                // of streamed `agent_message_chunk` deltas.
-                for evt in &events {
-                    if let NormalizedEvent::TextDelta { text, .. } = evt {
-                        state.final_text.push_str(text);
+            if let Some(mut events) = map_session_update(&envelope) {
+                fill_terminal_results(ctx, &mut events);
+                if let Some(sid) = &child_sid {
+                    // Child-session events are wrapped: the UI renders them in
+                    // the subagent's card, and they must NOT accumulate into
+                    // this turn's final text.
+                    let wrapped: Vec<NormalizedEvent> = events
+                        .into_iter()
+                        .map(|e| NormalizedEvent::SubagentChildEvent {
+                            session_id: sid.clone(),
+                            event: Box::new(e),
+                        })
+                        .collect();
+                    on_events(&wrapped);
+                } else {
+                    // The prompt response carries only a stopReason — no final
+                    // text payload — so the turn's final text is the accumulation
+                    // of streamed `agent_message_chunk` deltas.
+                    for evt in &events {
+                        if let NormalizedEvent::TextDelta { text, .. } = evt {
+                            state.final_text.push_str(text);
+                        }
                     }
+                    on_events(&events);
                 }
-                on_events(&events);
             }
             continue;
         }
@@ -1275,6 +1759,42 @@ fn handle_permission_request<F>(
     }]);
 }
 
+/// Backfill a tool Result with its linked terminal's output when the agent
+/// sent no content of its own (the client ran the command, so Pixie is the
+/// only one holding the output).
+fn fill_terminal_results(ctx: &AcpTurnCtx, events: &mut [NormalizedEvent]) {
+    for evt in events {
+        let NormalizedEvent::Tool(te) = evt else {
+            continue;
+        };
+        let ToolEventKind::Result {
+            content: None,
+            is_error,
+        } = &te.kind
+        else {
+            continue;
+        };
+        let term = ctx.terminals.lock().ok().and_then(|map| {
+            map.values()
+                .find(|t| {
+                    t.links
+                        .lock()
+                        .map(|l| l.iter().any(|link| link.tool_call_id == te.id))
+                        .unwrap_or(false)
+                })
+                .cloned()
+        });
+        let Some(term) = term else { continue };
+        let snap = terminal_snapshot(&term, MAX_TOOL_RESULT_CHARS);
+        if !snap.is_empty() {
+            te.kind = ToolEventKind::Result {
+                content: Some(snap),
+                is_error: *is_error,
+            };
+        }
+    }
+}
+
 /// Convert a `session/update` notification into normalized events.
 fn map_session_update(envelope: &IncomingEnvelope) -> Option<Vec<NormalizedEvent>> {
     let update = envelope.params.as_ref()?.get("update")?;
@@ -1299,10 +1819,28 @@ fn map_session_update(envelope: &IncomingEnvelope) -> Option<Vec<NormalizedEvent
                 .get("toolCallId")
                 .and_then(Value::as_str)?
                 .to_string();
+            // ACP agents may omit `name` and only send a human-readable
+            // `title` (or a `kind`). Prefer the programmatic name, fall back
+            // to title/kind so the UI never renders a bare "tool".
             let name = update
                 .get("name")
                 .and_then(Value::as_str)
-                .map(str::to_string);
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    update
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    update
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                });
             let input = update.get("rawInput").cloned().filter(|v| !v.is_null());
             let input_str = input.as_ref().map(|v| v.to_string());
             Some(vec![NormalizedEvent::Tool(ToolEvent {
@@ -1319,18 +1857,29 @@ fn map_session_update(envelope: &IncomingEnvelope) -> Option<Vec<NormalizedEvent
                 .and_then(Value::as_str)?
                 .to_string();
             let status = update.get("status").and_then(Value::as_str);
-            // Only surface terminal statuses as results — Pixie's tool model
-            // is Start/Result; intermediate in_progress updates are dropped.
-            let terminal = matches!(status, Some("completed") | Some("failed"));
-            if !terminal {
-                return None;
+            match status {
+                Some("completed") | Some("failed") => {
+                    let is_error = status == Some("failed");
+                    let content = tool_result_text(update.get("content"));
+                    Some(vec![NormalizedEvent::Tool(ToolEvent {
+                        id,
+                        kind: ToolEventKind::Result { content, is_error },
+                    })])
+                }
+                // `pending` means the input is still streaming or we are
+                // awaiting approval — nothing to show yet.
+                Some("pending") => None,
+                // `in_progress` (or a status-less content patch, e.g. a
+                // client-managed terminal's live output reference): surface
+                // the partial output as a REPLACEMENT snapshot.
+                _ => {
+                    let content = tool_result_text(update.get("content"))?;
+                    Some(vec![NormalizedEvent::Tool(ToolEvent {
+                        id,
+                        kind: ToolEventKind::Update { content },
+                    })])
+                }
             }
-            let is_error = status == Some("failed");
-            let content = tool_result_text(update.get("content"));
-            Some(vec![NormalizedEvent::Tool(ToolEvent {
-                id,
-                kind: ToolEventKind::Result { content, is_error },
-            })])
         }
         "usage_update" => {
             let used = update.get("used").and_then(Value::as_u64).unwrap_or(0);
@@ -1353,26 +1902,123 @@ fn map_session_update(envelope: &IncomingEnvelope) -> Option<Vec<NormalizedEvent
             })])
         }
         "compaction_update" => {
-            let status = update.get("status").and_then(Value::as_str).unwrap_or("");
-            if status == "completed" {
-                Some(vec![NormalizedEvent::CompactBoundary {
-                    trigger: "auto".into(),
-                    pre_tokens: 0,
-                }])
-            } else {
-                None
+            // ID-addressed lifecycle (gated on the session.compaction
+            // capability): in_progress -> terminal status, with the retained
+            // summary riding on the terminal update (claude-code-acp).
+            let status = update
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if !matches!(
+                status.as_str(),
+                "in_progress" | "completed" | "failed" | "cancelled"
+            ) {
+                return None;
             }
+            let summary = update
+                .get("summary")
+                .and_then(Value::as_array)
+                .and_then(|blocks| content_block_text(Some(&Value::Array(blocks.clone()))));
+            let error = update
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Some(vec![NormalizedEvent::CompactionStatus {
+                status,
+                summary,
+                error,
+            }])
+        }
+        "plan" => {
+            // The agent's execution plan: a COMPLETE entry list each update
+            // (the client replaces the whole plan per the spec).
+            let entries = update.get("entries")?.as_array()?;
+            let mapped: Vec<PlanEntryEvent> = entries
+                .iter()
+                .filter_map(|e| {
+                    let content = e.get("content").and_then(Value::as_str)?.to_string();
+                    let status = e
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("pending")
+                        .to_string();
+                    let priority = e
+                        .get("priority")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    Some(PlanEntryEvent {
+                        content,
+                        status,
+                        priority,
+                    })
+                })
+                .collect();
+            Some(vec![NormalizedEvent::PlanUpdate { entries: mapped }])
+        }
+        "notice" => {
+            // Live fire-and-forget agent message (gated on the
+            // session.notices capability).
+            let severity = update
+                .get("severity")
+                .and_then(Value::as_str)
+                .unwrap_or("info")
+                .to_string();
+            let title = update.get("title").and_then(Value::as_str)?.to_string();
+            let description = update
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Some(vec![NormalizedEvent::Notice {
+                severity,
+                title,
+                description,
+            }])
+        }
+        "subagent_update" => {
+            // RFD-1992 association patch on the PARENT session: title /
+            // description / state for a child session the parent owns.
+            // Fields are patch-semantics (None = unchanged); the frontend
+            // merges per field, keyed by the child session id.
+            let session_id = update.get("sessionId").and_then(Value::as_str)?.to_string();
+            let title = update
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let description = update
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let state = update
+                .pointer("/state/state")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let state_detail = update
+                .pointer("/state/error")
+                .or_else(|| update.pointer("/state/stopReason"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Some(vec![NormalizedEvent::SubagentUpdate {
+                session_id,
+                title,
+                description,
+                state,
+                state_detail,
+            }])
         }
         "user_message_chunk"
-        | "plan"
         | "available_commands_update"
         | "current_mode_update"
         | "session_info_update"
-        | "notice"
-        | "compaction_summary_chunk" => {
-            // Not modeled by Pixie's normalized event set (yet). `plan` could
-            // map onto tool events later; `notice` onto Error — left as TODOs
-            // so the mapping stays explicit rather than silently dropped.
+        | "compaction_summary_chunk"
+        | "session_message"
+        | "session_message_chunk" => {
+            // Not modeled by Pixie's normalized event set. `session_message`
+            // / `session_message_chunk` (inter-session messages of the
+            // subagents RFD) are covered by the child-session event routing
+            // and the Task tool result; `compaction_summary_chunk` streams
+            // the summary that the terminal `compaction_update` carries in
+            // full. Left explicit rather than silently dropped.
             None
         }
         _ => None,
@@ -2024,26 +2670,143 @@ mod tests {
     }
 
     #[test]
-    fn maps_compaction_completed_to_boundary() {
+    fn maps_compaction_completed_to_status_with_summary() {
         let env = envelope(json!({"update": {
             "sessionUpdate": "compaction_update",
             "compactionId": "c1",
             "status": "completed",
+            "summary": [{"type": "text", "text": "kept the plan"}],
         }}));
         let events = map_session_update(&env).expect("events");
         match &events[0] {
-            NormalizedEvent::CompactBoundary { trigger, .. } => assert_eq!(trigger, "auto"),
-            other => panic!("expected CompactBoundary, got {other:?}"),
+            NormalizedEvent::CompactionStatus {
+                status,
+                summary,
+                error,
+            } => {
+                assert_eq!(status, "completed");
+                assert_eq!(summary.as_deref(), Some("kept the plan"));
+                assert!(error.is_none());
+            }
+            other => panic!("expected CompactionStatus, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_compaction_in_progress_without_boundary() {
+        let env = envelope(json!({"update": {
+            "sessionUpdate": "compaction_update",
+            "compactionId": "c1",
+            "status": "in_progress",
+        }}));
+        let events = map_session_update(&env).expect("events");
+        match &events[0] {
+            NormalizedEvent::CompactionStatus { status, .. } => {
+                assert_eq!(status, "in_progress");
+            }
+            other => panic!("expected CompactionStatus, got {other:?}"),
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, NormalizedEvent::CompactBoundary { .. })),
+            "in_progress must not mark the chat boundary"
+        );
+    }
+
+    #[test]
+    fn maps_plan_update_with_entries() {
+        let env = envelope(json!({"update": {
+            "sessionUpdate": "plan",
+            "entries": [
+                {"content": "Read the schema", "priority": "high", "status": "completed"},
+                {"content": "Write the mapper", "priority": "medium", "status": "in_progress"},
+            ],
+        }}));
+        let events = map_session_update(&env).expect("events");
+        match &events[0] {
+            NormalizedEvent::PlanUpdate { entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].content, "Read the schema");
+                assert_eq!(entries[0].status, "completed");
+                assert_eq!(entries[1].status, "in_progress");
+            }
+            other => panic!("expected PlanUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_notice_with_severity() {
+        let env = envelope(json!({"update": {
+            "sessionUpdate": "notice",
+            "severity": "warning",
+            "title": "Context nearly full",
+            "description": "Consider /compact",
+        }}));
+        let events = map_session_update(&env).expect("events");
+        match &events[0] {
+            NormalizedEvent::Notice {
+                severity,
+                title,
+                description,
+            } => {
+                assert_eq!(severity, "warning");
+                assert_eq!(title, "Context nearly full");
+                assert_eq!(description.as_deref(), Some("Consider /compact"));
+            }
+            other => panic!("expected Notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_subagent_update_patch() {
+        let env = envelope(json!({"update": {
+            "sessionUpdate": "subagent_update",
+            "sessionId": "child-1",
+            "title": "Explore agent",
+            "state": {"state": "running"},
+        }}));
+        let events = map_session_update(&env).expect("events");
+        match &events[0] {
+            NormalizedEvent::SubagentUpdate {
+                session_id,
+                title,
+                state,
+                ..
+            } => {
+                assert_eq!(session_id, "child-1");
+                assert_eq!(title.as_deref(), Some("Explore agent"));
+                assert_eq!(state.as_deref(), Some("running"));
+            }
+            other => panic!("expected SubagentUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_tool_call_in_progress_content_as_update() {
+        let env = envelope(json!({"update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-1",
+            "status": "in_progress",
+            "content": [{"type": "content", "content": {"type": "text", "text": "partial out"}}],
+        }}));
+        let events = map_session_update(&env).expect("events");
+        match &events[0] {
+            NormalizedEvent::Tool(ToolEvent {
+                kind: ToolEventKind::Update { content },
+                ..
+            }) => assert_eq!(content, "partial out"),
+            other => panic!("expected Tool Update, got {other:?}"),
         }
     }
 
     #[test]
     fn ignores_unmodeled_updates() {
         for kind in [
-            "plan",
             "user_message_chunk",
-            "notice",
             "available_commands_update",
+            "session_message",
+            "session_message_chunk",
         ] {
             let env = envelope(json!({"update": {"sessionUpdate": kind}}));
             assert!(map_session_update(&env).is_none(), "{kind} must be ignored");

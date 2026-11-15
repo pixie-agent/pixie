@@ -41,7 +41,9 @@ export default function EngineModelPicker({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [customModel, setCustomModel] = useState("");
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
   const modelWrapperRef = useRef<HTMLDivElement>(null);
+  const modelSearchInputRef = useRef<HTMLInputElement>(null);
   const modelReqSeqRef = useRef(0);
   const modelsCacheRef = useRef<Record<string, ModelEntry[]>>({});
 
@@ -85,9 +87,13 @@ export default function EngineModelPicker({
     return () => window.clearTimeout(t);
   }, [engine, fetchModels]);
 
-  // Refresh when the dropdown opens.
+  // Refresh when the dropdown opens, with the search field taking focus
+  // immediately.
   useEffect(() => {
     if (!modelDropdownOpen || !engine) return;
+    requestAnimationFrame(() => {
+      modelSearchInputRef.current?.focus();
+    });
     const t = window.setTimeout(() => fetchModels(engine), 0);
     return () => window.clearTimeout(t);
   }, [modelDropdownOpen, engine, fetchModels]);
@@ -119,10 +125,28 @@ export default function EngineModelPicker({
     onModelChange(undefined); // engine switch invalidates the model choice
   };
 
+  // Clear the model search whenever the dropdown closes (via selection,
+  // Escape, or outside click) so it reopens fresh. Adjusting state during
+  // render avoids a setState-in-effect; React discards the in-progress render
+  // and re-renders.
+  if (!modelDropdownOpen && modelSearch) {
+    setModelSearch("");
+  }
+
   const handleSelectModel = (modelId: string | undefined) => {
     onModelChange(modelId);
     setModelDropdownOpen(false);
   };
+
+  // Filter the model list as the user types in the dropdown's search field
+  // (matches both the display label and the raw id).
+  const filteredModels = (() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return availableModels;
+    return availableModels.filter(
+      (m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+    );
+  })();
 
   const defaultModelLabel = (() => {
     // Only builtin reads a default model from the env map; CLI engines
@@ -174,7 +198,28 @@ export default function EngineModelPicker({
           )}
         </button>
         {modelDropdownOpen && (
-          <div className="absolute bottom-full left-0 mb-1 w-52 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] py-1 shadow-lg z-50 max-h-64 overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 w-52 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] pb-1 shadow-lg z-50 max-h-64 overflow-y-auto">
+            <div className="sticky top-0 z-10 bg-[var(--bg-secondary)] border-b border-[var(--border-color)] p-1.5">
+              <input
+                ref={modelSearchInputRef}
+                type="text"
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && filteredModels.length > 0) {
+                    e.preventDefault();
+                    handleSelectModel(filteredModels[0].id);
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setModelDropdownOpen(false);
+                    setModelSearch("");
+                  }
+                }}
+                placeholder={t("inputBar.searchModels")}
+                aria-label={t("inputBar.searchModels")}
+                className="w-full rounded border border-[var(--border-color)] bg-[var(--bg-primary)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]/50 focus:border-[var(--accent)]"
+              />
+            </div>
             <button
               type="button"
               onClick={() => handleSelectModel(undefined)}
@@ -184,12 +229,12 @@ export default function EngineModelPicker({
             >
               {defaultModelLabel} {t("inputBar.autoSuffix")}
             </button>
-            {!modelsLoading && availableModels.length === 0 && (
+            {!modelsLoading && filteredModels.length === 0 && (
               <div className="px-3 py-1.5 text-xs text-[var(--text-secondary)]">
                 {t("newAgent.noModelsFound")}
               </div>
             )}
-            {availableModels.map((m) => (
+            {filteredModels.map((m) => (
               <button
                 key={m.id}
                 type="button"

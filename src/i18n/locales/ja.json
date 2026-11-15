@@ -193,7 +193,10 @@
     "queueClear": "すべてクリア",
     "queuePlaceholder": "生成中 — Enter でキューに追加",
     "interruptSend": "今すぐ送信（現在を停止）",
-    "compacted": "コンテキストを圧縮しました"
+    "compacted": "コンテキストを圧縮しました",
+    "compacting": "コンテキストを圧縮中…",
+    "compactionFailed": "圧縮に失敗しました",
+    "compactionSummary": "保持された内容"
   },
   "inputBar": {
     "removeAttachment": "削除",
@@ -204,6 +207,7 @@
     "kbActive": "ナレッジベース有効 — クリックで無効化",
     "kbInclude": "ナレッジベースコンテキストを含める",
     "selectModel": "モデルを選択",
+    "searchModels": "モデルを検索...",
     "selectEngine": "エンジンを切替",
     "customModelPlaceholder": "カスタムモデル...",
     "autoSuffix": "（自動）",
@@ -598,6 +602,26 @@
     "toolsFailed": "· {{count}} 失敗",
     "diffStat": "+{{added}} · -{{removed}}",
     "moreLinesNotShown": "…（残り {{count}} 行は非表示）",
+    "moreFields": "…他 {{count}} 件",
+    "plan": "プラン",
+    "planProgress": "{{done}}/{{total}} 完了",
+    "planStatus": {
+      "pending": "未着手",
+      "in_progress": "進行中",
+      "completed": "完了"
+    },
+    "liveOutput": "ライブ出力",
+    "subagent": "サブエージェント",
+    "subagentRunning": "実行中…",
+    "subagentRequiresAction": "承認待ち",
+    "subagentIdle": "完了",
+    "subagentUnknown": "実行中",
+    "subagentFailed": "失敗：{{detail}}",
+    "notice": {
+      "info": "お知らせ",
+      "warning": "警告",
+      "error": "エラー"
+    },
     "fields": {
       "command": "コマンド",
       "file": "ファイル",
@@ -661,7 +685,8 @@
       "listTasks": "タスクリスト",
       "readTaskOutput": "タスク出力読み取り",
       "stopTask": "タスク停止",
-      "askQuestion": "質問"
+      "askQuestion": "質問",
+      "unknownTool": "ツール呼び出し"
     }
   },
   "errorBoundary": {

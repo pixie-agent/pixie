@@ -29,6 +29,9 @@ import type {
 const TOAST_WIDTH = 420;
 const TOAST_MIN_HEIGHT = 140;
 const TOAST_MAX_HEIGHT = 640;
+/// Task-result bubbles ("done" / "error") auto-dismiss after this long;
+/// hovering the bubble pauses the countdown. Info/heartbeat bubbles stay.
+const TOAST_AUTO_DISMISS_MS = 5_000;
 const EXPANDED_SIZE = new LogicalSize(400, 560);
 /// Collapsed context-menu size: w-44 (176) + 16px breathing room; height
 /// fits 5 icon rows + separator + padding with margin to spare (a tight fit
@@ -60,8 +63,8 @@ function MenuIcon({ d, stroke }: { d: string; stroke?: boolean }) {
 /// y (logical px, screen space). Every size change (expand / collapse / toast)
 /// recomputes the window position so THIS point never moves — the user parked
 /// the pet here, and it stays here.
-const SPRITE_W = 120; // collapsed window = the sprite's hitbox
-const SPRITE_H = 140;
+const SPRITE_W = 112; // collapsed window = the sprite's hitbox
+const SPRITE_H = 96;
 
 const win = getCurrentWindow();
 
@@ -108,24 +111,39 @@ export function CompanionApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<CompanionToast | null>(null);
   const [toastClosed, setToastClosed] = useState(false);
+  // Hovering the bubble pauses the auto-dismiss countdown (long agent output
+  // must stay readable — the timer only runs while the pointer is away).
+  const [toastPinned, setToastPinned] = useState(false);
   // Staged attachments (dragged files, region captures, clipboard text),
   // rendered as chips above the input until sent.
   const [attachments, setAttachments] = useState<PetAttachment[]>([]);
   const askBufferRef = useRef("");
   const prefsRef = useRef<CompanionPrefs | null>(null);
 
-  // Ambient bubble: STICKY — a new notification REPLACES the current bubble
-  // in place; it never auto-dismisses. The user closes it by clicking the ×
-  // (a new message reopens it). This is the pet's voice, not a transient hint.
+  // Ambient bubble: a new notification REPLACES the current bubble in place.
+  // Task results (done / error) auto-dismiss after TOAST_AUTO_DISMISS_MS
+  // (paused while the pointer hovers the bubble); info/heartbeat bubbles stay
+  // until replaced — they are live progress, not a final result. The user can
+  // always close sooner by clicking the × (a new message reopens it).
   useEffect(() => {
     const un = listen<CompanionToast>("companion-toast", (e) => {
       setToast(e.payload);
       setToastClosed(false);
+      setToastPinned(false);
     });
     return () => {
       void un.then((f) => f());
     };
   }, []);
+
+  // Auto-dismiss final task results; the countdown pauses while the pointer
+  // rests on the bubble (long agent output must stay readable).
+  useEffect(() => {
+    if (!toast || toastClosed || toastPinned) return;
+    if (toast.kind !== "done" && toast.kind !== "error") return;
+    const id = setTimeout(() => setToastClosed(true), TOAST_AUTO_DISMISS_MS);
+    return () => clearTimeout(id);
+  }, [toast, toastClosed, toastPinned]);
 
   useEffect(() => {
     prefsRef.current = prefs;
@@ -352,7 +370,7 @@ export function CompanionApp() {
         // leftward from the anchor (same trick as toasts) so the pet itself
         // never moves. The menu WINS over a visible toast: letting a toast
         // re-expand the window on menu-close produced a 3-way resize fight
-        // (menu 192 ↔ toast 420 ↔ sprite 120) that crashed the webview on
+        // (menu 192 ↔ toast 420 ↔ sprite 112) that crashed the webview on
         // rapid open/close cycles.
         w = Math.round(MENU_SIZE.width * factor);
         h = Math.round(MENU_SIZE.height * factor);
@@ -412,7 +430,7 @@ export function CompanionApp() {
       // Moved event for the resize slightly AFTER setSize resolves. The
       // timer is TOKEN-GATED: an older run's timer must NOT clear the flag
       // while a NEWER run's resize is still in flight — that race let a
-      // mid-transition Moved (pos=rx-192, size still 120) update the anchor
+      // mid-transition Moved (pos=rx-192, size still 112) update the anchor
       // and corrupt it 72px left per menu cycle (the "second right-click
       // at the same spot crashes; dragging the pet fixes it" bug).
       setTimeout(() => {
@@ -471,7 +489,7 @@ export function CompanionApp() {
   //  * tauri://blur still closes when it does fire (free extra layer).
   //  * Escape in the key handler above.
   const menuRef = useRef<HTMLDivElement | null>(null);
-  // The sprite's 120×140 hitbox (right column of the collapsed window) — the
+  // The sprite's 112×96 hitbox (right column of the collapsed window) — the
   // ONLY context-menu trigger zone (see the root onContextMenu guard).
   const spriteZoneRef = useRef<HTMLDivElement | null>(null);
   const menuOpenRef = useRef(menuOpen);
@@ -671,6 +689,7 @@ export function CompanionApp() {
       label: "",
     });
     setToastClosed(false);
+    setToastPinned(false);
   }, []);
 
   const resetChat = useCallback(() => {
@@ -679,6 +698,7 @@ export function CompanionApp() {
         setHistory([]);
         setToast({ kind: "info", main: "🧹 对话已清空", label: "" });
         setToastClosed(false);
+        setToastPinned(false);
       })
       .catch(() => {});
   }, []);
@@ -720,7 +740,7 @@ export function CompanionApp() {
           dispatchedConvId={dispatchedConvId}
         />
       ) : (
-        // The sprite occupies a FIXED 140×140 zone at the window's top-right
+        // The sprite occupies a FIXED 112×96 zone at the window's top-right
         // (vertically CENTERED in that zone — matching the anchor math, where
         // the sprite's visual center is window-top + SPRITE_H/2). A toast to
         // its left never affects it; a taller window grows downward only.
@@ -732,6 +752,8 @@ export function CompanionApp() {
             <div className="flex-1 min-w-0 flex items-center h-[140px]">
               <div
                 ref={toastRef}
+                onMouseEnter={() => setToastPinned(true)}
+                onMouseLeave={() => setToastPinned(false)}
                 className={`relative flex flex-col w-full rounded-2xl border px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl animate-[pet-toast-in_0.25s_ease-out] max-h-full ${
                   toast.kind === "done"
                     ? "bg-green-950/85 border-green-500/30"
@@ -766,7 +788,7 @@ export function CompanionApp() {
           )}
           <div
             ref={spriteZoneRef}
-            className="w-[120px] h-[140px] shrink-0 flex items-center justify-center"
+            className="w-[112px] h-[96px] shrink-0 flex items-center justify-center"
           >
             <PetSprite
               state={petState}

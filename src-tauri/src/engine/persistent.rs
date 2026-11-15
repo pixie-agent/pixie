@@ -30,14 +30,6 @@ use super::{parse_line, NormalizedEvent};
 /// the child is still alive and otherwise let the caller decide to retry.
 pub const READ_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Absolute wall-clock ceiling for ONE read attempt (not counting retries).
-/// The heartbeat stall detector can be defeated by a CLI that keeps emitting
-/// keepalive/heartbeat lines while its model call is wedged forever (observed:
-/// a turn hung for 8 hours with the process alive and occasionally piping).
-/// This hard cap guarantees the turn ends in an error the user can see, and
-/// the caller's --resume recovery takes over, no matter how chatty the CLI is.
-pub const TURN_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
 /// Hard ceiling on how many times a single turn will be transparently retried
 /// after an unexpected EOF/read error before surfacing the failure to the user.
 pub const MAX_TURN_RETRIES: usize = 2;
@@ -628,8 +620,6 @@ where
     let mut final_text = String::new();
     let mut consecutive_heartbeat_timeouts = 0usize;
     let mut ended_with_error = false;
-    // Absolute deadline for this attempt — see TURN_ABSOLUTE_TIMEOUT.
-    let turn_started = std::time::Instant::now();
 
     loop {
         // Check the stop flag first — a stop may have been requested while we
@@ -646,24 +636,11 @@ where
         // network partition to the model API, OS suspend) is detected instead
         // of hanging the turn forever. On timeout we re-check `is_stopped` and
         // loop; if the child has actually died, the next read returns EOF.
+        // No wall-clock ceiling on the turn itself — long tasks may legitimately
+        // run for hours; only the consecutive-silence detector (below) decides
+        // a process is wedged.
         let read_result =
             tokio::time::timeout(READ_HEARTBEAT_TIMEOUT, guard.read_line(&mut line)).await;
-        // Absolute cap: heartbeats can be reset forever by keepalive lines,
-        // so also enforce a wall-clock deadline on the whole attempt.
-        if turn_started.elapsed() >= TURN_ABSOLUTE_TIMEOUT {
-            log::error!(
-                "[persistent] turn exceeded the absolute ceiling of {:?} (engine={}); aborting attempt",
-                TURN_ABSOLUTE_TIMEOUT,
-                engine_id
-            );
-            return TurnOutcome::Crashed {
-                partial: std::mem::take(&mut final_text),
-                reason: format!(
-                    "turn ran longer than {:?} without completing (likely hung)",
-                    TURN_ABSOLUTE_TIMEOUT
-                ),
-            };
-        }
         match read_result {
             Err(_) => {
                 // Timed out waiting for a line. This is not itself fatal — the

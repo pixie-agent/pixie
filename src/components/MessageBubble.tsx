@@ -5,7 +5,7 @@ import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { appLocale, formatTokenCount, formatDurationMs, formatCostUsd } from "../lib/i18nFormat";
-import type { Message, MessageUsage, PreviewRequest, ToolStep, PendingPermission } from "../types";
+import type { Message, MessageUsage, PreviewRequest, ToolStep, PendingPermission, PlanEntry, SubagentState } from "../types";
 import { isPreviewableFile } from "../preview";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { TFunction } from "i18next";
@@ -240,12 +240,13 @@ function taskStatusChip(status: string, t: TFunction): ReactNode {
 }
 
 /**
- * Human description of a tool step, split into a "purpose" (what it is doing)
- * and an optional "target" (the file / command / pattern it acts on). The Bash
- * tool ships an explicit `description`; we surface that as the purpose so the
- * transcript reads as a reasoning trace rather than a bare command.
+ * Human description of a tool step, split into a short "label" (the verb),
+ * an optional "target" (the file / command / pattern it acts on), and an
+ * optional "subtitle" (free-text reasoning — e.g. the Bash tool's explicit
+ * `description`). Keeping the label short and the reasoning in the subtitle
+ * gives every tool bar a consistent shape while still reading as a trace.
  */
-function describeTool(step: ToolStep, t: TFunction): { label: string; target?: string; open?: { kind: "file" | "url"; value: string } } {
+function describeTool(step: ToolStep, t: TFunction): { label: string; target?: string; subtitle?: string; open?: { kind: "file" | "url"; value: string } } {
   const input = (step.input ?? null) as Record<string, unknown> | null;
   const pick = (...keys: string[]): string | undefined => {
     for (const k of keys) {
@@ -260,7 +261,7 @@ function describeTool(step: ToolStep, t: TFunction): { label: string; target?: s
   const purpose = pick("description", "reason");
 
   switch (n) {
-    case "bash":         return { label: purpose ?? t("messageBubble.tools.runCommand"),       target: pick("command") };
+    case "bash":         return { label: t("messageBubble.tools.runCommand"), target: pick("command"), subtitle: purpose };
     case "read":         return { label: t("messageBubble.tools.readFile"),                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
     case "edit":         return { label: t("messageBubble.tools.editFile"),                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
     case "multiedit":    return { label: t("messageBubble.tools.editFile"),                    target: pick("file_path"), open: fileOpen(pick("file_path")) };
@@ -269,7 +270,7 @@ function describeTool(step: ToolStep, t: TFunction): { label: string; target?: s
     case "glob":         return { label: t("messageBubble.tools.findFiles"),                   target: pick("pattern") };
     case "grep":         return { label: t("messageBubble.tools.searchCode"),                  target: pick("pattern") };
     case "task":
-    case "agent":        return { label: purpose ?? t("messageBubble.tools.delegateAgent"), target: pick("description", "prompt") };
+    case "agent":        return { label: t("messageBubble.tools.delegateAgent"), target: pick("description", "prompt") };
     case "webfetch":     return { label: t("messageBubble.tools.fetchUrl"),                    target: pick("url"), open: urlOpen(pick("url")) };
     case "websearch":    return { label: t("messageBubble.tools.webSearch"),                   target: pick("query") };
     case "taskcreate":   return { label: t("messageBubble.tools.createTask"),                  target: pick("subject") };
@@ -287,7 +288,29 @@ function describeTool(step: ToolStep, t: TFunction): { label: string; target?: s
     case "tasklist":     return { label: t("messageBubble.tools.listTasks") };
     case "taskoutput":   return { label: t("messageBubble.tools.readTaskOutput") };
     case "taskstop":     return { label: t("messageBubble.tools.stopTask") };
-    default:             return { label: step.name };
+    default: {
+      // Unknown/generic tool: show the tool's own name (or a translated
+      // fallback when the agent sent none) and surface the most descriptive
+      // scalar input field as the target, so the row still reads as
+      // "what + on what" without a dedicated renderer.
+      const genericTarget =
+        pick("file_path", "path", "url", "command", "query", "pattern", "description", "prompt", "subject", "task") ??
+        (() => {
+          if (!input) return undefined;
+          for (const v of Object.values(input)) {
+            if (typeof v === "string" && v.trim()) return v;
+          }
+          for (const v of Object.values(input)) {
+            if (typeof v === "number" || typeof v === "boolean") return String(v);
+          }
+          return undefined;
+        })();
+      const meaningful = n && n !== "tool" && n !== "unknown";
+      return {
+        label: meaningful ? step.name : t("messageBubble.tools.unknownTool"),
+        target: genericTarget,
+      };
+    }
   }
 }
 
@@ -506,7 +529,37 @@ function renderToolInput(step: ToolStep, onOpenPreview: (t: PreviewRequest) => v
     const tid = str("taskId") ?? str("task_id");
     if (tid) push(f("id"), <code>{tid.slice(0, 8)}</code>);
   } else {
-    return <pre className="tool-detail">{JSON.stringify(input, null, 2)}</pre>;
+    // Unknown/generic tool: flatten the input into readable key/value rows
+    // instead of a raw JSON blob, so "what it did" is visible at a glance.
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      const entries = Object.entries(input).filter(([, v]) => v !== null && v !== undefined);
+      if (entries.length > 0) {
+        const MAX_ROWS = 6;
+        const shown = entries.slice(0, MAX_ROWS).map(([k, v]) => {
+          const text =
+            typeof v === "string"
+              ? v
+              : typeof v === "number" || typeof v === "boolean"
+                ? String(v)
+                : JSON.stringify(v);
+          return <ToolField key={k} label={k} value={<code>{truncateText(text, 160)}</code>} />;
+        });
+        if (entries.length > MAX_ROWS) {
+          shown.push(
+            <ToolField
+              key="__more__"
+              label=""
+              value={t("messageBubble.moreFields", { count: entries.length - MAX_ROWS })}
+            />,
+          );
+        }
+        return <div className="tool-fields">{shown}</div>;
+      }
+    }
+    if (typeof step.input === "string" && step.input.trim()) {
+      return <pre className="tool-detail">{truncateText(step.input, 300)}</pre>;
+    }
+    return <span className="tool-field-empty">{t("messageBubble.starting")}</span>;
   }
 
   return <div className="tool-fields">{rows}</div>;
@@ -525,7 +578,7 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
     setOpen(step.status === "running");
   }, [step.status]);
 
-  const { label, target, open: openable } = describeTool(step, t);
+  const { label, target, subtitle, open: openable } = describeTool(step, t);
   const diffStat = useMemo(() => diffStats(step), [step]);
   const isRunning = step.status === "running";
   const hasResult = Boolean(step.result);
@@ -551,6 +604,10 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
     </pre>
   );
 
+  // Live partial output (ACP in_progress / client-managed terminal stream):
+  // rendered under the input while the step runs, separate from the result.
+  const liveOut = isRunning && step.liveOutput ? step.liveOutput.trim() : undefined;
+
   return (
     <div
       className={`tool-step tool-step--${step.status}${open && hasBody ? " tool-step--open" : ""}`}
@@ -562,28 +619,35 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
         aria-expanded={open}
       >
         <span className="tool-icon">{iconForTool(step.name)}</span>
-        <span className="tool-purpose">{label}</span>
-        {target && (
-          openable && (openable.kind === "url" || isPreviewableFile(openable.value)) ? (
-            <span
-              className="tool-target"
-              title={t("messageBubble.openPreview")}
-              style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenPreview(
-                  openable.kind === "url"
-                    ? { kind: "url", url: openable.value }
-                    : { kind: "file", path: openable.value }
-                );
-              }}
-            >
-              {target}
-            </span>
-          ) : (
-            <span className="tool-target" title={target}>{target}</span>
-          )
-        )}
+        <span className="tool-header-body">
+          <span className="tool-header-line">
+            <span className="tool-purpose">{label}</span>
+            {target && (
+              openable && (openable.kind === "url" || isPreviewableFile(openable.value)) ? (
+                <span
+                  className="tool-target"
+                  title={t("messageBubble.openPreview")}
+                  style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenPreview(
+                      openable.kind === "url"
+                        ? { kind: "url", url: openable.value }
+                        : { kind: "file", path: openable.value }
+                    );
+                  }}
+                >
+                  {target}
+                </span>
+              ) : (
+                <span className="tool-target" title={target}>{target}</span>
+              )
+            )}
+          </span>
+          {subtitle && (
+            <span className="tool-subtitle" title={subtitle}>{subtitle}</span>
+          )}
+        </span>
         {diffStat && (diffStat.added > 0 || diffStat.removed > 0) && (
           <span
             className="tool-diff-stat"
@@ -602,6 +666,16 @@ function ToolStepCardImpl({ step, onOpenPreview }: { step: ToolStep; onOpenPrevi
         {hasBody && <span className="tool-chevron">{open ? "▾" : "▸"}</span>}
       </button>
       {open && hasBody && body}
+      {liveOut && (
+        <div className="px-3 pb-2">
+          <div className="text-[10px] text-[var(--text-secondary)] opacity-70 mb-0.5">
+            {t("messageBubble.liveOutput")}
+          </div>
+          <pre className="tool-detail m-0 max-h-40 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-[11px]">
+            {liveOut}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -742,6 +816,157 @@ function ThinkingCard({ message }: { message: Message }) {
         {hasText && <span className="tool-chevron">{open ? "▾" : "▸"}</span>}
       </button>
       {open && hasText && <pre className="thinking-card-body">{message.thinking}</pre>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent plan (ACP `plan`) — a live checklist, replaced wholesale per update
+// ---------------------------------------------------------------------------
+
+function PlanCard({ plan }: { plan: PlanEntry[] }) {
+  const { t } = useTranslation();
+  const done = plan.filter((e) => e.status === "completed").length;
+  const active = plan.some((e) => e.status === "in_progress");
+  return (
+    <div className="tool-activity mb-2">
+      <div className="tool-activity-summary">
+        <span className={active ? "tool-summary-running" : "tool-summary-done"}>
+          {active && <span className="tool-spinner" />} {t("messageBubble.plan")}
+          <span className="tool-summary-count">
+            {" "}
+            · {t("messageBubble.planProgress", { done, total: plan.length })}
+          </span>
+        </span>
+      </div>
+      {plan.map((entry, i) => {
+        const key = `${i}:${entry.content.slice(0, 40)}`;
+        const statusKey = ["pending", "in_progress", "completed"].includes(entry.status)
+          ? entry.status
+          : "pending";
+        return (
+          <div key={key} className="flex items-start gap-2 px-3 py-1 text-xs">
+            <span
+              className={`mt-0.5 shrink-0 ${
+                entry.status === "completed"
+                  ? "text-[var(--accent)]"
+                  : entry.status === "in_progress"
+                    ? "text-[var(--accent)]"
+                    : "text-[var(--text-secondary)] opacity-60"
+              }`}
+            >
+              {entry.status === "completed" ? "✓" : entry.status === "in_progress" ? (
+                <span className="tool-spinner" />
+              ) : (
+                "○"
+              )}
+            </span>
+            <span
+              className={`${
+                entry.status === "completed"
+                  ? "text-[var(--text-secondary)] line-through opacity-70"
+                  : "text-[var(--text-primary)]"
+              }`}
+            >
+              {entry.content}
+              <span className="ml-1.5 text-[10px] text-[var(--text-secondary)] opacity-60">
+                {t(`messageBubble.planStatus.${statusKey}`)}
+              </span>
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent notice (ACP `notice`) — an inline banner per notice
+// ---------------------------------------------------------------------------
+
+function NoticeBanner({ notice }: { notice: { severity: string; title: string; description?: string } }) {
+  const { t } = useTranslation();
+  const sev = ["info", "warning", "error"].includes(notice.severity)
+    ? notice.severity
+    : "info";
+  const tone =
+    sev === "error"
+      ? "border-red-500/30 bg-red-500/10 text-red-300"
+      : sev === "warning"
+        ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+        : "border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-primary)]";
+  return (
+    <div className={`mb-2 rounded-lg border px-3 py-2 text-xs ${tone}`}>
+      <span className="font-medium">{t(`messageBubble.notice.${sev}`)}: {notice.title}</span>
+      {notice.description && (
+        <div className="mt-0.5 opacity-80 whitespace-pre-wrap [overflow-wrap:anywhere]">
+          {notice.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Subagent card (ACP subagents RFD) — an expandable child-session card
+// ---------------------------------------------------------------------------
+
+function SubagentCard({ subagent, onOpenPreview }: { subagent: SubagentState; onOpenPreview: (t: PreviewRequest) => void }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(subagent.state === "running");
+  const hasBody =
+    subagent.text.length > 0 || subagent.tools.length > 0 || Boolean(subagent.thinking);
+
+  const stateLabel = (() => {
+    switch (subagent.state) {
+      case "requires_action": return t("messageBubble.subagentRequiresAction");
+      case "idle":
+        return subagent.stateDetail
+          ? t("messageBubble.subagentFailed", { detail: subagent.stateDetail })
+          : t("messageBubble.subagentIdle");
+      case "running": return t("messageBubble.subagentRunning");
+      default: return t("messageBubble.subagentUnknown");
+    }
+  })();
+  const isWorking = subagent.state === "running" || subagent.state === "requires_action" || !subagent.state;
+
+  return (
+    <div className="mb-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] overflow-hidden">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--bg-secondary)]"
+        onClick={() => hasBody && setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span className="shrink-0 text-[11px]">🤖</span>
+        <span className="truncate font-medium text-[var(--text-primary)]">
+          {subagent.title ?? t("messageBubble.subagent")}
+        </span>
+        {subagent.description && (
+          <span className="truncate text-[var(--text-secondary)] opacity-70">
+            {subagent.description}
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-[var(--text-secondary)]">
+          {isWorking && <span className="tool-spinner" aria-label={stateLabel} />}
+          <span className={subagent.state === "idle" && subagent.stateDetail ? "text-red-400" : ""}>
+            {stateLabel}
+          </span>
+        </span>
+        {hasBody && <span className="tool-chevron shrink-0">{open ? "▾" : "▸"}</span>}
+      </button>
+      {open && hasBody && (
+        <div className="border-t border-[var(--border-color)] px-2 py-1.5">
+          {subagent.tools.length > 0 && (
+            <ToolActivity tools={subagent.tools} onOpenPreview={onOpenPreview} />
+          )}
+          {subagent.text && (
+            <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-xs text-[var(--text-primary)]">
+              {subagent.text}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -941,6 +1166,16 @@ function MessageBubbleImpl({ message, onOpenPreview, onRespondPermission, onRetr
           </div>
         ) : (
           <>
+            {message.plan && message.plan.length > 0 && <PlanCard plan={message.plan} />}
+
+            {message.notices?.map((n, i) => <NoticeBanner key={i} notice={n} />)}
+
+            {message.subagents &&
+              Object.values(message.subagents).length > 0 &&
+              Object.values(message.subagents).map((s) => (
+                <SubagentCard key={s.id} subagent={s} onOpenPreview={onOpenPreview} />
+              ))}
+
             {message.tools && message.tools.length > 0 && (
               <ToolActivity tools={message.tools} onOpenPreview={onOpenPreview} />
             )}
